@@ -103,12 +103,13 @@ astrbot_plugin_signin/
 ├── main.py            # 插件主逻辑
 ├── metadata.yaml      # 插件元数据
 ├── _conf_schema.json  # WebUI 配置页（可改金币/价格/概率等）
+├── OPPOSans-M.ttf     # 图片渲染字体
 ├── pages/admin/       # WebUI 自定义页（后台.txt 编辑器 + 数据导入导出）
-├── 后台.txt            # 管理员配置（打工/玩耍/商店）
+├── 后台.txt            # 管理员配置模板（首次加载自动迁到 plugin_data）
 └── README.md          # 本说明文档
 ```
 
-> 数据（金币/好感度/战绩/宠物）保存在 `data.json`；打工/玩耍/商店配置在 `后台.txt`。删除 `data.json` 可清空全部数据。
+> 运行数据（`data.json`、`后台.txt`、生成的图片）保存在 AstrBot 的 `plugin_data/astrbot_plugin_signin/` 目录（不再放 plugins 目录）。首次加载会把插件目录里的 `data.json`、`后台.txt` 自动迁移过去；删除 `plugin_data` 里的 `data.json` 可清空全部数据。
 
 ## 自定义配置（WebUI）
 
@@ -135,14 +136,21 @@ astrbot_plugin_signin/
 
 - `查看后台配置`：查看当前 `后台.txt` 内容
 - `保存后台配置 <内容>`：用粘贴的全文覆盖 `后台.txt`（先查看再改）
-- `导出数据`：把 `data.json` 备份到插件目录下的 `data_export_时间戳.json`，并返回内容（数据大时只给文件路径）
-- `导入数据 <JSON>`：用粘贴的 JSON 覆盖 `data.json`；或把 JSON 保存为插件目录下的 `data_import.json` 后直接发送 `导入数据`
+- `导出数据`：把 `data.json` 备份到 `plugin_data/astrbot_plugin_signin/` 下的 `data_export_时间戳.json`，并返回内容（数据大时只给文件路径）
+- `导入数据 <JSON>`：用粘贴的 JSON 覆盖 `data.json`；或把 JSON 保存为 `plugin_data/astrbot_plugin_signin/data_import.json` 后直接发送 `导入数据`
 
 ## 说明
 
 - 金币、好感度、宠物、战绩均**跨群聊共享**（按用户维度）
 - 打工/玩耍为**即时完成**；`需要时间` 在 `后台.txt` 中配置并展示，当前不实际等待
 - 属性丸需先解锁宠物才会通过签到获得
+
+---
+
+## 更新日志
+
+- **文字转图片发送**：`商店` / `打工` / `玩耍` 三个列表回复改为渲染成图片发送，使用 `OPPOSans-M.ttf` 字体（字体放插件目录，AstrBot 环境需有 Pillow；字体或 Pillow 缺失时自动回退为文本）。
+- **数据文件迁移**：`data.json`、`后台.txt`、生成的图片等运行数据改存到 AstrBot 的 `plugin_data/astrbot_plugin_signin/` 目录（不再放 plugins 目录）。首次加载会把插件目录里旧的数据文件自动迁移过去；`OPPOSans-M.ttf` 字体作为静态资源仍留在插件目录。
 
 ---
 
