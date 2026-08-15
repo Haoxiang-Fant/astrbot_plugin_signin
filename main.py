@@ -2,6 +2,7 @@ import asyncio
 import json
 import os
 import random
+import shutil
 from datetime import date, timedelta, datetime
 
 from astrbot.api.event import filter, AstrMessageEvent
@@ -9,6 +10,11 @@ from astrbot.api.event.filter import EventMessageType
 from astrbot.api.star import Context, Star, register
 from astrbot.api import logger
 from astrbot.api.web import error_response, json_response, request
+
+try:
+    from astrbot.core.utils.astrbot_path import get_astrbot_plugin_data_path
+except Exception:
+    get_astrbot_plugin_data_path = None
 
 # ============ 签到 / 好感度 ============
 MIN_COINS = 30          # 每次签到最少获得的金币
@@ -42,9 +48,38 @@ MONEY_EVENT_GAIN = 100      # 捡到钱的金币
 MONEY_EVENT_MAX_PER_DAY = 2  # 每个周期最多触发次数
 # =============================================
 
-DATA_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data.json")
-CONFIG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "后台.txt")
 PLUGIN_NAME = "astrbot_plugin_signin"
+_PLUGIN_DIR = os.path.dirname(os.path.abspath(__file__))
+
+# 插件数据存放到 AstrBot 的 plugin_data 目录（而非 plugins 目录）
+if get_astrbot_plugin_data_path is not None:
+    try:
+        _DATA_DIR = os.path.join(get_astrbot_plugin_data_path(), PLUGIN_NAME)
+        os.makedirs(_DATA_DIR, exist_ok=True)
+    except Exception:
+        _DATA_DIR = _PLUGIN_DIR
+else:
+    _DATA_DIR = _PLUGIN_DIR
+
+DATA_FILE = os.path.join(_DATA_DIR, "data.json")
+CONFIG_FILE = os.path.join(_DATA_DIR, "后台.txt")
+FONT_FILE = os.path.join(_PLUGIN_DIR, "OPPOSans-M.ttf")
+
+
+def _migrate_old_data_files():
+    """把旧位置（插件目录）的数据文件迁移到新位置（plugin_data），只迁一次"""
+    old_data = os.path.join(_PLUGIN_DIR, "data.json")
+    old_conf = os.path.join(_PLUGIN_DIR, "后台.txt")
+    try:
+        if os.path.exists(old_data) and not os.path.exists(DATA_FILE):
+            shutil.move(old_data, DATA_FILE)
+        if os.path.exists(old_conf) and not os.path.exists(CONFIG_FILE):
+            shutil.move(old_conf, CONFIG_FILE)
+    except Exception as e:
+        logger.error(f"[插件] 迁移旧数据文件失败: {e}")
+
+
+_migrate_old_data_files()
 
 ATTR_LABELS = {"satiety": "饱食度", "thirst": "口渴值", "stamina": "体力", "mood": "心情值", "health": "健康度"}
 ATTR_SHORT = {"satiety": "饱食", "thirst": "口渴", "stamina": "体力", "mood": "心情", "health": "健康"}
@@ -128,7 +163,11 @@ class SignInPlugin(Star):
         head = text.split(maxsplit=1)[0]
         async with self._lock:
             reply = self._route(head, event)
-        if reply:
+        if reply is None:
+            return
+        if isinstance(reply, tuple) and len(reply) == 2 and reply[0] == "image":
+            yield event.image_result(reply[1])
+        else:
             yield event.plain_result(reply)
 
     def _route(self, head: str, event: AstrMessageEvent):
@@ -842,14 +881,17 @@ class SignInPlugin(Star):
         return (f"💼 {name} 的宠物去「{job['name']}」打工完成！\n"
                 f"💰 金币 +{int(job['coins'])}，🐾 经验 +{job['exp']:.1f}{lvl_msg}")
 
-    def _work_list(self) -> str:
+    def _work_list(self):
         cfg = self._load_config()
         if not cfg["jobs"]:
             return "后台还没有配置打工项目（请管理员编辑 后台.txt）。"
-        lines = ["💼 打工列表（发送「打工 <名称>」开始）："]
+        lines = ["发送「打工 <名称>」开始", ""]
         for j in cfg["jobs"]:
             lines.append(f"· {j['name']}：{j['desc']}｜要求 Lv.{int(j['min_level'])}+ / 健康 {j['min_health']:.0f}+ / 心情 {j['min_mood']:.0f}+｜耗时 {j['time']:.0f}分｜金币 +{int(j['coins'])} 经验 +{j['exp']:.0f}")
-        return "\n".join(lines)
+        img = self._render_text_image("打工列表", lines)
+        if img is not None:
+            return img
+        return "\n".join(["💼 打工列表（发送「打工 <名称>」开始）："] + lines)
 
     def _handle_play(self, event: AstrMessageEvent) -> str:
         name = event.get_sender_name()
@@ -901,24 +943,30 @@ class SignInPlugin(Star):
         return (f"🎾 {name} 的宠物去「{play['name']}」玩耍完成！\n"
                 f"🐾 经验 +{play['exp']:.1f}，😊 心情 +{play['mood']:.1f}{lvl_msg}{bonus}")
 
-    def _play_list(self) -> str:
+    def _play_list(self):
         cfg = self._load_config()
         if not cfg["plays"]:
             return "后台还没有配置玩耍项目（请管理员编辑 后台.txt）。"
-        lines = ["🎾 玩耍列表（发送「玩耍 <名称>」开始）："]
+        lines = ["发送「玩耍 <名称>」开始", ""]
         for p in cfg["plays"]:
             lines.append(f"· {p['name']}：{p['desc']}｜要求 Lv.{int(p['min_level'])}+ / 健康 {p['min_health']:.0f}+ / 心情 {p['min_mood']:.0f}+｜耗时 {p['time']:.0f}分｜经验 +{p['exp']:.0f} 心情 +{p['mood']:.0f}")
-        return "\n".join(lines)
+        img = self._render_text_image("玩耍列表", lines)
+        if img is not None:
+            return img
+        return "\n".join(["🎾 玩耍列表（发送「玩耍 <名称>」开始）："] + lines)
 
     def _handle_shop(self, event: AstrMessageEvent) -> str:
         cfg = self._load_config()
         if not cfg["shop"]:
             return "商店暂无商品（请管理员编辑 后台.txt）。"
-        lines = ["🛒 宠物商店（发送「购买 <道具名>」购买，发送「使用 <道具名>」使用）："]
+        lines = ["发送「购买 <道具名>」购买，发送「使用 <道具名>」使用", ""]
         for it in cfg["shop"]:
             lines.append(f"· {it['name']}（{it['type']}）{int(it['price'])}金币：{self._effect_desc(it['effects'])}")
         lines.append(f"· {PILL_NAME}（特殊）：随机提升全属性 1.0~5.0（签到有几率获得）")
-        return "\n".join(lines)
+        img = self._render_text_image("宠物商店", lines)
+        if img is not None:
+            return img
+        return "\n".join(["🛒 宠物商店（发送「购买 <道具名>」购买，发送「使用 <道具名>」使用）："] + lines)
 
     def _effect_desc(self, effects: dict) -> str:
         parts = []
@@ -929,6 +977,67 @@ class SignInPlugin(Star):
             elif v < 0:
                 parts.append(f"{short}{v:.0f}")
         return " ".join(parts) if parts else "无效果"
+
+    def _render_text_image(self, title: str, lines):
+        """把标题 + 正文行渲染为 PNG 图片（使用 OPPOSans-M.ttf）。返回 ("image", path)；失败返回 None"""
+        try:
+            from PIL import Image, ImageDraw, ImageFont
+        except Exception as e:
+            logger.error(f"[插件] 缺少 Pillow，无法生成图片: {e}")
+            return None
+        if not os.path.exists(FONT_FILE):
+            return None
+        try:
+            title_font = ImageFont.truetype(FONT_FILE, 36)
+            body_font = ImageFont.truetype(FONT_FILE, 24)
+        except Exception as e:
+            logger.error(f"[插件] 加载字体 {FONT_FILE} 失败: {e}")
+            return None
+
+        pad = 30
+        title_h = 64
+        line_h = 42
+
+        try:
+            probe = ImageDraw.Draw(Image.new("RGB", (8, 8)))
+            def _w(s, f):
+                b = probe.textbbox((0, 0), s, font=f)
+                return b[2] - b[0]
+            all_w = [_w(title, title_font)] + [_w(l, body_font) for l in lines]
+            width = max(480, int(max(all_w) + pad * 2))
+        except Exception:
+            width = 720
+
+        height = pad * 2 + title_h + line_h * len(lines)
+        img = Image.new("RGB", (width, height), (255, 255, 255))
+        draw = ImageDraw.Draw(img)
+        y = pad
+        draw.text((pad, y), title, font=title_font, fill=(20, 20, 20))
+        y += title_h
+        for line in lines:
+            draw.text((pad, y), line, font=body_font, fill=(70, 70, 70))
+            y += line_h
+
+        base = os.path.dirname(DATA_FILE)
+        path = os.path.join(base, f"_list_{datetime.now().strftime('%Y%m%d%H%M%S%f')}.png")
+        try:
+            img.save(path)
+        except Exception as e:
+            logger.error(f"[插件] 保存图片失败: {e}")
+            return None
+
+        # 清理 10 分钟前的临时图片，避免堆积
+        try:
+            now = datetime.now().timestamp()
+            for fn in os.listdir(base):
+                if fn.startswith("_list_") and fn.endswith(".png"):
+                    fp = os.path.join(base, fn)
+                    if now - os.path.getmtime(fp) > 600:
+                        os.remove(fp)
+        except Exception:
+            pass
+
+        return ("image", path)
 
     def _handle_buy(self, event: AstrMessageEvent) -> str:
         name = event.get_sender_name()
