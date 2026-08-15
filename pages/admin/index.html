@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>插件后台管理</title>
+    <link rel="stylesheet" href="./style.css" />
+  </head>
+  <body>
+    <div class="container">
+      <h1>🐾 签到插件后台管理</h1>
+
+      <div class="tabs">
+        <button class="tab active" data-tab="config">后台.txt 编辑器</button>
+        <button class="tab" data-tab="data">数据导入导出</button>
+      </div>
+
+      <section id="panel-config" class="panel">
+        <div class="toolbar">
+          <button id="btn-load-config">加载</button>
+          <button id="btn-save-config" class="primary">保存</button>
+          <span id="status-config" class="status"></span>
+        </div>
+        <textarea id="config-text" spellcheck="false" placeholder="点击「加载」读取 后台.txt 内容..."></textarea>
+        <p class="hint">编辑打工 / 玩耍 / 商店配置，保存后立即生效（无需重启）。</p>
+      </section>
+
+      <section id="panel-data" class="panel hidden">
+        <div class="toolbar">
+          <button id="btn-export-data">导出 data.json</button>
+          <input type="file" id="import-file" accept=".json,application/json" />
+          <button id="btn-import-data" class="primary">导入</button>
+          <span id="status-data" class="status"></span>
+        </div>
+        <p class="hint">导出会把 data.json 下载到本地；导入会用所选文件覆盖 data.json（建议先导出备份）。</p>
+      </section>
+    </div>
+
+    <script type="module" src="./app.js"></script>
+  </body>
+</html>

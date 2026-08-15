@@ -1,0 +1,57 @@
+{
+  "min_coins": {
+    "description": "每日签到最少获得的金币",
+    "type": "int",
+    "default": 30
+  },
+  "max_coins": {
+    "description": "每日签到最多获得的金币",
+    "type": "int",
+    "default": 300
+  },
+  "pet_unlock_cost": {
+    "description": "解锁宠物所需金币",
+    "type": "int",
+    "default": 1000
+  },
+  "pet_signin_exp_min": {
+    "description": "每日签到宠物获得的最小经验",
+    "type": "float",
+    "default": 10.0
+  },
+  "pet_signin_exp_max": {
+    "description": "每日签到宠物获得的最大经验",
+    "type": "float",
+    "default": 60.0
+  },
+  "pill_drop_chance": {
+    "description": "每日签到掉落「属性丸」的概率（0~1，0.5 表示 50%）",
+    "type": "float",
+    "default": 0.5
+  },
+  "pill_drop_min": {
+    "description": "属性丸最少掉落数量",
+    "type": "int",
+    "default": 1
+  },
+  "pill_drop_max": {
+    "description": "属性丸最多掉落数量",
+    "type": "int",
+    "default": 5
+  },
+  "money_event_chance": {
+    "description": "玩耍触发「捡到钱了」的概率（0~1，0.01 表示 1%）",
+    "type": "float",
+    "default": 0.01
+  },
+  "money_event_gain": {
+    "description": "捡到钱了获得的金币",
+    "type": "int",
+    "default": 100
+  },
+  "money_event_max_per_day": {
+    "description": "捡到钱了每个周期最多触发次数",
+    "type": "int",
+    "default": 2
+  }
+}
