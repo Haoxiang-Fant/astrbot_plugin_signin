@@ -5,6 +5,7 @@ import random
 from datetime import date, timedelta, datetime
 
 from astrbot.api.event import filter, AstrMessageEvent
+from astrbot.api.event.filter import EventMessageType
 from astrbot.api.star import Context, Star, register
 from astrbot.api import logger
 from astrbot.api.web import error_response, json_response, request
@@ -101,6 +102,9 @@ class SignInPlugin(Star):
         self._lock = asyncio.Lock()       # 保护数据文件 + 游戏内存状态
         self._games = {}                  # group_id -> RouletteGame
 
+        # 一次性迁移旧数据：按群（gid:uid）→ 跨群（uid）
+        self._migrate_legacy_data()
+
         # 注册 WebUI Pages 的后端 API
         context.register_web_api(
             f"/{PLUGIN_NAME}/backend/config", self.web_get_backend_config, ["GET"], "读取后台.txt"
@@ -114,6 +118,65 @@ class SignInPlugin(Star):
         context.register_web_api(
             f"/{PLUGIN_NAME}/data/import", self.web_import_data, ["POST"], "导入 data.json"
         )
+
+    # ================= 消息路由（无需前缀 / @） =================
+    @filter.event_message_type(EventMessageType.ALL)
+    async def on_message(self, event: AstrMessageEvent):
+        text = (event.message_str or "").strip()
+        if not text:
+            return
+        head = text.split(maxsplit=1)[0]
+        async with self._lock:
+            reply = self._route(head, event)
+        if reply:
+            yield event.plain_result(reply)
+
+    def _route(self, head: str, event: AstrMessageEvent):
+        if head == "签到":
+            return self._handle_sign_in(event)
+        if head == "我的签到":
+            return self._handle_my_info(event)
+        if head == "签到帮助":
+            return self._help_all_text()
+        if head == "装弹":
+            return self._handle_load(event)
+        if head == "加入":
+            return self._handle_join(event)
+        if head == "开始":
+            return self._handle_start(event)
+        if head == "开枪":
+            return self._handle_shoot(event)
+        if head == "我的战绩":
+            return self._handle_stats(event)
+        if head == "解锁宠物":
+            return self._handle_unlock_pet(event)
+        if head == "宠物":
+            return self._handle_pet_status(event)
+        if head == "更改宠物名字":
+            return self._handle_rename_pet(event)
+        if head == "打工":
+            return self._handle_work(event)
+        if head == "玩耍":
+            return self._handle_play(event)
+        if head == "商店":
+            return self._handle_shop(event)
+        if head == "购买":
+            return self._handle_buy(event)
+        if head == "使用":
+            return self._handle_use_item(event)
+        if head == "背包":
+            return self._handle_bag(event)
+        if head == "宠物帮助":
+            return self._help_pet_text()
+        if head == "查看后台配置":
+            return self._handle_view_config()
+        if head == "保存后台配置":
+            return self._handle_save_backend_config(event)
+        if head == "导出数据":
+            return self._handle_export_data()
+        if head == "导入数据":
+            return self._handle_import_data(event)
+        return None
 
     # ================= 数据存取 =================
     def _load(self) -> dict:
@@ -141,11 +204,71 @@ class SignInPlugin(Star):
         except Exception as e:
             logger.error(f"[插件] 保存数据失败: {e}")
 
+    def _migrate_legacy_data(self) -> None:
+        """一次性迁移旧数据：按群存储（gid:uid / private:uid）→ 跨群（uid）。
+        金币求和；好感度取最大；签到日期取最新；宠物保留等级/经验最高的一只；左轮战绩求和合并。"""
+        if not os.path.exists(DATA_FILE):
+            return
+        data = self._load()
+        if data.get("_migrated_cross_group"):
+            return
+
+        def _uid(key: str) -> str:
+            return key.rsplit(":", 1)[-1] if ":" in key else key
+
+        # users：金币求和、好感度取最大、签到日期取最新
+        new_users = {}
+        for key, u in data.get("users", {}).items():
+            if not isinstance(u, dict):
+                new_users[key] = u
+                continue
+            uid = _uid(key)
+            d = new_users.setdefault(uid, {"coins": 0, "favorability": 0.0, "last_date": ""})
+            d["coins"] = int(d.get("coins", 0)) + int(u.get("coins", 0))
+            d["favorability"] = max(float(d.get("favorability", 0.0)), float(u.get("favorability", 0.0)))
+            d["last_date"] = max(d.get("last_date", "") or "", u.get("last_date", "") or "")
+        data["users"] = new_users
+
+        # roulette：局数/净收益求和，lost_to / won_from 按对手求和合并
+        new_r = {}
+        for key, s in data.get("roulette", {}).items():
+            if not isinstance(s, dict):
+                new_r[key] = s
+                continue
+            uid = _uid(key)
+            d = new_r.setdefault(uid, {"wins": 0, "losses": 0, "net": 0, "lost_to": {}, "won_from": {}})
+            d["wins"] += int(s.get("wins", 0))
+            d["losses"] += int(s.get("losses", 0))
+            d["net"] += int(s.get("net", 0))
+            for side in ("lost_to", "won_from"):
+                for opp, e in s.get(side, {}).items():
+                    if not isinstance(e, dict):
+                        continue
+                    dd = d[side].setdefault(opp, {"name": e.get("name", ""), "amount": 0})
+                    dd["amount"] += int(e.get("amount", 0))
+                    if e.get("name"):
+                        dd["name"] = e["name"]
+        data["roulette"] = new_r
+
+        # pets：每位用户最多一只，保留等级/经验最高的一只
+        new_pets = {}
+        for key, p in data.get("pets", {}).items():
+            if not isinstance(p, dict):
+                new_pets[key] = p
+                continue
+            uid = _uid(key)
+            existing = new_pets.get(uid)
+            if existing is None or (p.get("level", 0), p.get("exp", 0)) > (existing.get("level", 0), existing.get("exp", 0)):
+                new_pets[uid] = p
+        data["pets"] = new_pets
+
+        data["_migrated_cross_group"] = True
+        self._save(data)
+
     @staticmethod
     def _user_key(event: AstrMessageEvent) -> str:
-        gid = event.get_group_id()
-        uid = event.get_sender_id()
-        return f"{gid}:{uid}" if gid else f"private:{uid}"
+        # 数据按用户维度存储，跨群聊共享
+        return event.get_sender_id()
 
     @staticmethod
     def _level_of(favorability: float) -> int:
@@ -186,100 +309,91 @@ class SignInPlugin(Star):
             return 0.0
 
     # ================= 签到 =================
-    @filter.command("签到")
-    async def sign_in(self, event: AstrMessageEvent):
+    def _handle_sign_in(self, event: AstrMessageEvent) -> str:
         name = event.get_sender_name()
         key = self._user_key(event)
         today = date.today().isoformat()
 
-        async with self._lock:
-            data = self._load()
-            user = data.get("users", {}).get(key)
+        data = self._load()
+        user = data.get("users", {}).get(key)
 
-            if user and user.get("last_date") == today:
-                coins = user.get("coins", 0)
-                fav = float(user.get("favorability", 0.0))
-                lv = self._level_of(fav)
-                reply = (f"{name}，你今天已经签到过啦～\n"
-                         f"💰 当前金币：{coins}\n"
-                         f"💗 当前好感度：{fav:.2f}（Lv.{lv}）")
-            else:
-                if user is None:
-                    user = self._ensure_user(data, key)
+        if user and user.get("last_date") == today:
+            coins = user.get("coins", 0)
+            fav = float(user.get("favorability", 0.0))
+            lv = self._level_of(fav)
+            return (f"{name}，你今天已经签到过啦～\n"
+                    f"💰 当前金币：{coins}\n"
+                    f"💗 当前好感度：{fav:.2f}（Lv.{lv}）")
 
-                coins_got = random.randint(self.min_coins, self.max_coins)
-                fav_got = round(random.uniform(MIN_FAV, MAX_FAV), 2)
+        if user is None:
+            user = self._ensure_user(data, key)
 
-                old_fav = float(user.get("favorability", 0.0))
-                old_lv = self._level_of(old_fav)
+        coins_got = random.randint(self.min_coins, self.max_coins)
+        fav_got = round(random.uniform(MIN_FAV, MAX_FAV), 2)
 
-                user["coins"] = int(user.get("coins", 0)) + coins_got
-                new_fav = round(old_fav + fav_got, 2)
-                user["favorability"] = new_fav
-                user["last_date"] = today
+        old_fav = float(user.get("favorability", 0.0))
+        old_lv = self._level_of(old_fav)
 
-                new_lv = self._level_of(new_fav)
+        user["coins"] = int(user.get("coins", 0)) + coins_got
+        new_fav = round(old_fav + fav_got, 2)
+        user["favorability"] = new_fav
+        user["last_date"] = today
 
-                lines = [
-                    f"✅ {name} 签到成功！",
-                    f"💰 获得金币：+{coins_got}（当前 {user['coins']}）",
-                    f"💗 好感度：+{fav_got:.2f}（当前 {new_fav:.2f}）",
-                ]
-                if new_lv > old_lv:
-                    lines.append(f"🎉 好感度突破 {int(new_lv * LEVEL_STEP)}，等级提升至 Lv.{new_lv}！")
-                else:
-                    lines.append(f"🏅 当前好感等级：Lv.{new_lv}")
+        new_lv = self._level_of(new_fav)
 
-                # ---- 宠物 ----
-                pet = data.get("pets", {}).get(key)
-                if pet:
-                    self._bring_pet_up_to_date(pet, today)
+        lines = [
+            f"✅ {name} 签到成功！",
+            f"💰 获得金币：+{coins_got}（当前 {user['coins']}）",
+            f"💗 好感度：+{fav_got:.2f}（当前 {new_fav:.2f}）",
+        ]
+        if new_lv > old_lv:
+            lines.append(f"🎉 好感度突破 {int(new_lv * LEVEL_STEP)}，等级提升至 Lv.{new_lv}！")
+        else:
+            lines.append(f"🏅 当前好感等级：Lv.{new_lv}")
 
-                    exp_got = round(random.uniform(self.pet_signin_exp_min, self.pet_signin_exp_max), 2)
-                    pet["exp"] = round(float(pet.get("exp", 0.0)) + exp_got, 2)
-                    lvl_msg = self._apply_exp(pet)
-                    lines.append(f"🐾 宠物经验：+{exp_got:.1f}{lvl_msg}")
+        pet = data.get("pets", {}).get(key)
+        if pet:
+            self._bring_pet_up_to_date(pet, today)
 
-                    if random.random() < self.pill_drop_chance:
-                        pills = random.randint(self.pill_drop_min, self.pill_drop_max)
-                        inv = pet.setdefault("inventory", {})
-                        inv[PILL_NAME] = int(inv.get(PILL_NAME, 0)) + pills
-                        lines.append(f"💊 运气不错，获得 {pills} 个属性丸（发送「使用 属性丸」使用）！")
+            exp_got = round(random.uniform(self.pet_signin_exp_min, self.pet_signin_exp_max), 2)
+            pet["exp"] = round(float(pet.get("exp", 0.0)) + exp_got, 2)
+            lvl_msg = self._apply_exp(pet)
+            lines.append(f"🐾 宠物经验：+{exp_got:.1f}{lvl_msg}")
 
-                    settle_lines = self._settle_display_lines(pet)
-                    if settle_lines:
-                        lines.append("")
-                        lines.extend(settle_lines)
+            if random.random() < self.pill_drop_chance:
+                pills = random.randint(self.pill_drop_min, self.pill_drop_max)
+                inv = pet.setdefault("inventory", {})
+                inv[PILL_NAME] = int(inv.get(PILL_NAME, 0)) + pills
+                lines.append(f"💊 运气不错，获得 {pills} 个属性丸（发送「使用 属性丸」使用）！")
 
-                self._save(data)
-                reply = "\n".join(lines)
+            settle_lines = self._settle_display_lines(pet)
+            if settle_lines:
+                lines.append("")
+                lines.extend(settle_lines)
 
-        yield event.plain_result(reply)
+        self._save(data)
+        return "\n".join(lines)
 
-    @filter.command("我的签到")
-    async def my_info(self, event: AstrMessageEvent):
+    def _handle_my_info(self, event: AstrMessageEvent) -> str:
         name = event.get_sender_name()
         key = self._user_key(event)
 
-        async with self._lock:
-            data = self._load()
-            user = data.get("users", {}).get(key)
-            if not user:
-                reply = f"{name} 还没有签到记录，发送「签到」开始吧～"
-            else:
-                coins = user.get("coins", 0)
-                fav = float(user.get("favorability", 0.0))
-                lv = self._level_of(fav)
-                last = user.get("last_date", "无")
-                lines = [
-                    f"{name} 的签到信息：",
-                    f"💰 金币：{coins}",
-                    f"💗 好感度：{fav:.2f}",
-                    f"🏅 好感等级：Lv.{lv}",
-                    f"📅 上次签到：{last}",
-                ]
-                reply = "\n".join(lines)
-        yield event.plain_result(reply)
+        data = self._load()
+        user = data.get("users", {}).get(key)
+        if not user:
+            return f"{name} 还没有签到记录，发送「签到」开始吧～"
+        coins = user.get("coins", 0)
+        fav = float(user.get("favorability", 0.0))
+        lv = self._level_of(fav)
+        last = user.get("last_date", "无")
+        lines = [
+            f"{name} 的签到信息：",
+            f"💰 金币：{coins}",
+            f"💗 好感度：{fav:.2f}",
+            f"🏅 好感等级：Lv.{lv}",
+            f"📅 上次签到：{last}",
+        ]
+        return "\n".join(lines)
 
     # ================= 宠物：结算逻辑 =================
     @staticmethod
@@ -608,12 +722,6 @@ class SignInPlugin(Star):
         return json_response({"imported": True})
 
     # ================= 宠物：指令 =================
-    @filter.command("解锁宠物")
-    async def unlock_pet(self, event: AstrMessageEvent):
-        async with self._lock:
-            text = self._handle_unlock_pet(event)
-        yield event.plain_result(text)
-
     def _handle_unlock_pet(self, event: AstrMessageEvent) -> str:
         name = event.get_sender_name()
         key = self._user_key(event)
@@ -637,12 +745,6 @@ class SignInPlugin(Star):
         return (f"🎉 {name} 花费 {self.pet_unlock_cost} 金币解锁了一只宠物！\n"
                 f"发送「更改宠物名字 <名字>」给它起名，\n"
                 f"发送「宠物帮助」查看玩法。")
-
-    @filter.command("宠物")
-    async def pet_status(self, event: AstrMessageEvent):
-        async with self._lock:
-            text = self._handle_pet_status(event)
-        yield event.plain_result(text)
 
     def _handle_pet_status(self, event: AstrMessageEvent) -> str:
         name = event.get_sender_name()
@@ -673,12 +775,6 @@ class SignInPlugin(Star):
             lines.append("🤒 宠物生病了，快给它吃药吧！")
         return "\n".join(lines)
 
-    @filter.command("更改宠物名字")
-    async def rename_pet(self, event: AstrMessageEvent):
-        async with self._lock:
-            text = self._handle_rename_pet(event)
-        yield event.plain_result(text)
-
     def _handle_rename_pet(self, event: AstrMessageEvent) -> str:
         parts = event.message_str.split(maxsplit=1)
         if len(parts) < 2:
@@ -697,12 +793,6 @@ class SignInPlugin(Star):
         pet["name"] = new_name
         self._save(data)
         return f"✅ 宠物名字已改为「{new_name}」。"
-
-    @filter.command("打工")
-    async def work(self, event: AstrMessageEvent):
-        async with self._lock:
-            text = self._handle_work(event)
-        yield event.plain_result(text)
 
     def _handle_work(self, event: AstrMessageEvent) -> str:
         name = event.get_sender_name()
@@ -760,12 +850,6 @@ class SignInPlugin(Star):
         for j in cfg["jobs"]:
             lines.append(f"· {j['name']}：{j['desc']}｜要求 Lv.{int(j['min_level'])}+ / 健康 {j['min_health']:.0f}+ / 心情 {j['min_mood']:.0f}+｜耗时 {j['time']:.0f}分｜金币 +{int(j['coins'])} 经验 +{j['exp']:.0f}")
         return "\n".join(lines)
-
-    @filter.command("玩耍")
-    async def play(self, event: AstrMessageEvent):
-        async with self._lock:
-            text = self._handle_play(event)
-        yield event.plain_result(text)
 
     def _handle_play(self, event: AstrMessageEvent) -> str:
         name = event.get_sender_name()
@@ -826,12 +910,6 @@ class SignInPlugin(Star):
             lines.append(f"· {p['name']}：{p['desc']}｜要求 Lv.{int(p['min_level'])}+ / 健康 {p['min_health']:.0f}+ / 心情 {p['min_mood']:.0f}+｜耗时 {p['time']:.0f}分｜经验 +{p['exp']:.0f} 心情 +{p['mood']:.0f}")
         return "\n".join(lines)
 
-    @filter.command("商店")
-    async def shop(self, event: AstrMessageEvent):
-        async with self._lock:
-            text = self._handle_shop(event)
-        yield event.plain_result(text)
-
     def _handle_shop(self, event: AstrMessageEvent) -> str:
         cfg = self._load_config()
         if not cfg["shop"]:
@@ -851,12 +929,6 @@ class SignInPlugin(Star):
             elif v < 0:
                 parts.append(f"{short}{v:.0f}")
         return " ".join(parts) if parts else "无效果"
-
-    @filter.command("购买")
-    async def buy(self, event: AstrMessageEvent):
-        async with self._lock:
-            text = self._handle_buy(event)
-        yield event.plain_result(text)
 
     def _handle_buy(self, event: AstrMessageEvent) -> str:
         name = event.get_sender_name()
@@ -885,12 +957,6 @@ class SignInPlugin(Star):
         inv[item_name] = int(inv.get(item_name, 0)) + 1
         self._save(data)
         return f"🛒 {name} 花费 {price} 金币购买了「{item_name}」×1。发送「使用 {item_name}」使用。"
-
-    @filter.command("使用")
-    async def use_item(self, event: AstrMessageEvent):
-        async with self._lock:
-            text = self._handle_use_item(event)
-        yield event.plain_result(text)
 
     def _handle_use_item(self, event: AstrMessageEvent) -> str:
         name = event.get_sender_name()
@@ -956,12 +1022,6 @@ class SignInPlugin(Star):
 
         return f"✅ {name} 使用了「{item_name}」：{'，'.join(changes)}"
 
-    @filter.command("背包")
-    async def bag(self, event: AstrMessageEvent):
-        async with self._lock:
-            text = self._handle_bag(event)
-        yield event.plain_result(text)
-
     def _handle_bag(self, event: AstrMessageEvent) -> str:
         name = event.get_sender_name()
         key = self._user_key(event)
@@ -977,9 +1037,8 @@ class SignInPlugin(Star):
             lines.append(f"· {item} ×{cnt}")
         return "\n".join(lines)
 
-    @filter.command("宠物帮助")
-    async def pet_help(self, event: AstrMessageEvent):
-        text = (f"🐾 宠物系统玩法：\n"
+    def _help_pet_text(self) -> str:
+        return (f"🐾 宠物系统玩法：\n"
                 f"· 解锁宠物：解锁宠物（{self.pet_unlock_cost} 金币，每人限一只）\n"
                 f"· 查看：宠物 / 背包\n"
                 f"· 起名：更改宠物名字 <名字>\n"
@@ -989,11 +1048,9 @@ class SignInPlugin(Star):
                 f"· 每日签到可获宠物经验，并概率获得属性丸\n"
                 f"· 每日零点结算宠物状态（饱食/口渴/体力/心情/健康）\n"
                 f"· 管理员可编辑 后台.txt 自定义打工/玩耍/商店")
-        yield event.plain_result(text)
 
-    @filter.command("签到帮助")
-    async def help_all(self, event: AstrMessageEvent):
-        text = (f"📖 本插件全部功能指令：\n"
+    def _help_all_text(self) -> str:
+        return (f"📖 本插件全部功能指令：\n"
                 f"\n"
                 f"【签到】\n"
                 f"· 签到：每日签到，获得金币 / 好感度（有宠物时额外获得经验与属性丸）\n"
@@ -1026,23 +1083,13 @@ class SignInPlugin(Star):
                 f"· 保存后台配置 <内容>：覆盖 后台.txt\n"
                 f"· 导出数据：导出 data.json 到文件\n"
                 f"· 导入数据 <JSON>：导入 data.json")
-        yield event.plain_result(text)
 
     # ================= 数据管理（后台.txt 编辑 / 数据导入导出） =================
-    @filter.command("查看后台配置")
-    async def view_backend_config(self, event: AstrMessageEvent):
-        async with self._lock:
-            text = self._read_config_text()
+    def _handle_view_config(self) -> str:
+        text = self._read_config_text()
         if not text.strip():
-            yield event.plain_result("后台配置为空。")
-        else:
-            yield event.plain_result(f"当前 后台.txt 内容：\n{text}")
-
-    @filter.command("保存后台配置")
-    async def save_backend_config(self, event: AstrMessageEvent):
-        async with self._lock:
-            text = self._handle_save_backend_config(event)
-        yield event.plain_result(text)
+            return "后台配置为空。"
+        return f"当前 后台.txt 内容：\n{text}"
 
     def _handle_save_backend_config(self, event: AstrMessageEvent) -> str:
         parts = event.message_str.split(maxsplit=1)
@@ -1050,12 +1097,6 @@ class SignInPlugin(Star):
             return "格式：保存后台配置 <内容>（先「查看后台配置」复制全文，改好后粘贴到指令后）"
         ok, msg = self._write_config_text(parts[1].strip() + "\n")
         return f"✅ {msg}" if ok else f"❌ {msg}"
-
-    @filter.command("导出数据")
-    async def export_data(self, event: AstrMessageEvent):
-        async with self._lock:
-            text = self._handle_export_data()
-        yield event.plain_result(text)
 
     def _handle_export_data(self) -> str:
         data = self._load()
@@ -1070,12 +1111,6 @@ class SignInPlugin(Star):
         if len(s) <= 3500:
             return f"✅ 数据已导出到：{bak}\n内容：\n{s}"
         return f"✅ 数据已导出到：{bak}\n数据较大（{len(s)} 字符），请直接到上述路径取文件。"
-
-    @filter.command("导入数据")
-    async def import_data(self, event: AstrMessageEvent):
-        async with self._lock:
-            text = self._handle_import_data(event)
-        yield event.plain_result(text)
 
     def _handle_import_data(self, event: AstrMessageEvent) -> str:
         parts = event.message_str.split(maxsplit=1)
@@ -1117,7 +1152,7 @@ class SignInPlugin(Star):
         loser = game.players[loser_index]
         winners = [p for i, p in enumerate(game.players) if i != loser_index]
 
-        loser_key = f"{game.group_id}:{loser['id']}"
+        loser_key = loser["id"]
         actual_loss = min(game.stake, self._coins_of(data, loser_key))
         self._add_coins(data, loser_key, -actual_loss)
 
@@ -1133,7 +1168,7 @@ class SignInPlugin(Star):
 
         winner_names = []
         for w in winners:
-            wkey = f"{game.group_id}:{w['id']}"
+            wkey = w["id"]
             self._add_coins(data, wkey, share)
             wstat = self._ensure_stat(data, wkey)
             wstat["wins"] += 1
@@ -1172,12 +1207,6 @@ class SignInPlugin(Star):
         game.timer_task = asyncio.create_task(_timeout())
 
     # ================= 左轮手枪：指令 =================
-    @filter.command("装弹")
-    async def roulette_load(self, event: AstrMessageEvent):
-        async with self._lock:
-            text = self._handle_load(event)
-        yield event.plain_result(text)
-
     def _handle_load(self, event: AstrMessageEvent) -> str:
         gid = event.get_group_id()
         if not gid:
@@ -1203,7 +1232,7 @@ class SignInPlugin(Star):
         if stake < 1:
             return "金币必须为正整数。"
 
-        key = f"{gid}:{uid}"
+        key = uid
         data = self._load()
         if self._coins_of(data, key) < stake:
             return f"你的金币不足（当前 {self._coins_of(data, key)}，需要 {stake}）。"
@@ -1219,12 +1248,6 @@ class SignInPlugin(Star):
                 f"👥 发送「加入」参与（至少 {ROULETTE_MIN_PLAYERS} 人，最多 {ROULETTE_MAX_PLAYERS} 人）\n"
                 f"⏳ {ROULETTE_JOIN_TIMEOUT} 秒内无人加入则自动取消")
 
-    @filter.command("加入")
-    async def roulette_join(self, event: AstrMessageEvent):
-        async with self._lock:
-            text = self._handle_join(event)
-        yield event.plain_result(text)
-
     def _handle_join(self, event: AstrMessageEvent) -> str:
         gid = event.get_group_id()
         if not gid:
@@ -1239,7 +1262,7 @@ class SignInPlugin(Star):
         if len(game.players) >= ROULETTE_MAX_PLAYERS:
             return "本局人数已满。"
 
-        key = f"{gid}:{uid}"
+        key = uid
         data = self._load()
         if self._coins_of(data, key) < game.stake:
             return f"{name} 金币不足，无法加入（需要 {game.stake} 金币）。"
@@ -1253,12 +1276,6 @@ class SignInPlugin(Star):
                 f"👥 当前玩家（{len(game.players)}/{ROULETTE_MAX_PLAYERS}）：{game.player_names()}\n"
                 f"发起人可发送「开始」立即开始，或等待更多玩家加入。")
 
-    @filter.command("开始")
-    async def roulette_start(self, event: AstrMessageEvent):
-        async with self._lock:
-            text = self._handle_start(event)
-        yield event.plain_result(text)
-
     def _handle_start(self, event: AstrMessageEvent) -> str:
         gid = event.get_group_id()
         uid = event.get_sender_id()
@@ -1271,12 +1288,6 @@ class SignInPlugin(Star):
             return f"至少需要 {ROULETTE_MIN_PLAYERS} 名玩家才能开始。"
         self._start_game(game)
         return self._start_announcement(game)
-
-    @filter.command("开枪")
-    async def roulette_shoot(self, event: AstrMessageEvent):
-        async with self._lock:
-            text = self._handle_shoot(event)
-        yield event.plain_result(text)
 
     def _handle_shoot(self, event: AstrMessageEvent) -> str:
         gid = event.get_group_id()
@@ -1305,12 +1316,6 @@ class SignInPlugin(Star):
         self._save(data)
         self._games.pop(gid, None)
         return text
-
-    @filter.command("我的战绩")
-    async def roulette_stats(self, event: AstrMessageEvent):
-        async with self._lock:
-            text = self._handle_stats(event)
-        yield event.plain_result(text)
 
     def _handle_stats(self, event: AstrMessageEvent) -> str:
         name = event.get_sender_name()
