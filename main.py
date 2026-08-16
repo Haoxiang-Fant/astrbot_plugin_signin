@@ -1,9 +1,10 @@
 import asyncio
 import json
+import math
 import os
 import random
 import shutil
-from datetime import date, timedelta, datetime
+from datetime import date, timedelta, datetime, time
 
 from astrbot.api.event import filter, AstrMessageEvent
 from astrbot.api.event.filter import EventMessageType
@@ -108,7 +109,7 @@ class RouletteGame:
         return "、".join(p["name"] for p in self.players)
 
 
-@register("astrbot_plugin_signin", "sishijiu", "群签到 + 左轮手枪 + 宠物系统", "1.2.0")
+@register("astrbot_plugin_signin", "sishijiu", "群签到 + 左轮手枪 + 宠物养成 + 金币银行", "1.4.0")
 class SignInPlugin(Star):
     def __init__(self, context: Context, config: dict = None):
         super().__init__(context)
@@ -215,24 +216,31 @@ class SignInPlugin(Star):
             return self._handle_export_data()
         if head == "导入数据":
             return self._handle_import_data(event)
+        if head == "存款":
+            return self._handle_bank_deposit(event)
+        if head == "取款":
+            return self._handle_bank_withdraw(event)
+        if head == "银行统计":
+            return self._handle_bank_stats(event)
         return None
 
     # ================= 数据存取 =================
     def _load(self) -> dict:
         if not os.path.exists(DATA_FILE):
-            return {"users": {}, "roulette": {}, "pets": {}}
+            return {"users": {}, "roulette": {}, "pets": {}, "bank": {}}
         try:
             with open(DATA_FILE, "r", encoding="utf-8") as f:
                 data = json.load(f)
             if not isinstance(data, dict):
-                return {"users": {}, "roulette": {}, "pets": {}}
+                return {"users": {}, "roulette": {}, "pets": {}, "bank": {}}
             data.setdefault("users", {})
             data.setdefault("roulette", {})
             data.setdefault("pets", {})
+            data.setdefault("bank", {})
             return data
         except Exception as e:
             logger.error(f"[插件] 读取数据失败: {e}")
-            return {"users": {}, "roulette": {}, "pets": {}}
+            return {"users": {}, "roulette": {}, "pets": {}, "bank": {}}
 
     def _save(self, data: dict) -> None:
         try:
@@ -409,6 +417,11 @@ class SignInPlugin(Star):
             if settle_lines:
                 lines.append("")
                 lines.extend(settle_lines)
+
+        # ---- 银行：解锁到期的存单并发放利息 ----
+        settled, bank_paid = self._bank_settle(data, key)
+        if settled > 0:
+            lines.append(f"🏦 {settled} 笔存单已解锁，利息 +{bank_paid} 已自动入账，本金可发送「取款」取出。")
 
         self._save(data)
         return "\n".join(lines)
@@ -1187,6 +1200,11 @@ class SignInPlugin(Star):
                 f"· 背包：查看背包\n"
                 f"· 宠物帮助：查看宠物玩法详情\n"
                 f"\n"
+                f"【金币银行】\n"
+                f"· 存款 <金额>：存金币，明日 4:00 解锁，利息自动入账\n"
+                f"· 取款 <金额>：取出已解锁本金（不填金额则全部取出）\n"
+                f"· 银行统计：查看存款次数 / 存单 / 利息总额 / 最大存储额度\n"
+                f"\n"
                 f"【数据管理（管理员）】\n"
                 f"· 查看后台配置：查看 后台.txt 内容\n"
                 f"· 保存后台配置 <内容>：覆盖 后台.txt\n"
@@ -1236,6 +1254,207 @@ class SignInPlugin(Star):
                 return f"❌ 读取 data_import.json 失败: {e}"
         ok, msg = self._write_data_text(raw)
         return "✅ 导入成功！" if ok else f"❌ {msg}"
+
+    # ================= 金币银行 =================
+    def _bank_base_rate(self, data: dict, key: str) -> float:
+        """基础利率（%），由签到好感度等级决定"""
+        user = data.get("users", {}).get(key, {})
+        lv = self._level_of(float(user.get("favorability", 0.0)))
+        if lv <= 3:
+            lo, hi = 0.02, 0.10
+        elif lv <= 5:
+            lo, hi = 0.02, 0.15
+        elif lv <= 8:
+            lo, hi = 0.05, 0.15
+        else:
+            lo, hi = 0.05, 0.18
+        return round(random.uniform(lo, hi), 2)
+
+    def _bank_bonus_rate(self, data: dict, key: str) -> float:
+        """利率加成（%），由宠物等级决定；无宠物为 0"""
+        pet = data.get("pets", {}).get(key)
+        if not pet:
+            return 0.0
+        lv = int(pet.get("level", 1))
+        if lv <= 10:
+            lo, hi = 0.00, 0.01
+        elif lv <= 40:
+            lo, hi = 0.00, 0.02
+        elif lv <= 80:
+            lo, hi = 0.01, 0.02
+        else:
+            lo, hi = 0.01, 0.03
+        return round(random.uniform(lo, hi), 2)
+
+    @staticmethod
+    def _bank_hours() -> int:
+        """存款到第二天 4:00 的小时数（向上取整）"""
+        now = datetime.now()
+        unlock = datetime.combine(now.date() + timedelta(days=1), time(4, 0))
+        sec = (unlock - now).total_seconds()
+        return int(math.ceil(sec / 3600))
+
+    def _max_bank_storage(self, data: dict, key: str) -> int:
+        """最大存储额度 = 好感度×100 + 宠物经验"""
+        user = data.get("users", {}).get(key, {})
+        fav = float(user.get("favorability", 0.0))
+        pet = data.get("pets", {}).get(key)
+        pet_exp = float(pet.get("exp", 0.0)) if pet else 0.0
+        return int(fav * 100 + pet_exp)
+
+    def _bank_settle(self, data: dict, key: str):
+        """懒结算：到期的存单解锁、利息自动入账。返回 (解锁笔数, 已发放利息)"""
+        bank = data.get("bank", {}).get(key)
+        if not bank:
+            return 0, 0
+        ts = datetime.now().timestamp()
+        count = 0
+        paid = 0
+        for d in bank.get("deposits", []):
+            if d.get("status") == "locked" and ts >= d.get("unlock_ts", 0):
+                d["status"] = "matured"
+                pay = int(d.get("interest", 0))
+                paid += pay
+                if pay > 0:
+                    self._add_coins(data, key, pay)
+                bank["total_interest"] = round(float(bank.get("total_interest", 0)) + float(d.get("interest", 0)), 2)
+                count += 1
+        return count, paid
+
+    def _handle_bank_deposit(self, event: AstrMessageEvent) -> str:
+        name = event.get_sender_name()
+        key = self._user_key(event)
+        parts = event.message_str.split(maxsplit=1)
+        if len(parts) < 2:
+            return "格式：存款 <金额>"
+        try:
+            amount = int(parts[1].strip())
+        except ValueError:
+            return "金额必须是整数。格式：存款 <金额>"
+        if amount <= 0:
+            return "存款金额必须为正整数。"
+
+        data = self._load()
+        self._bank_settle(data, key)
+
+        max_store = self._max_bank_storage(data, key)
+        if max_store <= 0:
+            return "你的最大存储额度为 0（额度 = 好感度×100 + 宠物经验），先通过签到提升好感度 / 宠物经验吧。"
+
+        bank = data.setdefault("bank", {}).setdefault(key, {"deposits": [], "total_deposits": 0, "total_interest": 0})
+        stored = sum(int(d.get("amount", 0)) for d in bank.get("deposits", []))
+        if stored + amount > max_store:
+            return f"存款失败：超出最大存储额度（已存 {stored}，额度 {max_store} = 好感度×100 + 宠物经验）。"
+
+        if self._coins_of(data, key) < amount:
+            return f"金币不足（当前 {self._coins_of(data, key)}，需要 {amount}）。"
+
+        base_rate = self._bank_base_rate(data, key)
+        bonus_rate = self._bank_bonus_rate(data, key)
+        hours = self._bank_hours()
+        interest = int(round(amount * (base_rate + bonus_rate) / 100.0 * hours))
+
+        now = datetime.now()
+        unlock = datetime.combine(now.date() + timedelta(days=1), time(4, 0))
+
+        self._add_coins(data, key, -amount)
+        bank["deposits"].append({
+            "amount": amount,
+            "base_rate": base_rate,
+            "bonus_rate": bonus_rate,
+            "hours": hours,
+            "interest": interest,
+            "deposit_time": now.strftime("%Y-%m-%d %H:%M:%S"),
+            "unlock_ts": unlock.timestamp(),
+            "status": "locked",
+        })
+        bank["total_deposits"] = int(bank.get("total_deposits", 0)) + 1
+        self._save(data)
+
+        return (f"🏦 {name} 存款成功！\n"
+                f"💰 本金：{amount}（已锁定）\n"
+                f"📈 利率：{base_rate:.2f}% + {bonus_rate:.2f}% = {base_rate + bonus_rate:.2f}%/小时\n"
+                f"⏰ 计息 {hours} 小时，明日 4:00 解锁\n"
+                f"🧮 预计利息：{interest} 金币\n"
+                f"🔓 解锁后利息自动入账，本金发送「取款」取出。")
+
+    def _handle_bank_withdraw(self, event: AstrMessageEvent) -> str:
+        name = event.get_sender_name()
+        key = self._user_key(event)
+        parts = event.message_str.split(maxsplit=1)
+
+        data = self._load()
+        self._bank_settle(data, key)
+
+        bank = data.get("bank", {}).get(key)
+        if not bank or not bank.get("deposits"):
+            return f"{name} 银行里还没有存款，发送「存款 <金额>」存钱吧。"
+
+        matured_sum = sum(int(d.get("amount", 0)) for d in bank["deposits"] if d.get("status") == "matured")
+        locked_cnt = sum(1 for d in bank["deposits"] if d.get("status") == "locked")
+        if matured_sum <= 0:
+            return f"{name} 还没有已解锁的本金（锁定中的存单 {locked_cnt} 笔，明日 4:00 解锁）。"
+
+        if len(parts) < 2:
+            withdraw = matured_sum
+        else:
+            try:
+                withdraw = int(parts[1].strip())
+            except ValueError:
+                return "金额必须是整数。格式：取款 <金额>（不填则全部取出）"
+            if withdraw <= 0:
+                return "取款金额必须为正整数。"
+            if withdraw > matured_sum:
+                return f"已解锁的本金只有 {matured_sum}，无法取出 {withdraw}。"
+
+        remaining = withdraw
+        new_deposits = []
+        for d in bank["deposits"]:
+            if d.get("status") == "matured" and remaining > 0:
+                amt = int(d.get("amount", 0))
+                take = min(amt, remaining)
+                remaining -= take
+                if take < amt:
+                    d["amount"] = amt - take
+                    new_deposits.append(d)
+            else:
+                new_deposits.append(d)
+        bank["deposits"] = new_deposits
+
+        self._add_coins(data, key, withdraw)
+        self._save(data)
+        return f"🏦 {name} 取款成功：取出本金 {withdraw} 金币（已解锁本金剩余 {matured_sum - withdraw}）。"
+
+    def _handle_bank_stats(self, event: AstrMessageEvent) -> str:
+        name = event.get_sender_name()
+        key = self._user_key(event)
+        data = self._load()
+        settled, _ = self._bank_settle(data, key)
+        if settled > 0:
+            self._save(data)
+
+        max_store = self._max_bank_storage(data, key)
+        bank = data.get("bank", {}).get(key, {})
+        deposits = bank.get("deposits", [])
+        locked = [d for d in deposits if d.get("status") == "locked"]
+        matured = [d for d in deposits if d.get("status") == "matured"]
+        locked_sum = sum(int(d.get("amount", 0)) for d in locked)
+        matured_sum = sum(int(d.get("amount", 0)) for d in matured)
+
+        lines = [
+            f"🏦 {name} 的银行统计：",
+            f"📊 累计存款次数：{int(bank.get('total_deposits', 0))}",
+            f"💳 生效中存单：{len(deposits)} 笔（锁定 {len(locked)} / 可取 {len(matured)}）",
+            f"💰 银行内本金：{locked_sum + matured_sum}（锁定 {locked_sum} / 可取 {matured_sum}）",
+            f"🧮 已获取利息总额：{float(bank.get('total_interest', 0)):.2f} 金币",
+            f"📈 最大存储额度：{max_store}（= 好感度×100 + 宠物经验）",
+        ]
+        if deposits:
+            lines.append("📜 存单明细：")
+            for d in deposits:
+                st = "🔒" if d.get("status") == "locked" else "✅"
+                lines.append(f"· {st} 本金 {d['amount']}｜利率 {d['base_rate']:.2f}%+{d['bonus_rate']:.2f}%×{d['hours']}h｜利息 {d['interest']}")
+        return "\n".join(lines)
 
     # ================= 左轮手枪：内部逻辑 =================
     def _start_game(self, game: RouletteGame) -> None:
