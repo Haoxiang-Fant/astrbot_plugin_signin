@@ -12,6 +12,8 @@
 
       <div class="tabs">
         <button class="tab active" data-tab="config">后台.txt 编辑器</button>
+        <button class="tab" data-tab="crops">作物编辑器</button>
+        <button class="tab" data-tab="ferts">肥料编辑器</button>
         <button class="tab" data-tab="data">数据导入导出</button>
       </div>
 
@@ -23,6 +25,26 @@
         </div>
         <textarea id="config-text" spellcheck="false" placeholder="点击「加载」读取 后台.txt 内容..."></textarea>
         <p class="hint">编辑打工 / 玩耍 / 商店配置，保存后立即生效（无需重启）。</p>
+      </section>
+
+      <section id="panel-crops" class="panel hidden">
+        <div class="toolbar">
+          <button id="btn-load-crops">加载</button>
+          <button id="btn-save-crops" class="primary">保存</button>
+          <span id="status-crops" class="status"></span>
+        </div>
+        <textarea id="crops-text" spellcheck="false" placeholder="点击「加载」读取 作物.txt 内容..."></textarea>
+        <p class="hint">编辑作物配置（种子价格 / 产量 / 成熟时间等），保存后立即生效。</p>
+      </section>
+
+      <section id="panel-ferts" class="panel hidden">
+        <div class="toolbar">
+          <button id="btn-load-ferts">加载</button>
+          <button id="btn-save-ferts" class="primary">保存</button>
+          <span id="status-ferts" class="status"></span>
+        </div>
+        <textarea id="ferts-text" spellcheck="false" placeholder="点击「加载」读取 肥料.txt 内容..."></textarea>
+        <p class="hint">编辑肥料配置（价格 / 减时 / 增产 / 最大次数），保存后立即生效。</p>
       </section>
 
       <section id="panel-data" class="panel hidden">
