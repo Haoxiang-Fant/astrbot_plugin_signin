@@ -1,4 +1,4 @@
 name: astrbot_plugin_signin
-desc: 群签到 + 左轮手枪 + 宠物养成 + 金币银行插件：签到/打工/玩耍/商店/存款生息，宠物每日结算，含 WebUI 配置页与后台管理页
+desc: 群签到 + 左轮手枪 + 宠物养成 + 金币银行 + 农场插件：签到/打工/玩耍/商店/存款生息/种植收割，含 WebUI 配置页与后台管理页
 author: sishijiu
-version: 1.4.0
+version: 1.5.0

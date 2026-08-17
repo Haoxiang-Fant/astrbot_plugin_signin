@@ -28,6 +28,50 @@ async function saveConfig() {
   }
 }
 
+async function loadCrops() {
+  setStatus("status-crops", "加载中...");
+  try {
+    const data = await bridge.apiGet("farm/crops");
+    $("crops-text").value = (data && data.content) || "";
+    setStatus("status-crops", "✅ 已加载");
+  } catch (e) {
+    setStatus("status-crops", "❌ 加载失败：" + e.message);
+  }
+}
+
+async function saveCrops() {
+  const content = $("crops-text").value;
+  setStatus("status-crops", "保存中...");
+  try {
+    await bridge.apiPost("farm/crops", { content });
+    setStatus("status-crops", "✅ 已保存");
+  } catch (e) {
+    setStatus("status-crops", "❌ 保存失败：" + e.message);
+  }
+}
+
+async function loadFerts() {
+  setStatus("status-ferts", "加载中...");
+  try {
+    const data = await bridge.apiGet("farm/ferts");
+    $("ferts-text").value = (data && data.content) || "";
+    setStatus("status-ferts", "✅ 已加载");
+  } catch (e) {
+    setStatus("status-ferts", "❌ 加载失败：" + e.message);
+  }
+}
+
+async function saveFerts() {
+  const content = $("ferts-text").value;
+  setStatus("status-ferts", "保存中...");
+  try {
+    await bridge.apiPost("farm/ferts", { content });
+    setStatus("status-ferts", "✅ 已保存");
+  } catch (e) {
+    setStatus("status-ferts", "❌ 保存失败：" + e.message);
+  }
+}
+
 async function exportData() {
   setStatus("status-data", "导出中...");
   try {
@@ -72,6 +116,8 @@ function switchTab(name) {
     .querySelectorAll(".tab")
     .forEach((b) => b.classList.toggle("active", b.dataset.tab === name));
   $("panel-config").classList.toggle("hidden", name !== "config");
+  $("panel-crops").classList.toggle("hidden", name !== "crops");
+  $("panel-ferts").classList.toggle("hidden", name !== "ferts");
   $("panel-data").classList.toggle("hidden", name !== "data");
 }
 
@@ -80,6 +126,10 @@ document.querySelectorAll(".tab").forEach((b) =>
 );
 $("btn-load-config").addEventListener("click", loadConfig);
 $("btn-save-config").addEventListener("click", saveConfig);
+$("btn-load-crops").addEventListener("click", loadCrops);
+$("btn-save-crops").addEventListener("click", saveCrops);
+$("btn-load-ferts").addEventListener("click", loadFerts);
+$("btn-save-ferts").addEventListener("click", saveFerts);
 $("btn-export-data").addEventListener("click", exportData);
 $("btn-import-data").addEventListener("click", importData);
 
