@@ -1,4 +1,5 @@
 import asyncio
+import base64
 import json
 import math
 import os
@@ -16,6 +17,111 @@ try:
     from astrbot.core.utils.astrbot_path import get_astrbot_plugin_data_path
 except Exception:
     get_astrbot_plugin_data_path = None
+
+# aiocqhttp（OneBot v11 / NapCat）事件类型，用于底层直发以可靠获取 message_id
+try:
+    from astrbot.core.platform.sources.aiocqhttp.aiocqhttp_message_event import (
+        AiocqhttpMessageEvent,
+    )
+except Exception:
+    AiocqhttpMessageEvent = None
+
+
+def _chain_to_onebot_segments(chain):
+    """把 AstrBot 消息链转成 OneBot v11 段数组；本地图片读字节转 base64 最稳"""
+    segs = []
+    for comp in chain.chain:
+        cname = type(comp).__name__
+        if cname == "Plain":
+            segs.append({"type": "text", "data": {"text": comp.text}})
+        elif cname == "Image":
+            file_v = (
+                getattr(comp, "file", None)
+                or getattr(comp, "path", None)
+                or getattr(comp, "url", None)
+            )
+            data = {}
+            if isinstance(file_v, (bytes, bytearray)):
+                data["file"] = "base64://" + base64.b64encode(bytes(file_v)).decode()
+            elif isinstance(file_v, str) and os.path.exists(file_v):
+                with open(file_v, "rb") as f:
+                    data["file"] = "base64://" + base64.b64encode(f.read()).decode()
+            elif file_v:
+                data["file"] = file_v  # URL / file:// / 服务端相对路径
+            if data:
+                segs.append({"type": "image", "data": data})
+        elif cname == "At":
+            qq = getattr(comp, "qq", None)
+            if qq is not None:
+                segs.append({"type": "at", "data": {"qq": str(qq)}})
+        elif cname == "Record":
+            file_v = (
+                getattr(comp, "file", None)
+                or getattr(comp, "path", None)
+                or getattr(comp, "url", None)
+            )
+            data = {}
+            if isinstance(file_v, (bytes, bytearray)):
+                data["file"] = "base64://" + base64.b64encode(bytes(file_v)).decode()
+            elif isinstance(file_v, str) and os.path.exists(file_v):
+                with open(file_v, "rb") as f:
+                    data["file"] = "base64://" + base64.b64encode(f.read()).decode()
+            elif file_v:
+                data["file"] = file_v
+            if data:
+                segs.append({"type": "record", "data": data})
+        else:
+            logger.warning(f"[插件] 序列化忽略未知消息组件 {cname}")
+    return segs
+
+
+async def _send_with_mid(event, chain):
+    """发送消息链并尽可能拿到 message_id（用于定时撤回）。
+
+    1) aiocqhttp：用 event.bot.api.call_action 直发 OneBot 消息，响应中的 message_id 最可靠；
+    2) QQ 官方机器人：send_by_session 后从 platform._session_last_message_id 取；
+    3) 兜底：event.send(chain)（返回值可能为 None）。
+    """
+    # 1) aiocqhttp（OneBot v11 / NapCat 等）
+    if AiocqhttpMessageEvent is not None and isinstance(event, AiocqhttpMessageEvent):
+        bot = getattr(event, "bot", None)
+        call_action = getattr(getattr(bot, "api", None), "call_action", None)
+        if call_action is not None:
+            segs = _chain_to_onebot_segments(chain)
+            if segs:
+                payloads = {"message": segs}
+                if event.is_private_chat():
+                    payloads["user_id"] = event.get_sender_id()
+                    action = "send_private_msg"
+                else:
+                    payloads["group_id"] = event.get_group_id()
+                    action = "send_group_msg"
+                try:
+                    result = await call_action(action, **payloads)
+                    mid = result.get("message_id") if isinstance(result, dict) else None
+                    if mid is not None:
+                        logger.info(f"[插件] aiocqhttp 直发成功，message_id={mid!r}")
+                    else:
+                        logger.warning(f"[插件] aiocqhttp 直发响应无 message_id: {result!r}")
+                    return mid
+                except Exception as e:
+                    logger.error(f"[插件] aiocqhttp 直发失败，回退 event.send: {e}")
+            else:
+                logger.warning("[插件] 消息链无法转成 OneBot 段，回退 event.send")
+        else:
+            logger.warning("[插件] aiocqhttp 事件无 api.call_action，跳过直发")
+    # 2) QQ 官方机器人
+    platform = getattr(getattr(event, "bot", None), "platform", None)
+    if platform is not None and hasattr(platform, "send_by_session"):
+        try:
+            await platform.send_by_session(event.session, chain)
+            mid = getattr(platform, "_session_last_message_id", {}).get(event.session_id)
+            logger.info(f"[插件] QQ官方 send_by_session 发送，message_id={mid!r}")
+            return mid
+        except Exception as e:
+            logger.error(f"[插件] QQ官方发送失败，回退 event.send: {e}")
+    # 3) 兜底
+    return await event.send(chain)
 
 # ============ 签到 / 好感度 ============
 MIN_COINS = 30          # 每次签到最少获得的金币
@@ -67,6 +173,44 @@ FARM_GRADES = [
 FARM_UPGRADE_COSTS = [1000, 1500, 2000, 3000]
 # =============================================
 
+# ============ 银行贷款 ============
+LOAN_SPECIAL_AMOUNT = 2500       # 强制解锁特别贷款金额
+LOAN_SPECIAL_RATE = 1.0          # 特别贷款日息 1%
+LOAN_SPECIAL_DAYS = 30           # 特别贷款限期 30 天
+LOAN_SPECIAL_TAKE = 0.2          # 特别贷款逾期后收取仓库价值比例（20%）
+LOAN_COIN_DEDUCT = 0.2           # 逾期后获取金币自动扣 20% 还款
+LOAN_FAV_DROP_SPECIAL = (1.0, 1.5)      # 特别贷款逾期每日好感度降低范围
+LOAN_FAV_DROP_NORMAL = (1.01, 1.25)     # 一般逾期每日好感度降低范围
+LOAN_OVERDUE_YEAR_LIMIT = 4      # 每年最多逾期次数
+LOAN_GENERAL_OVERDUE_DAYS = 15   # 一般/自定义套餐逾期天数
+LOAN_SHORT_GRACE_DAYS = 10       # 短期套餐免息天数
+LOAN_SHORT_RATE = 6.0            # 短期套餐逾期日利率
+LOAN_DAILY_MULT = 2.0            # 每日累计贷款上限 = 2 × 套餐上限
+LOAN_FARM_ROLLBACK_DAYS = 30     # 逾期超 30 天农场回退
+LOAN_AUTO_TIME = (23, 0)         # 每日自动卖仓库/自动签到时间
+# =============================================
+
+# 需要以图片形式响应的指令（文本响应自动转图片），值为图片标题
+IMAGE_COMMANDS = {
+    "签到": "签到",
+    "我的签到": "我的签到",
+    "装弹": "左轮手枪",
+    "加入": "左轮手枪",
+    "开始": "左轮手枪",
+    "开枪": "左轮手枪",
+    "我的战绩": "我的战绩",
+    "存款": "金币银行",
+    "取款": "金币银行",
+    "银行统计": "金币银行",
+    "借款": "银行贷款",
+    "还款": "银行贷款",
+    "我的贷款": "我的贷款",
+    "我的征信": "我的征信",
+}
+
+# 插件消息发送后多少秒撤回（防刷屏，0 = 不撤回）
+RECALL_AFTER = 15
+
 PLUGIN_NAME = "astrbot_plugin_signin"
 _PLUGIN_DIR = os.path.dirname(os.path.abspath(__file__))
 
@@ -84,6 +228,7 @@ DATA_FILE = os.path.join(_DATA_DIR, "data.json")
 CONFIG_FILE = os.path.join(_DATA_DIR, "后台.txt")
 CROP_FILE = os.path.join(_DATA_DIR, "作物.txt")
 FERT_FILE = os.path.join(_DATA_DIR, "肥料.txt")
+LOAN_FILE = os.path.join(_DATA_DIR, "贷款套餐.txt")
 FONT_FILE = os.path.join(_PLUGIN_DIR, "OPPOSans-M.ttf")
 
 
@@ -94,6 +239,7 @@ def _migrate_old_data_files():
         ("后台.txt", CONFIG_FILE),
         ("作物.txt", CROP_FILE),
         ("肥料.txt", FERT_FILE),
+        ("贷款套餐.txt", LOAN_FILE),
     ]
     try:
         for fn, target in pairs:
@@ -108,6 +254,26 @@ _migrate_old_data_files()
 
 ATTR_LABELS = {"satiety": "饱食度", "thirst": "口渴值", "stamina": "体力", "mood": "心情值", "health": "健康度"}
 ATTR_SHORT = {"satiety": "饱食", "thirst": "口渴", "stamina": "体力", "mood": "心情", "health": "健康"}
+
+
+def _parse_item_qty(message_str):
+    """解析「<指令> <道具名> [数量]」→ (名称, 数量, 错误提示)；数量省略时默认 1"""
+    parts = message_str.split(maxsplit=2)
+    if len(parts) < 2:
+        return None, None, "格式：<道具名> [数量]，例如：属性丸 5"
+    item_name = parts[1].strip()
+    qty = 1
+    if len(parts) >= 3:
+        qty_s = parts[2].strip()
+        try:
+            qty = int(qty_s)
+        except ValueError:
+            return None, None, f"数量「{qty_s}」不是数字，应为整数。"
+        if qty < 1:
+            return None, None, "数量至少为 1。"
+        if qty > 999:
+            return None, None, "数量最多为 999。"
+    return item_name, qty, None
 
 
 class RouletteGame:
@@ -133,7 +299,7 @@ class RouletteGame:
         return "、".join(p["name"] for p in self.players)
 
 
-@register("astrbot_plugin_signin", "sishijiu", "群签到 + 左轮手枪 + 宠物养成 + 金币银行 + 农场", "1.5.0")
+@register("astrbot_plugin_signin", "sishijiu", "群签到 + 左轮手枪 + 宠物养成 + 金币银行 + 农场", "1.6.0")
 class SignInPlugin(Star):
     def __init__(self, context: Context, config: dict = None):
         super().__init__(context)
@@ -190,6 +356,12 @@ class SignInPlugin(Star):
         context.register_web_api(
             f"/{PLUGIN_NAME}/farm/ferts", self.web_save_ferts, ["POST"], "保存肥料.txt"
         )
+        context.register_web_api(
+            f"/{PLUGIN_NAME}/loan/packages", self.web_get_loan_pkgs, ["GET"], "读取贷款套餐.txt"
+        )
+        context.register_web_api(
+            f"/{PLUGIN_NAME}/loan/packages", self.web_save_loan_pkgs, ["POST"], "保存贷款套餐.txt"
+        )
 
     # ================= 消息路由（无需前缀 / @） =================
     @filter.event_message_type(EventMessageType.ALL)
@@ -199,13 +371,123 @@ class SignInPlugin(Star):
             return
         head = text.split(maxsplit=1)[0]
         async with self._lock:
+            # 贷款逾期懒处理（标记逾期 + 每日好感度降低 / 23 点自动卖仓库签到还款）
+            data = self._load()
+            key = event.get_sender_id()
+            if data.get("loans", {}).get(key):
+                sync_c = self._loan_sync(data, key)
+                daily_c = self._loan_daily_process(data, key)
+                if sync_c or daily_c:
+                    self._save(data)
             reply = self._route(head, event)
         if reply is None:
             return
         if isinstance(reply, tuple) and len(reply) == 2 and reply[0] == "image":
-            yield event.image_result(reply[1])
+            chain = event.image_result(reply[1])
         else:
-            yield event.plain_result(reply)
+            # 指定指令的文本响应自动转成图片（签到/左轮/银行）
+            img = self._to_image_for_command(head, reply)
+            chain = event.image_result(img[1]) if img is not None else event.plain_result(reply)
+        # 发送并安排 RECALL_AFTER 秒后撤回；优先走适配器底层发送以可靠拿到 message_id
+        try:
+            mid = await _send_with_mid(event, chain)
+            logger.info(f"[插件] 消息已发送，message_id={mid!r}")
+            if mid:
+                asyncio.create_task(self._recall_later(event, mid))
+            else:
+                logger.warning("[插件] 未能获取 message_id，无法安排撤回")
+        except Exception as e:
+            logger.error(f"[插件] 主动发送失败，改用响应管线: {e}")
+            yield chain
+
+    async def _recall_later(self, event, mid):
+        """RECALL_AFTER 秒后撤回消息：优先走适配器原生撤回接口（参考 astrbot_plugin_music）"""
+        try:
+            await asyncio.sleep(RECALL_AFTER)
+        except asyncio.CancelledError:
+            return
+        try:
+            # 1) aiocqhttp：event.bot.delete_msg（OneBot v11 标准撤回接口）
+            if AiocqhttpMessageEvent is not None and isinstance(event, AiocqhttpMessageEvent):
+                bot = getattr(event, "bot", None)
+                delete_msg = getattr(bot, "delete_msg", None)
+                if delete_msg is not None:
+                    try:
+                        await delete_msg(message_id=int(mid))
+                        logger.info(f"[插件] 撤回成功（event.bot.delete_msg, mid={mid!r}）")
+                        return
+                    except Exception as e:
+                        logger.error(f"[插件] event.bot.delete_msg 撤回失败: {e}")
+            # 2) QQ 官方机器人：botpy 原生撤回（照搬音乐插件做法）
+            try:
+                from botpy.http import Route
+                from botpy.message import (
+                    C2CMessage,
+                    DirectMessage,
+                    GroupMessage,
+                    Message as BotpyMessage,
+                )
+            except Exception:
+                Route = GroupMessage = C2CMessage = DirectMessage = BotpyMessage = None
+            if Route is not None:
+                source = getattr(getattr(event, "message_obj", None), "raw_message", None)
+                bot = getattr(event, "bot", None)
+                try:
+                    route_path = None
+                    route_params = {}
+                    if isinstance(source, GroupMessage):
+                        route_path = "/v2/groups/{group_openid}/messages/{message_id}"
+                        route_params["group_openid"] = source.group_openid
+                    elif isinstance(source, C2CMessage):
+                        route_path = "/v2/users/{openid}/messages/{message_id}"
+                        route_params["openid"] = source.author.user_openid
+                    elif isinstance(source, DirectMessage):
+                        route_path = "/dms/{guild_id}/messages/{message_id}"
+                        route_params["guild_id"] = source.guild_id
+                    elif isinstance(source, BotpyMessage):
+                        await bot.api.recall_message(
+                            channel_id=source.channel_id, message_id=str(mid)
+                        )
+                        logger.info("[插件] 撤回成功（botpy api.recall_message）")
+                        return
+                    if route_path:
+                        await bot.api._http.request(
+                            Route("DELETE", route_path, message_id=str(mid), **route_params)
+                        )
+                        logger.info("[插件] 撤回成功（botpy DELETE 路由）")
+                        return
+                except Exception as e:
+                    logger.error(f"[插件] QQ官方撤回失败: {e}")
+            # 3) 通用兜底：platform / event 的撤回类方法
+            platform = getattr(event, "platform", None)
+            if platform is not None and hasattr(platform, "recall_message"):
+                await platform.recall_message(mid)
+                logger.info("[插件] 撤回成功（platform.recall_message）")
+                return
+            if hasattr(event, "recall_message"):
+                await event.recall_message(mid)
+                logger.info("[插件] 撤回成功（event.recall_message）")
+                return
+            if platform is not None:
+                for name in ("delete_message", "delete_msg", "recall_msg"):
+                    fn = getattr(platform, name, None)
+                    if fn:
+                        await fn(mid)
+                        logger.info(f"[插件] 撤回成功（{name}）")
+                        return
+            cands = []
+            if platform is not None:
+                cands = [a for a in dir(platform) if any(k in a.lower() for k in ("recall", "delete", "withdraw"))]
+            logger.warning(f"[插件] 未找到可用撤回接口。event 属性: {[a for a in dir(event) if not a.startswith('_')][:40]}；platform 相关方法: {cands}")
+        except Exception as e:
+            logger.error(f"[插件] 撤回消息失败: {e}")
+
+    def _to_image_for_command(self, head: str, reply):
+        # 所有文本回复都转为图片；未映射标题的指令用指令名作标题
+        if not isinstance(reply, str) or not reply.strip():
+            return None
+        title = IMAGE_COMMANDS.get(head, head)
+        return self._render_text_image(title, reply.splitlines())
 
     def _route(self, head: str, event: AstrMessageEvent):
         if head == "签到":
@@ -264,6 +546,14 @@ class SignInPlugin(Star):
             return self._handle_bank_withdraw(event)
         if head == "银行统计":
             return self._handle_bank_stats(event)
+        if head == "借款":
+            return self._handle_loan_borrow(event)
+        if head == "还款":
+            return self._handle_loan_repay(event)
+        if head == "我的贷款":
+            return self._handle_my_loans(event)
+        if head == "我的征信":
+            return self._handle_my_credit(event)
         if head == "解锁农场":
             return self._handle_farm_unlock(event)
         if head == "购买土地":
@@ -299,21 +589,22 @@ class SignInPlugin(Star):
     # ================= 数据存取 =================
     def _load(self) -> dict:
         if not os.path.exists(DATA_FILE):
-            return {"users": {}, "roulette": {}, "pets": {}, "bank": {}, "farms": {}}
+            return {"users": {}, "roulette": {}, "pets": {}, "bank": {}, "farms": {}, "loans": {}}
         try:
             with open(DATA_FILE, "r", encoding="utf-8") as f:
                 data = json.load(f)
             if not isinstance(data, dict):
-                return {"users": {}, "roulette": {}, "pets": {}, "bank": {}, "farms": {}}
+                return {"users": {}, "roulette": {}, "pets": {}, "bank": {}, "farms": {}, "loans": {}}
             data.setdefault("users", {})
             data.setdefault("roulette", {})
             data.setdefault("pets", {})
             data.setdefault("bank", {})
             data.setdefault("farms", {})
+            data.setdefault("loans", {})
             return data
         except Exception as e:
             logger.error(f"[插件] 读取数据失败: {e}")
-            return {"users": {}, "roulette": {}, "pets": {}, "bank": {}, "farms": {}}
+            return {"users": {}, "roulette": {}, "pets": {}, "bank": {}, "farms": {}, "loans": {}}
 
     def _save(self, data: dict) -> None:
         try:
@@ -402,6 +693,14 @@ class SignInPlugin(Star):
         return int(v) if isinstance(v, (int, float)) else 0
 
     def _add_coins(self, data: dict, key: str, amount: int) -> None:
+        # 有逾期贷款时，获得金币自动划扣 20% 还款
+        if amount > 0 and data.get("loans", {}).get(key):
+            rec = data["loans"][key]
+            if self._has_overdue_now(rec, datetime.now().timestamp()):
+                take = int(amount * LOAN_COIN_DEDUCT)
+                if take > 0:
+                    repaid = self._repay_loans(data, key, take)
+                    amount -= int(repaid)
         user = self._ensure_user(data, key)
         cur = user.get("coins")
         if not isinstance(cur, (int, float)):
@@ -907,6 +1206,21 @@ class SignInPlugin(Star):
                 return error_response(msg, status_code=400)
             return json_response({"saved": True})
 
+    async def web_get_loan_pkgs(self):
+        async with self._lock:
+            return json_response({"content": self._read_file(LOAN_FILE)})
+
+    async def web_save_loan_pkgs(self):
+        async with self._lock:
+            payload = await request.json(default={})
+            content = payload.get("content")
+            if not isinstance(content, str):
+                return error_response("content 必须是字符串", status_code=400)
+            ok, msg = self._write_file(LOAN_FILE, content)
+            if not ok:
+                return error_response(msg, status_code=400)
+            return json_response({"saved": True})
+
     # ================= 宠物：指令 =================
     def _handle_unlock_pet(self, event: AstrMessageEvent) -> str:
         name = event.get_sender_name()
@@ -1000,6 +1314,12 @@ class SignInPlugin(Star):
             return f"{name} 还没有宠物，发送「解锁宠物」领养一只吧。"
         self._bring_pet_up_to_date(pet, date.today().isoformat())
 
+        # 冷却检查：打工中的宠物不能继续打工（冷却 = 该工作的「需要时间」）
+        now_ts = datetime.now().timestamp()
+        work_until = float(pet.get("work_until", 0) or 0)
+        if now_ts < work_until:
+            return f"{name} 的宠物还在打工中（冷却剩余 {self._fmt_duration(work_until - now_ts)}），暂时不能打工。"
+
         # 要求检查
         if pet["level"] < job["min_level"]:
             return f"宠物等级不足（需要 Lv.{int(job['min_level'])}，当前 Lv.{pet['level']}）。"
@@ -1023,9 +1343,12 @@ class SignInPlugin(Star):
         pet["exp"] = round(float(pet.get("exp", 0.0)) + job["exp"], 2)
         lvl_msg = self._apply_exp(pet)
         self._clamp_attrs(pet)
+        # 进入打工冷却
+        pet["work_until"] = now_ts + int(job["time"]) * 60
         self._save(data)
 
-        return (f"💼 {name} 的宠物去「{job['name']}」打工完成！\n"
+        cd = f"（冷却 {int(job['time'])} 分钟）" if job["time"] > 0 else ""
+        return (f"💼 {name} 的宠物去「{job['name']}」打工完成！{cd}\n"
                 f"💰 金币 +{int(job['coins'])}，🐾 经验 +{job['exp']:.1f}{lvl_msg}")
 
     def _work_list(self):
@@ -1060,6 +1383,12 @@ class SignInPlugin(Star):
             return f"{name} 还没有宠物，发送「解锁宠物」领养一只吧。"
         self._bring_pet_up_to_date(pet, date.today().isoformat())
 
+        # 冷却检查：玩耍中的宠物不能继续玩耍（冷却 = 该玩耍项目的「需要时间」）
+        now_ts = datetime.now().timestamp()
+        play_until = float(pet.get("play_until", 0) or 0)
+        if now_ts < play_until:
+            return f"{name} 的宠物还在玩耍中（冷却剩余 {self._fmt_duration(play_until - now_ts)}），暂时不能玩耍。"
+
         if pet["level"] < play["min_level"]:
             return f"宠物等级不足（需要 Lv.{int(play['min_level'])}，当前 Lv.{pet['level']}）。"
         if pet["health"] < play["min_health"]:
@@ -1086,8 +1415,11 @@ class SignInPlugin(Star):
             pet["money_event_count"] = int(pet.get("money_event_count", 0)) + 1
             bonus = f"\n🍀 触发「捡到钱了」事件，金币 +{self.money_event_gain}！"
 
+        # 进入玩耍冷却
+        pet["play_until"] = now_ts + int(play["time"]) * 60
         self._save(data)
-        return (f"🎾 {name} 的宠物去「{play['name']}」玩耍完成！\n"
+        cd = f"（冷却 {int(play['time'])} 分钟）" if play["time"] > 0 else ""
+        return (f"🎾 {name} 的宠物去「{play['name']}」玩耍完成！{cd}\n"
                 f"🐾 经验 +{play['exp']:.1f}，😊 心情 +{play['mood']:.1f}{lvl_msg}{bonus}")
 
     def _play_list(self):
@@ -1106,14 +1438,14 @@ class SignInPlugin(Star):
         cfg = self._load_config()
         if not cfg["shop"]:
             return "商店暂无商品（请管理员编辑 后台.txt）。"
-        lines = ["发送「购买 <道具名>」购买，发送「使用 <道具名>」使用", ""]
+        lines = ["发送「购买 <道具名> [数量]」购买，发送「使用 <道具名> [数量]」使用", ""]
         for it in cfg["shop"]:
             lines.append(f"· {it['name']}（{it['type']}）{int(it['price'])}金币：{self._effect_desc(it['effects'])}")
         lines.append(f"· {PILL_NAME}（特殊）：随机提升全属性 1.0~5.0（签到有几率获得）")
         img = self._render_text_image("宠物商店", lines)
         if img is not None:
             return img
-        return "\n".join(["🛒 宠物商店（发送「购买 <道具名>」购买，发送「使用 <道具名>」使用）："] + lines)
+        return "\n".join(["🛒 宠物商店（发送「购买 <道具名> [数量]」购买，发送「使用 <道具名> [数量]」使用）："] + lines)
 
     def _effect_desc(self, effects: dict) -> str:
         parts = []
@@ -1189,11 +1521,10 @@ class SignInPlugin(Star):
     def _handle_buy(self, event: AstrMessageEvent) -> str:
         name = event.get_sender_name()
         key = self._user_key(event)
-        parts = event.message_str.split(maxsplit=1)
-        if len(parts) < 2:
-            return "格式：购买 <道具名>"
+        item_name, qty, err = _parse_item_qty(event.message_str)
+        if err:
+            return f"格式：购买 <道具名> [数量]。{err}"
 
-        item_name = parts[1].strip()
         cfg = self._load_config()
         item = next((it for it in cfg["shop"] if it["name"] == item_name), None)
         if not item:
@@ -1205,23 +1536,24 @@ class SignInPlugin(Star):
             return f"{name} 还没有宠物，发送「解锁宠物」领养一只吧。"
 
         price = int(item["price"])
-        if self._coins_of(data, key) < price:
-            return f"金币不足（需要 {price}，当前 {self._coins_of(data, key)}）。"
+        total = price * qty
+        coins = self._coins_of(data, key)
+        if coins < total:
+            return f"金币不足：{qty} × {price} = {total} 金币，当前 {coins}。"
 
-        self._add_coins(data, key, -price)
+        self._add_coins(data, key, -total)
         inv = pet.setdefault("inventory", {})
-        inv[item_name] = int(inv.get(item_name, 0)) + 1
+        inv[item_name] = int(inv.get(item_name, 0)) + qty
         self._save(data)
-        return f"🛒 {name} 花费 {price} 金币购买了「{item_name}」×1。发送「使用 {item_name}」使用。"
+        return f"🛒 {name} 花费 {total} 金币购买了「{item_name}」×{qty}。发送「使用 {item_name}」使用。"
 
     def _handle_use_item(self, event: AstrMessageEvent) -> str:
         name = event.get_sender_name()
         key = self._user_key(event)
-        parts = event.message_str.split(maxsplit=1)
-        if len(parts) < 2:
-            return "格式：使用 <道具名>"
+        item_name, qty, err = _parse_item_qty(event.message_str)
+        if err:
+            return f"格式：使用 <道具名> [数量]。{err}"
 
-        item_name = parts[1].strip()
         data = self._load()
         pet = data.get("pets", {}).get(key)
         if not pet:
@@ -1236,47 +1568,55 @@ class SignInPlugin(Star):
 
         # 属性丸（特殊道具）
         if item_name == PILL_NAME:
-            if int(inv.get(PILL_NAME, 0)) < 1:
-                return f"你没有属性丸（签到有几率获得）。"
+            have = int(inv.get(PILL_NAME, 0))
+            if have < qty:
+                return f"属性丸不足：需要 {qty} 个，当前 {have} 个（签到有几率获得）。"
             boosts = {}
-            for attr in ATTR_LABELS:
-                boosts[attr] = round(random.uniform(1.0, 5.0) * pos_mult, 2)
-                pet[attr] = round(pet[attr] + boosts[attr], 2)
-            inv[PILL_NAME] = int(inv.get(PILL_NAME, 0)) - 1
+            for _ in range(qty):
+                for attr in ATTR_LABELS:
+                    v = round(random.uniform(1.0, 5.0) * pos_mult, 2)
+                    boosts[attr] = round(boosts.get(attr, 0) + v, 2)
+                    pet[attr] = round(pet[attr] + v, 2)
+            inv[PILL_NAME] = have - qty
             if inv[PILL_NAME] <= 0:
                 inv.pop(PILL_NAME, None)
             self._clamp_attrs(pet)
             self._save(data)
             desc = "，".join(f"{ATTR_SHORT[a]}+{v:.1f}" for a, v in boosts.items())
-            return f"💊 {name} 使用了属性丸：{desc}"
+            return f"💊 {name} 使用了属性丸×{qty}：{desc}"
 
         # 商店道具
         cfg = self._load_config()
         item = next((it for it in cfg["shop"] if it["name"] == item_name), None)
         if not item:
             return f"没有「{item_name}」这个道具，发送「商店」查看。"
-        if int(inv.get(item_name, 0)) < 1:
-            return f"你没有「{item_name}」，发送「购买 {item_name}」购买。"
+        have = int(inv.get(item_name, 0))
+        if have < qty:
+            return f"你没有足够的「{item_name}」：需要 {qty} 个，当前 {have} 个。发送「购买 {item_name} {qty}」购买。"
 
-        changes = []
-        for attr in ATTR_LABELS:
-            val = item["effects"].get(attr, 0)
-            if val > 0:
-                applied = round(val * pos_mult, 2)
-            elif val < 0:
-                applied = round(val * neg_mult, 2)
-            else:
-                continue
-            pet[attr] = round(pet[attr] + applied, 2)
-            changes.append(f"{ATTR_SHORT[attr]}{applied:+.1f}")
+        changes = {}
+        for _ in range(qty):
+            for attr in ATTR_LABELS:
+                val = item["effects"].get(attr, 0)
+                if val > 0:
+                    applied = round(val * pos_mult, 2)
+                elif val < 0:
+                    applied = round(val * neg_mult, 2)
+                else:
+                    continue
+                pet[attr] = round(pet[attr] + applied, 2)
+                changes[attr] = round(changes.get(attr, 0) + applied, 2)
 
-        inv[item_name] = int(inv.get(item_name, 0)) - 1
+        inv[item_name] = have - qty
         if inv[item_name] <= 0:
             inv.pop(item_name, None)
         self._clamp_attrs(pet)
         self._save(data)
 
-        return f"✅ {name} 使用了「{item_name}」：{'，'.join(changes)}"
+        if not changes:
+            return f"✅ {name} 使用了「{item_name}」×{qty}（无效果）。"
+        desc = "，".join(f"{ATTR_SHORT[a]}{v:+.1f}" for a, v in changes.items())
+        return f"✅ {name} 使用了「{item_name}」×{qty}：{desc}"
 
     def _handle_bag(self, event: AstrMessageEvent) -> str:
         name = event.get_sender_name()
@@ -1313,8 +1653,8 @@ class SignInPlugin(Star):
                 ("打工 / 打工 <名称>", "打工赚金币与经验"),
                 ("玩耍 / 玩耍 <名称>", "玩耍赚经验与心情"),
                 ("商店", "查看宠物商店"),
-                ("购买 <道具名>", "购买道具"),
-                ("使用 <道具名>", "使用道具"),
+                ("购买 <道具名> [数量]", "购买道具（不填数量 = 1 个）"),
+                ("使用 <道具名> [数量]", "使用道具（不填数量 = 1 个）"),
                 ("背包", "查看背包"),
             ]),
         ]
@@ -1372,13 +1712,16 @@ class SignInPlugin(Star):
                 ("打工 / 打工 <名称>", "打工赚金币与经验"),
                 ("玩耍 / 玩耍 <名称>", "玩耍赚经验与心情"),
                 ("商店", "查看宠物商店"),
-                ("购买 <道具名> / 使用 <道具名>", "购买 / 使用道具"),
+                ("购买 / 使用 <道具名> [数量]", "购买 / 使用道具（不填数量 = 1 个）"),
                 ("背包", "查看背包"),
             ]),
             ("金币银行", [
                 ("存款 <金额>", "存钱生息（不填=存最大可存金额）"),
                 ("取款 <金额>", "取出本金（不填=全部）"),
                 ("银行统计", "查看存款次数 / 存单 / 利息 / 额度"),
+                ("借款 <套餐> <金额>", "贷款（0=特别 / 1=一般 / 2=短期 / 3~10=自定义）"),
+                ("还款 <套餐> [金额]", "还款（不填套餐=还全部）"),
+                ("我的贷款 / 我的征信", "查看贷款账单 / 征信"),
             ]),
             ("农场", [
                 ("解锁农场 / 购买土地", "解锁农场 / 开垦土地"),
@@ -1687,6 +2030,573 @@ class SignInPlugin(Star):
                 lines.append(f"· {st} 本金 {self._dep_amount(d)}｜利率 {d.get('base_rate', 0):.2f}%+{d.get('bonus_rate', 0):.2f}%×{d.get('hours', 0)}h｜利息 {d.get('interest', 0)}")
         return "\n".join(lines)
 
+    # ================= 银行贷款 =================
+    def _load_loan_packages(self):
+        """自定义贷款套餐（代码 3~10）"""
+        pkgs = []
+        if not os.path.exists(LOAN_FILE):
+            return pkgs
+        try:
+            with open(LOAN_FILE, "r", encoding="utf-8") as f:
+                raw_lines = f.readlines()
+        except Exception as e:
+            logger.error(f"[插件] 读取贷款套餐配置失败: {e}")
+            return pkgs
+        cur = None
+        for raw in raw_lines:
+            line = raw.strip()
+            if not line or line.startswith("#"):
+                continue
+            if line.startswith("[") and line.endswith("]"):
+                inner = line[1:-1]
+                if ":" in inner:
+                    _, code = inner.split(":", 1)
+                    cur = {"code": code.strip(), "data": {}}
+                    pkgs.append(cur)
+                continue
+            if cur is None:
+                continue
+            if "=" in line:
+                k, v = line.split("=", 1)
+                cur["data"][k.strip()] = v.strip()
+        result = []
+        for it in pkgs:
+            d = it["data"]
+            try:
+                result.append({
+                    "code": int(it["code"]),
+                    "max_amount": int(self._f(d.get("最大金额", 0))),
+                    "fav_req": int(self._f(d.get("好感度等级要求", 0))),
+                    "pet_req": int(self._f(d.get("宠物等级要求", 0))),
+                    "farm_req": int(self._f(d.get("农场等级要求", 0))),
+                    "rate": self._f(d.get("利息", 0)),
+                })
+            except Exception:
+                continue
+        return result
+
+    def _loans_of(self, data, key):
+        return data.get("loans", {}).get(key)
+
+    def _ensure_loans(self, data, key):
+        return data.setdefault("loans", {}).setdefault(key, {
+            "loans": [], "overdue_records": [],
+            "overdue_year": 0, "overdue_year_key": str(date.today().year),
+            "ban": False, "daily_borrowed": 0, "daily_date": "", "daily_process_date": "",
+        })
+
+    def _loan_unlocked(self, data, key):
+        return key in data.get("pets", {}) or key in data.get("farms", {})
+
+    @staticmethod
+    def _loan_general_max(farm_level):
+        if farm_level <= 10:
+            return 3000
+        if farm_level <= 25:
+            return 10000
+        if farm_level <= 50:
+            return 20000
+        if farm_level <= 75:
+            return 40000
+        return 100000
+
+    @staticmethod
+    def _loan_short_max(fav_level):
+        if fav_level <= 2:
+            return 1000
+        if fav_level <= 5:
+            return 2000
+        if fav_level <= 8:
+            return 3000
+        if fav_level == 9:
+            return 4000
+        return 6000
+
+    def _loan_general_rate(self, pet_level):
+        """一般套餐日息 2%~5% 随机，宠物等级减免"""
+        rate = random.uniform(2.0, 5.0)
+        if pet_level > 0:
+            if random.random() < pet_level / 100.0:
+                rate -= 1.0
+            if pet_level <= 25:
+                rate -= 0.1
+            elif pet_level <= 75:
+                rate -= 0.2
+            else:
+                rate -= 0.5
+        return max(0.1, round(rate, 2))
+
+    def _pet_level(self, data, key):
+        pet = data.get("pets", {}).get(key)
+        return int(pet.get("level", 0)) if pet else 0
+
+    def _loan_package(self, data, key, code):
+        """返回套餐信息：0 特别、1 一般、2 短期、3+ 自定义"""
+        if code == 0:
+            return {"code": 0, "max_amount": LOAN_SPECIAL_AMOUNT, "rate": LOAN_SPECIAL_RATE,
+                    "fav_req": 0, "pet_req": 0, "farm_req": 0, "special": True}
+        if code == 1:
+            farm = data.get("farms", {}).get(key)
+            return {"code": 1, "max_amount": self._loan_general_max(int(farm.get("level", 0)) if farm else 0),
+                    "rate": self._loan_general_rate(self._pet_level(data, key)),
+                    "fav_req": 0, "pet_req": 0, "farm_req": 0, "special": False}
+        if code == 2:
+            user = data.get("users", {}).get(key, {})
+            return {"code": 2, "max_amount": self._loan_short_max(self._level_of(float(user.get("favorability", 0.0)))),
+                    "rate": LOAN_SHORT_RATE, "fav_req": 0, "pet_req": 0, "farm_req": 0, "special": False}
+        for pkg in self._load_loan_packages():
+            if pkg["code"] == code:
+                return {"code": code, "max_amount": pkg["max_amount"], "rate": pkg["rate"],
+                        "fav_req": pkg["fav_req"], "pet_req": pkg["pet_req"], "farm_req": pkg["farm_req"], "special": False}
+        return None
+
+    @staticmethod
+    def _loan_accrued(loan, now_ts):
+        if loan.get("remaining", 0) <= 0:
+            return 0.0
+        start = max(loan.get("free_until_ts", 0), loan.get("borrow_ts", 0))
+        if now_ts <= start:
+            return 0.0
+        days = (now_ts - start) // 86400
+        if days <= 0:
+            return 0.0
+        return round(loan.get("remaining", 0) * loan.get("rate", 0) / 100.0 * days, 2)
+
+    def _loan_owed(self, loan, now_ts):
+        return round(loan.get("remaining", 0) + self._loan_accrued(loan, now_ts), 2)
+
+    @staticmethod
+    def _loan_is_overdue(loan, now_ts):
+        return now_ts > loan.get("due_ts", 0) and loan.get("remaining", 0) > 0
+
+    def _has_overdue_now(self, rec, now_ts):
+        return any(self._loan_is_overdue(l, now_ts) for l in rec.get("loans", []))
+
+    def _force_unlock(self, data, key):
+        """强制解锁：赠送农场（2 块地）和宠物"""
+        if key not in data.get("farms", {}):
+            farm = self._ensure_farm(data, key)
+            for _ in range(FARM_FREE_PLOTS):
+                farm["plots"].append(self._new_plot())
+        if key not in data.get("pets", {}):
+            today = date.today().isoformat()
+            data.setdefault("pets", {})[key] = {
+                "name": "宠物", "level": 1, "exp": 0.0,
+                "satiety": 100.0, "thirst": 100.0, "stamina": 100.0, "health": 120.0, "mood": 80.0,
+                "last_settle_date": today, "last_settle": None,
+                "inventory": {}, "money_event_date": today, "money_event_count": 0,
+            }
+
+    def _special_overdue(self, data, key):
+        """特别贷款逾期：重锁农场/宠物，收取仓库总价值 10%（清除数据）"""
+        farm = data.get("farms", {}).get(key)
+        if farm:
+            wh = farm.get("warehouse", {})
+            crops = self._load_crops()
+            ferts = self._load_fertilizers()
+            total = 0
+            for nm, cnt in list(wh.get("crops", {}).items()):
+                c = self._find_item(crops, nm)
+                total += int(round(int(cnt) * (float(c["crop_price"]) if c else 0.0)))
+            for nm, cnt in list(wh.get("seeds", {}).items()):
+                c = self._find_item(crops, nm)
+                total += int(round(int(cnt) * (float(c["seed_sell_price"]) if c else 0.0)))
+            for nm, cnt in list(wh.get("fertilizers", {}).items()):
+                f = self._find_item(ferts, nm)
+                total += int(cnt) * (int(f["price"]) if f else 0)
+            take = int(total * 0.1)
+            if take > 0:
+                self._repay_loans(data, key, take)
+            farm["warehouse"] = {"crops": {}, "seeds": {}, "fertilizers": {}}
+        data.get("pets", {}).pop(key, None)
+        data.get("farms", {}).pop(key, None)
+
+    def _loan_sync(self, data, key, now_ts=None):
+        """标记逾期 + 逾期处置（特别贷款重锁、逾期记录、年度计数、30 天农场回退、禁用）"""
+        now_ts = now_ts or datetime.now().timestamp()
+        rec = self._ensure_loans(data, key)
+        changed = False
+        year = str(date.today().year)
+        if rec.get("overdue_year_key") != year:
+            rec["overdue_year_key"] = year
+            rec["overdue_year"] = 0
+            rec["ban"] = False  # 跨年后解除临时禁用
+        for loan in rec.get("loans", []):
+            if loan.get("remaining", 0) <= 0:
+                continue
+            if now_ts > loan.get("due_ts", 0):
+                if not loan.get("overdue"):
+                    loan["overdue"] = True
+                    changed = True
+                    rec["overdue_year"] = int(rec.get("overdue_year", 0)) + 1
+                    rec["overdue_records"].append({
+                        "amount": loan.get("remaining", 0),
+                        "package": loan.get("package", 0),
+                        "time": datetime.fromtimestamp(now_ts).strftime("%Y-%m-%d %H:%M"),
+                    })
+                    if loan.get("special"):
+                        self._special_overdue(data, key)
+                if now_ts - loan.get("due_ts", 0) > LOAN_FARM_ROLLBACK_DAYS * 86400:
+                    farm = data.get("farms", {}).get(key)
+                    if farm:
+                        farm["level"] = 0
+                        farm["exp"] = 0.0
+                        farm["plots"] = [self._new_plot() for _ in range(FARM_FREE_PLOTS)]
+                        farm["warehouse"] = {"crops": {}, "seeds": {}, "fertilizers": {}}
+        if rec.get("overdue_year", 0) >= LOAN_OVERDUE_YEAR_LIMIT:
+            rec["ban"] = True
+        return changed
+
+    def _repay_loans(self, data, key, amount, code=None):
+        """还款，返回实际还款金额；优先还逾期最久 / 即将到期的账单"""
+        rec = self._ensure_loans(data, key)
+        now_ts = datetime.now().timestamp()
+        candidates = [l for l in rec.get("loans", []) if l.get("remaining", 0) > 0 and (code is None or l.get("package") == code)]
+        if not candidates:
+            return 0
+        candidates.sort(key=lambda l: (0 if l.get("overdue") else 1, l.get("due_ts", 0)))
+        remaining_money = amount
+        repaid = 0
+        for loan in candidates:
+            if remaining_money <= 0:
+                break
+            owed = self._loan_owed(loan, now_ts)
+            take = min(remaining_money, owed)
+            remaining_money -= take
+            repaid += take
+            loan["remaining"] = round(loan["remaining"] - take, 2)
+            if loan["remaining"] <= 0:
+                loan["remaining"] = 0
+        rec["loans"] = [l for l in rec.get("loans", []) if l.get("remaining", 0) > 0]
+        return round(repaid, 2)
+
+    def _loan_daily_process(self, data, key, now=None):
+        """每日逾期处置：好感度降低 + 23:00 自动卖仓库/自动签到还款（懒执行，一天一次）"""
+        now = now or datetime.now()
+        rec = self._ensure_loans(data, key)
+        if not self._has_overdue_now(rec, now.timestamp()):
+            return False
+        today = now.strftime("%Y-%m-%d")
+        if rec.get("daily_process_date") == today:
+            return False
+        rec["daily_process_date"] = today
+        user = self._ensure_user(data, key)
+        special = any(l.get("special") and l.get("remaining", 0) > 0 for l in rec.get("loans", []))
+        lo, hi = LOAN_FAV_DROP_SPECIAL if special else LOAN_FAV_DROP_NORMAL
+        drop = random.uniform(lo, hi)
+        user["favorability"] = round(max(0.0, float(user.get("favorability", 0.0)) - drop), 2)
+        if (now.hour, now.minute) >= LOAN_AUTO_TIME:
+            farm = data.get("farms", {}).get(key)
+            if farm:
+                coins = self._sell_warehouse_all(data, key, farm)
+                if coins > 0:
+                    self._repay_loans(data, key, coins)
+            coins = self._auto_signin(data, key)
+            if coins > 0:
+                self._repay_loans(data, key, coins)
+        return True
+
+    def _sell_warehouse_all(self, data, key, farm):
+        """卖出仓库全部物品，返回所得金币（不进入余额，直接用于还款）"""
+        wh = farm.get("warehouse", {})
+        crops = self._load_crops()
+        ferts = self._load_fertilizers()
+        total = 0
+        for nm, cnt in list(wh.get("crops", {}).items()):
+            c = self._find_item(crops, nm)
+            total += int(round(int(cnt) * (float(c["crop_price"]) if c else 0.0)))
+        for nm, cnt in list(wh.get("seeds", {}).items()):
+            c = self._find_item(crops, nm)
+            total += int(round(int(cnt) * (float(c["seed_sell_price"]) if c else 0.0)))
+        for nm, cnt in list(wh.get("fertilizers", {}).items()):
+            f = self._find_item(ferts, nm)
+            total += int(cnt) * (int(f["price"]) if f else 0)
+        farm["warehouse"] = {"crops": {}, "seeds": {}, "fertilizers": {}}
+        return total
+
+    def _auto_signin(self, data, key):
+        """逾期自动签到：只发放金币与好感度（金币用于抵债），标记当日已签到"""
+        today = date.today().isoformat()
+        user = data.get("users", {}).get(key)
+        if user and user.get("last_date") == today:
+            return 0
+        if user is None:
+            user = self._ensure_user(data, key)
+        coins = random.randint(self.min_coins, self.max_coins)
+        user["favorability"] = round(float(user.get("favorability", 0.0)) + round(random.uniform(MIN_FAV, MAX_FAV), 2), 2)
+        user["last_date"] = today
+        return coins
+
+    # ---- 贷款指令 ----
+    def _loan_packages_info(self, data, key):
+        """所有贷款套餐信息，用于「借款」无参数时的概览"""
+        info = []
+        info.append({
+            "code": 0, "name": "特别贷款（强制解锁）",
+            "max": f"{LOAN_SPECIAL_AMOUNT}（固定，不发放金币）",
+            "rate": f"{LOAN_SPECIAL_RATE}%/日",
+            "note": "贷款 2500 用于强制解锁农场+宠物，不发放金币；已开通宠物/农场不可用；30 天内还清，逾期重锁并收取仓库价值 10%",
+        })
+        general = " / ".join([f"{lv}级:{amt}" for lv, amt in
+                              [(0, 3000), (11, 10000), (26, 20000), (51, 40000), (76, 100000)]])
+        info.append({
+            "code": 1, "name": "一般贷款",
+            "max": f"按农场等级（农场{general}）",
+            "rate": "2%~5%/日随机（宠物等级减免）",
+            "note": "最近 4:00 后开始计息，15 天逾期",
+        })
+        short = " / ".join([f"{lv}级:{amt}" for lv, amt in
+                            [(0, 1000), (3, 2000), (6, 3000), (9, 4000), (10, 6000)]])
+        info.append({
+            "code": 2, "name": "短期贷款",
+            "max": f"按好感度等级（好感{short}）",
+            "rate": "6%/日",
+            "note": "10 天免息期，之后每日 6%",
+        })
+        for pkg in self._load_loan_packages():
+            reqs = []
+            if pkg.get("fav_req"):
+                reqs.append(f"好感Lv.{pkg['fav_req']}+")
+            if pkg.get("pet_req"):
+                reqs.append(f"宠物Lv.{pkg['pet_req']}+")
+            if pkg.get("farm_req"):
+                reqs.append(f"农场Lv.{pkg['farm_req']}+")
+            req_str = "，".join(reqs) if reqs else "无要求"
+            info.append({
+                "code": pkg["code"], "name": "自定义贷款",
+                "max": f"{pkg['max_amount']}",
+                "rate": f"{pkg['rate']}%/日",
+                "note": f"要求：{req_str}",
+            })
+        return info
+
+    def _render_loan_packages(self, data, key):
+        rows = []
+        rows.append([("格式：借款 <套餐代码> <金额>", (90, 90, 90), False)])
+        rows.append([("每日累计贷款上限 = 2 × 套餐上限", (90, 90, 90), False)])
+        rows.append([("", (0, 0, 0), False)])
+        for pkg in self._loan_packages_info(data, key):
+            rows.append([(f"[套餐 {pkg['code']} - {pkg['name']}]", (110, 110, 110), False)])
+            rows.append([(f"最大可借：{pkg['max']}", (20, 20, 20), False)])
+            rows.append([(f"日利率：{pkg['rate']}", (20, 20, 20), False)])
+            if pkg.get("note"):
+                rows.append([(f"说明：{pkg['note']}", (80, 80, 80), False)])
+            rows.append([("", (0, 0, 0), False)])
+        img = self._render_rich_image("借款（贷款套餐一览）", rows)
+        if img is not None:
+            return img
+        lines = ["借款（贷款套餐一览）：", "格式：借款 <套餐代码> <金额>", "每日累计贷款上限 = 2 × 套餐上限"]
+        for pkg in self._loan_packages_info(data, key):
+            lines.append(f"[套餐 {pkg['code']} - {pkg['name']}]")
+            lines.append(f"最大可借：{pkg['max']}")
+            lines.append(f"日利率：{pkg['rate']}")
+            if pkg.get("note"):
+                lines.append(f"说明：{pkg['note']}")
+        return "\n".join(lines)
+
+    def _handle_loan_borrow(self, event):
+        name = event.get_sender_name()
+        key = self._user_key(event)
+        parts = event.message_str.split(maxsplit=1)
+        if len(parts) < 2 or not parts[1].strip():
+            # 无参数：展示所有贷款套餐一览（图片）
+            data = self._load()
+            return self._render_loan_packages(data, key)
+        args = parts[1].split()
+        if len(args) < 2:
+            return "格式：借款 <套餐代码> <金额>（发送「借款」查看套餐一览）"
+        try:
+            code = int(args[0])
+            amount = int(args[1])
+        except ValueError:
+            return "套餐代码和金额必须是整数。格式：借款 <套餐代码> <金额>"
+        if code not in (0, 1, 2) and not (3 <= code <= 10):
+            return "套餐代码无效（0=特别，1=一般，2=短期，3~10=自定义）。"
+        if amount <= 0:
+            return "金额必须为正整数。"
+
+        data = self._load()
+        self._loan_sync(data, key)
+        rec = self._ensure_loans(data, key)
+        if rec.get("ban"):
+            return f"{name} 已因年度逾期超限被禁用贷款功能。"
+        if code == 0:
+            if key in data.get("pets", {}) or key in data.get("farms", {}):
+                return "你已经开通了宠物或农场，不能使用强制解锁（特别贷款）。"
+            if amount != LOAN_SPECIAL_AMOUNT:
+                return f"特别贷款固定金额为 {LOAN_SPECIAL_AMOUNT} 金币。"
+            if any(l.get("remaining", 0) > 0 for l in rec.get("loans", [])):
+                return "你有未结清的贷款（含特别贷款），还清前不能再次申请。"
+        else:
+            if not self._loan_unlocked(data, key):
+                return "贷款功能需要先解锁宠物系统或农场（发送「解锁宠物」或「解锁农场」）。"
+            if self._has_overdue_now(rec, datetime.now().timestamp()):
+                return "你有逾期贷款，还清前不能新增贷款。"
+        if any(l.get("special") and l.get("remaining", 0) > 0 for l in rec.get("loans", [])):
+            return "你有未结清的特别贷款，还清前不能再次申请任何贷款。"
+
+        pkg = self._loan_package(data, key, code)
+        if pkg is None:
+            return "该套餐未配置。"
+        if amount > pkg["max_amount"]:
+            return f"该套餐最大可借 {pkg['max_amount']} 金币。"
+        user = data.get("users", {}).get(key, {})
+        fav_level = self._level_of(float(user.get("favorability", 0.0)))
+        if fav_level < pkg.get("fav_req", 0):
+            return f"好感度等级不足（需要 Lv.{pkg['fav_req']}）。"
+        if self._pet_level(data, key) < pkg.get("pet_req", 0):
+            return f"宠物等级不足（需要 Lv.{pkg['pet_req']}）。"
+        farm = data.get("farms", {}).get(key)
+        if (int(farm.get("level", 0)) if farm else 0) < pkg.get("farm_req", 0):
+            return f"农场等级不足（需要 Lv.{pkg['farm_req']}）。"
+
+        today = date.today().isoformat()
+        if rec.get("daily_date") != today:
+            rec["daily_date"] = today
+            rec["daily_borrowed"] = 0
+        if rec.get("daily_borrowed", 0) + amount > int(pkg["max_amount"] * LOAN_DAILY_MULT):
+            return f"今日累计贷款已达上限（{int(pkg['max_amount'] * LOAN_DAILY_MULT)}），请明天再申请。"
+
+        now = datetime.now()
+        now_ts = now.timestamp()
+        if code == 0:
+            self._force_unlock(data, key)
+            free_until = now_ts
+            due = now_ts + LOAN_SPECIAL_DAYS * 86400
+            rate = LOAN_SPECIAL_RATE
+            special = True
+        elif code == 1:
+            free_until = self._bank_unlock_time().timestamp()
+            due = now_ts + LOAN_GENERAL_OVERDUE_DAYS * 86400
+            rate = pkg["rate"]
+            special = False
+        elif code == 2:
+            free_until = now_ts + LOAN_SHORT_GRACE_DAYS * 86400
+            due = now_ts + LOAN_SHORT_GRACE_DAYS * 86400
+            rate = LOAN_SHORT_RATE
+            special = False
+        else:
+            free_until = self._bank_unlock_time().timestamp()
+            due = now_ts + LOAN_GENERAL_OVERDUE_DAYS * 86400
+            rate = pkg["rate"]
+            special = False
+        rec["loans"].append({
+            "package": code, "amount": amount, "rate": rate,
+            "borrow_ts": now_ts, "free_until_ts": free_until, "due_ts": due,
+            "remaining": amount, "overdue": False, "special": special,
+        })
+        rec["daily_borrowed"] = int(rec.get("daily_borrowed", 0)) + amount
+        if code != 0:
+            # 只有普通/短期/自定义套餐才发放现金；特别贷款（0）的 2500 是解锁服务费，不发放金币
+            self._add_coins(data, key, amount)
+        self._save(data)
+        if code == 0:
+            extra = "\n🔓 已强制解锁农场与宠物系统（产生 2500 金币贷款，日息 1%，30 天内还清，未发放金币）"
+        else:
+            extra = ""
+        return (f"🏦 {name} 借款成功！\n"
+                f"💳 套餐 {code}，金额 {amount} 金币\n"
+                f"📈 日利率：{rate}%\n"
+                f"⏰ 免息至 {datetime.fromtimestamp(free_until).strftime('%m-%d %H:%M')}，逾期日 {datetime.fromtimestamp(due).strftime('%m-%d %H:%M')}{extra}")
+
+    def _handle_loan_repay(self, event):
+        name = event.get_sender_name()
+        key = self._user_key(event)
+        parts = event.message_str.split(maxsplit=1)
+        data = self._load()
+        self._loan_sync(data, key)
+        rec = self._ensure_loans(data, key)
+        if not rec.get("loans"):
+            return f"{name} 名下没有贷款。"
+        now_ts = datetime.now().timestamp()
+        coins = self._coins_of(data, key)
+
+        if len(parts) < 2:
+            # 还所有贷款：优先还逾期最久/即将到期
+            if coins <= 0:
+                return f"{name} 金币余额为 0，无法还款。"
+            repaid = self._repay_loans(data, key, coins)
+            if repaid > 0:
+                self._add_coins(data, key, -int(repaid))
+            total = sum(self._loan_owed(l, now_ts) for l in rec.get("loans", []))
+            self._save(data)
+            return f"🏦 已用全部金币还款 {round(repaid, 2)}，剩余待还 {round(total, 2)}。"
+        args = parts[1].split()
+        try:
+            code = int(args[0])
+        except ValueError:
+            return "套餐代码必须是整数。"
+        targets = [l for l in rec.get("loans", []) if l.get("package") == code and l.get("remaining", 0) > 0]
+        if not targets:
+            return f"没有套餐 {code} 的未结清贷款。"
+        if len(args) >= 2:
+            try:
+                amount = int(args[1])
+            except ValueError:
+                return "金额必须是整数。"
+            if amount <= 0:
+                return "金额必须为正整数。"
+        else:
+            amount = int(sum(self._loan_owed(l, now_ts) for l in targets))
+        if coins <= 0:
+            return f"{name} 金币余额为 0。"
+        amount = min(amount, coins)
+        repaid = self._repay_loans(data, key, amount, code)
+        if repaid > 0:
+            self._add_coins(data, key, -int(repaid))
+        self._save(data)
+        return f"🏦 已对套餐 {code} 还款 {round(repaid, 2)} 金币。"
+
+    def _handle_my_loans(self, event):
+        name = event.get_sender_name()
+        key = self._user_key(event)
+        data = self._load()
+        changed = self._loan_sync(data, key)
+        rec = self._ensure_loans(data, key)
+        lines = [f"🏦 {name} 的贷款账单："]
+        loans = rec.get("loans", [])
+        if not loans:
+            lines.append("暂无生效中的贷款。")
+        now_ts = datetime.now().timestamp()
+        for l in loans:
+            days = max(0, int((now_ts - max(l.get("free_until_ts", l.get("borrow_ts", 0)), l.get("borrow_ts", 0))) // 86400))
+            owed = self._loan_owed(l, now_ts)
+            st = "⚠️逾期" if l.get("overdue") else "✅正常"
+            lines.append(f"· 套餐{l['package']}｜借款 {l['amount']}｜利率 {l['rate']}%/日｜剩余 {l['remaining']}｜计息 {days} 天｜欠款 {owed}｜{st}")
+        if changed:
+            self._save(data)
+        return "\n".join(lines)
+
+    def _handle_my_credit(self, event):
+        name = event.get_sender_name()
+        key = self._user_key(event)
+        data = self._load()
+        changed = self._loan_sync(data, key)
+        rec = self._ensure_loans(data, key)
+        lines = [f"🏦 {name} 的征信报告："]
+        overdue = rec.get("overdue_records", [])
+        if overdue:
+            for r in overdue[-10:]:
+                lines.append(f"· 逾期 {r['amount']} 金币（套餐 {r['package']}，{r['time']}）")
+        else:
+            lines.append("· 暂无逾期记录")
+        lines.append("---")
+        loans = rec.get("loans", [])
+        if not loans:
+            lines.append("暂无生效中的贷款账单。")
+        else:
+            now_ts = datetime.now().timestamp()
+            for l in loans:
+                owed = self._loan_owed(l, now_ts)
+                due = datetime.fromtimestamp(l["due_ts"]).strftime("%m-%d")
+                st = "⚠️逾期" if l.get("overdue") else "✅"
+                lines.append(f"· 套餐{l['package']}｜借款 {l['amount']}｜利率 {l['rate']}%｜欠款 {owed}｜逾期日 {due}｜{st}")
+        if rec.get("ban"):
+            lines.append("🚫 已因年度逾期超限被禁用贷款功能")
+        if changed:
+            self._save(data)
+        return "\n".join(lines)
+
     # ================= 农场 =================
     def _parse_crop_fert(self, path: str, kind: str):
         items = []
@@ -1721,10 +2631,10 @@ class SignInPlugin(Star):
             if kind == "作物":
                 result.append({
                     "name": it["name"],
-                    "seed_price": int(self._f(d.get("种子价格", 0))),
-                    "seed_sell_price": int(self._f(d.get("种子卖出价格", 0))),
+                    "seed_price": self._f(d.get("种子价格", 0)),
+                    "seed_sell_price": self._f(d.get("种子卖出价格", 0)),
                     "yield": int(self._f(d.get("产量", 0))),
-                    "crop_price": int(self._f(d.get("成熟作物价格", 0))),
+                    "crop_price": self._f(d.get("成熟作物价格", 0)),
                     "exp": int(self._f(d.get("收获经验值", 0))),
                     "min_level": int(self._f(d.get("最低农场等级要求", 0))),
                     "grow_minutes": int(self._f(d.get("成熟时间", 0))),
@@ -1808,6 +2718,14 @@ class SignInPlugin(Star):
             return f"{hours}小时{rem_min}分"
         days, rem_h = divmod(hours, 24)
         return f"{days}天{rem_h}小时"
+
+    @staticmethod
+    def _fmt_price(v):
+        """价格显示：整数不带小数点，小数保留最多 2 位并去掉末尾 0"""
+        v = float(v)
+        if v == int(v):
+            return str(int(v))
+        return f"{v:.2f}".rstrip("0").rstrip(".")
 
     @staticmethod
     def _find_item(items, name):
@@ -1912,18 +2830,18 @@ class SignInPlugin(Star):
         rows.append([(bonus, (90, 90, 90), False)])
         rows.append([("", (0, 0, 0), False)])
         for c in crops:
-            base = int(c["seed_price"])
-            p = int(round(base * mult))
+            base = float(c["seed_price"])
+            p = round(base * mult, 2)
             lv_req = f"（需 Lv.{c['min_level']}）" if c["min_level"] > 0 else ""
             if p > base:
-                rows.append([(f"{c['name']} {p} 金币{lv_req}", (20, 20, 20), False)])
+                rows.append([(f"{c['name']} {self._fmt_price(p)} 金币{lv_req}", (20, 20, 20), False)])
             elif p < base:
                 rows.append([(f"{c['name']} ", (20, 20, 20), False),
-                             (f"{base}", (20, 20, 20), True),
+                             (f"{self._fmt_price(base)}", (20, 20, 20), True),
                              (" ", (0, 0, 0), False),
-                             (f"{p} 金币{lv_req}", (192, 0, 0), False)])
+                             (f"{self._fmt_price(p)} 金币{lv_req}", (192, 0, 0), False)])
             else:
-                rows.append([(f"{c['name']} {p} 金币{lv_req}", (20, 20, 20), False)])
+                rows.append([(f"{c['name']} {self._fmt_price(p)} 金币{lv_req}", (20, 20, 20), False)])
         return self._render_rich_image("种子商店", rows)
 
     def _render_fertilizer_shop(self, ferts):
@@ -1945,14 +2863,14 @@ class SignInPlugin(Star):
             for nm, cnt in items.items():
                 if key == "crops":
                     c = self._find_item(crops, nm)
-                    price = c["crop_price"] if c else 0
+                    price = c["crop_price"] if c else 0.0
                 elif key == "seeds":
                     c = self._find_item(crops, nm)
-                    price = c["seed_sell_price"] if c else 0
+                    price = c["seed_sell_price"] if c else 0.0
                 else:
                     f = self._find_item(ferts, nm)
-                    price = f["price"] if f else 0
-                rows.append([(f"{nm} ×{cnt} 可售 {price}金币", (20, 20, 20), False)])
+                    price = float(f["price"]) if f else 0.0
+                rows.append([(f"{nm} ×{cnt} 可售 {self._fmt_price(price)}金币", (20, 20, 20), False)])
         return self._render_rich_image("农场仓库", rows)
 
     def _unusable_ferts(self, plot, ferts):
@@ -1983,8 +2901,8 @@ class SignInPlugin(Star):
             else:
                 crop_name = plot.get("crop", "")
                 c = self._find_item(crops, crop_name)
-                price = c["crop_price"] if c else 0
-                income = int(plot.get("yield", 0)) * price
+                price = c["crop_price"] if c else 0.0
+                income = int(round(int(plot.get("yield", 0)) * float(price)))
                 if now >= plot.get("mature_ts", 0):
                     state = "已成熟"
                     remain = "已可收割"
@@ -2137,15 +3055,15 @@ class SignInPlugin(Star):
         farm = self._farm_of(data, key)
         if int(farm.get("level", 0)) < crop["min_level"]:
             return f"农场等级不足（需要 Lv.{crop['min_level']}，当前 Lv.{farm['level']}）。"
-        p = int(round(crop["seed_price"] * self._farm_seed_mult(farm)))
-        total = p * count
+        p = round(crop["seed_price"] * self._farm_seed_mult(farm), 2)
+        total = int(round(p * count))
         if self._coins_of(data, key) < total:
             return f"金币不足（需要 {total}，当前 {self._coins_of(data, key)}）。"
         self._add_coins(data, key, -total)
         wh = farm["warehouse"].setdefault("seeds", {})
         wh[crop_name] = int(wh.get(crop_name, 0)) + count
         self._save(data)
-        return f"✅ 购买 {crop_name} 种子 ×{count}，花费 {total} 金币（单价 {p}）。"
+        return f"✅ 购买 {crop_name} 种子 ×{count}，花费 {total} 金币（单价 {self._fmt_price(p)}）。"
 
     def _handle_farm_buy_fert(self, event):
         name = event.get_sender_name()
@@ -2444,7 +3362,7 @@ class SignInPlugin(Star):
             total = 0
             for nm, cnt in list(wh.items()):
                 c = self._find_item(crops, nm)
-                total += int(cnt) * (int(c["crop_price"]) if c else 0)
+                total += int(round(int(cnt) * (float(c["crop_price"]) if c else 0.0)))
             wh.clear()
             self._add_coins(data, key, total)
             self._save(data)
@@ -2454,7 +3372,7 @@ class SignInPlugin(Star):
         if crop_name not in wh:
             return f"仓库里没有「{crop_name}」。"
         c = self._find_item(crops, crop_name)
-        price = int(c["crop_price"]) if c else 0
+        price = float(c["crop_price"]) if c else 0.0
         have = int(wh[crop_name])
         if len(args) >= 2:
             try:
@@ -2467,14 +3385,14 @@ class SignInPlugin(Star):
                 return f"{crop_name} 只有 {have} 个。"
         else:
             cnt = have
-        gain = cnt * price
+        gain = int(round(cnt * price))
         self._add_coins(data, key, gain)
         if cnt >= have:
             wh.pop(crop_name, None)
         else:
             wh[crop_name] = have - cnt
         self._save(data)
-        return f"✅ 卖出 {crop_name} ×{cnt}，获得 {gain} 金币。"
+        return f"✅ 卖出 {crop_name} ×{cnt}（单价 {self._fmt_price(price)}），获得 {gain} 金币。"
 
     def _handle_farm_sell_seed(self, event):
         name = event.get_sender_name()
@@ -2494,7 +3412,7 @@ class SignInPlugin(Star):
             total = 0
             for nm, cnt in list(wh.items()):
                 c = self._find_item(crops, nm)
-                total += int(cnt) * (int(c["seed_sell_price"]) if c else 0)
+                total += int(round(int(cnt) * (float(c["seed_sell_price"]) if c else 0.0)))
             wh.clear()
             self._add_coins(data, key, total)
             self._save(data)
@@ -2504,7 +3422,7 @@ class SignInPlugin(Star):
         if seed_name not in wh:
             return f"仓库里没有「{seed_name}」种子。"
         c = self._find_item(crops, seed_name)
-        price = int(c["seed_sell_price"]) if c else 0
+        price = float(c["seed_sell_price"]) if c else 0.0
         have = int(wh[seed_name])
         if len(args) >= 2:
             try:
@@ -2517,14 +3435,14 @@ class SignInPlugin(Star):
                 return f"{seed_name} 种子只有 {have} 个。"
         else:
             cnt = have
-        gain = cnt * price
+        gain = int(round(cnt * price))
         self._add_coins(data, key, gain)
         if cnt >= have:
             wh.pop(seed_name, None)
         else:
             wh[seed_name] = have - cnt
         self._save(data)
-        return f"✅ 卖出 {seed_name} 种子 ×{cnt}，获得 {gain} 金币。"
+        return f"✅ 卖出 {seed_name} 种子 ×{cnt}（单价 {self._fmt_price(price)}），获得 {gain} 金币。"
 
     def _handle_farm_seed_shop(self, event):
         name = event.get_sender_name()
@@ -2541,8 +3459,8 @@ class SignInPlugin(Star):
             return img
         rows = [name, f"农场等级 Lv.{self._farm_of(data, key)['level']}"]
         for c in crops:
-            p = int(round(c["seed_price"] * self._farm_seed_mult(self._farm_of(data, key))))
-            rows.append(f"{c['name']} {p} 金币")
+            p = round(c["seed_price"] * self._farm_seed_mult(self._farm_of(data, key)), 2)
+            rows.append(f"{c['name']} {self._fmt_price(p)} 金币")
         return "\n".join(["种子商店："] + rows)
 
     def _handle_farm_fert_shop(self, event):
@@ -2623,7 +3541,9 @@ class SignInPlugin(Star):
         actual_loss = min(game.stake, self._coins_of(data, loser_key))
         self._add_coins(data, loser_key, -actual_loss)
 
-        payout_total = int(actual_loss * (1 - ROULETTE_FEE_RATE))
+        # 双人局手续费 10%，三人局手续费 5%
+        fee_rate = 0.05 if len(game.players) == 3 else ROULETTE_FEE_RATE
+        payout_total = int(actual_loss * (1 - fee_rate))
         share = payout_total // len(winners)
 
         loser_stat = self._ensure_stat(data, loser_key)
@@ -2645,10 +3565,21 @@ class SignInPlugin(Star):
             winner_names.append(w["name"])
 
         if len(winner_names) == 1:
-            lines.append(f"🏆 {winner_names[0]} 获得 {share} 金币（已扣除 10% 手续费）。")
+            lines.append(f"🏆 {winner_names[0]} 获得 {share} 金币（已扣除 {int(fee_rate * 100)}% 手续费）。")
         else:
-            lines.append(f"🏆 {('、'.join(winner_names))} 各获得 {share} 金币（已扣除 10% 手续费）。")
+            lines.append(f"🏆 {('、'.join(winner_names))} 各获得 {share} 金币（已扣除 {int(fee_rate * 100)}% 手续费）。")
         return "\n".join(lines)
+
+    async def _proactive_send(self, event, title, text):
+        """后台定时器主动发消息：优先渲染成图片，失败回退文本；发送后 RECALL_AFTER 秒撤回"""
+        img = self._render_text_image(title, text.splitlines())
+        try:
+            chain = event.image_result(img[1]) if img is not None else event.plain_result(text)
+            mid = await _send_with_mid(event, chain)
+            if mid:
+                asyncio.create_task(self._recall_later(event, mid))
+        except Exception as e:
+            logger.error(f"[插件] 主动消息发送失败: {e}")
 
     def _schedule_timeout(self, game: RouletteGame) -> None:
         async def _timeout():
@@ -2665,11 +3596,8 @@ class SignInPlugin(Star):
                     text = self._start_announcement(g)
                 else:
                     self._games.pop(g.group_id, None)
-                    return
-            try:
-                await game.event.send(text)
-            except Exception as e:
-                logger.error(f"[左轮] 自动开始公告发送失败: {e}")
+                    text = f"⏰ {ROULETTE_JOIN_TIMEOUT} 秒超时，无人加入，游戏已结束，无事发生。"
+            await self._proactive_send(game.event, "左轮手枪", text)
 
         game.timer_task = asyncio.create_task(_timeout())
 
@@ -2713,7 +3641,7 @@ class SignInPlugin(Star):
                 f"🔹 子弹：{bullets} 发（共 {ROULETTE_MAGAZINES} 个弹匣，随机排列）\n"
                 f"💰 赌注：{stake} 金币/人\n"
                 f"👥 发送「加入」参与（至少 {ROULETTE_MIN_PLAYERS} 人，最多 {ROULETTE_MAX_PLAYERS} 人）\n"
-                f"⏳ {ROULETTE_JOIN_TIMEOUT} 秒内无人加入则自动取消")
+                f"⏳ 超时时间：{ROULETTE_JOIN_TIMEOUT} 秒。超时后无人加入则游戏结束，无事发生。")
 
     def _handle_join(self, event: AstrMessageEvent) -> str:
         gid = event.get_group_id()

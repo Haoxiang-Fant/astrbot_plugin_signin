@@ -72,6 +72,28 @@ async function saveFerts() {
   }
 }
 
+async function loadLoanPkgs() {
+  setStatus("status-loanpkgs", "加载中...");
+  try {
+    const data = await bridge.apiGet("loan/packages");
+    $("loanpkgs-text").value = (data && data.content) || "";
+    setStatus("status-loanpkgs", "✅ 已加载");
+  } catch (e) {
+    setStatus("status-loanpkgs", "❌ 加载失败：" + e.message);
+  }
+}
+
+async function saveLoanPkgs() {
+  const content = $("loanpkgs-text").value;
+  setStatus("status-loanpkgs", "保存中...");
+  try {
+    await bridge.apiPost("loan/packages", { content });
+    setStatus("status-loanpkgs", "✅ 已保存");
+  } catch (e) {
+    setStatus("status-loanpkgs", "❌ 保存失败：" + e.message);
+  }
+}
+
 async function exportData() {
   setStatus("status-data", "导出中...");
   try {
@@ -118,6 +140,7 @@ function switchTab(name) {
   $("panel-config").classList.toggle("hidden", name !== "config");
   $("panel-crops").classList.toggle("hidden", name !== "crops");
   $("panel-ferts").classList.toggle("hidden", name !== "ferts");
+  $("panel-loanpkgs").classList.toggle("hidden", name !== "loanpkgs");
   $("panel-data").classList.toggle("hidden", name !== "data");
 }
 
@@ -130,6 +153,8 @@ $("btn-load-crops").addEventListener("click", loadCrops);
 $("btn-save-crops").addEventListener("click", saveCrops);
 $("btn-load-ferts").addEventListener("click", loadFerts);
 $("btn-save-ferts").addEventListener("click", saveFerts);
+$("btn-load-loanpkgs").addEventListener("click", loadLoanPkgs);
+$("btn-save-loanpkgs").addEventListener("click", saveLoanPkgs);
 $("btn-export-data").addEventListener("click", exportData);
 $("btn-import-data").addEventListener("click", importData);
 
