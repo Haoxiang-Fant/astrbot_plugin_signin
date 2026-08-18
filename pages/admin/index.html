@@ -14,6 +14,7 @@
         <button class="tab active" data-tab="config">后台.txt 编辑器</button>
         <button class="tab" data-tab="crops">作物编辑器</button>
         <button class="tab" data-tab="ferts">肥料编辑器</button>
+        <button class="tab" data-tab="loanpkgs">贷款套餐</button>
         <button class="tab" data-tab="data">数据导入导出</button>
       </div>
 
@@ -45,6 +46,16 @@
         </div>
         <textarea id="ferts-text" spellcheck="false" placeholder="点击「加载」读取 肥料.txt 内容..."></textarea>
         <p class="hint">编辑肥料配置（价格 / 减时 / 增产 / 最大次数），保存后立即生效。</p>
+      </section>
+
+      <section id="panel-loanpkgs" class="panel hidden">
+        <div class="toolbar">
+          <button id="btn-load-loanpkgs">加载</button>
+          <button id="btn-save-loanpkgs" class="primary">保存</button>
+          <span id="status-loanpkgs" class="status"></span>
+        </div>
+        <textarea id="loanpkgs-text" spellcheck="false" placeholder="点击「加载」读取 贷款套餐.txt 内容..."></textarea>
+        <p class="hint">编辑自定义贷款套餐（代码 3~10）：最大金额 / 好感度等级要求 / 宠物等级要求 / 农场等级要求 / 利息，保存后立即生效。</p>
       </section>
 
       <section id="panel-data" class="panel hidden">
