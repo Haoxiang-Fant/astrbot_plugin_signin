@@ -42,6 +42,76 @@ h1 {
   margin-bottom: 12px;
 }
 
+/* 调试模式栏 */
+.debug-bar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 14px;
+  margin-bottom: 12px;
+  border: 1px solid #c00000;
+  border-radius: 8px;
+  background: #fff5f5;
+  color: #c00000;
+  font-size: 13px;
+}
+
+.debug-bar .debug-on {
+  font-weight: 600;
+}
+
+.debug-bar.hidden {
+  display: none;
+}
+
+button.danger {
+  background: #c00000;
+  color: #fff;
+  border-color: #c00000;
+}
+
+/* 二级折叠 */
+.param-subgroups {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px;
+}
+
+.param-subgroup {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.param-subgroup summary {
+  padding: 8px 12px;
+  cursor: pointer;
+  font-weight: 600;
+  font-size: 13px;
+  background: var(--bg);
+  border-bottom: 1px solid var(--border);
+  user-select: none;
+  list-style: none;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.param-subgroup summary::-webkit-details-marker {
+  display: none;
+}
+
+.param-subgroup summary::after {
+  content: "▸";
+  color: var(--muted);
+  transition: transform 0.15s;
+}
+
+.param-subgroup[open] summary::after {
+  transform: rotate(90deg);
+}
+
 .tab {
   padding: 6px 14px;
   border: 1px solid var(--border);
@@ -109,4 +179,238 @@ input[type="file"] {
 .hint {
   color: var(--muted);
   font-size: 12px;
+}
+
+.activity-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-bottom: 10px;
+}
+
+.activity-item {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  cursor: pointer;
+}
+
+.activity-item input[type="checkbox"] {
+  margin-top: 4px;
+  width: 16px;
+  height: 16px;
+  accent-color: var(--accent);
+}
+
+.activity-item span {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: 13px;
+}
+
+.activity-item strong {
+  font-size: 15px;
+}
+
+.activity-item em {
+  font-style: normal;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.activity-item small {
+  color: var(--muted);
+}
+
+.param-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.param-group {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.param-group summary {
+  padding: 10px 14px;
+  cursor: pointer;
+  font-weight: 600;
+  font-size: 14px;
+  background: var(--bg);
+  border-bottom: 1px solid var(--border);
+  user-select: none;
+  list-style: none;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.param-group summary::-webkit-details-marker {
+  display: none;
+}
+
+.param-group summary::after {
+  content: "▸";
+  color: var(--muted);
+  transition: transform 0.15s;
+}
+
+.param-group[open] summary::after {
+  transform: rotate(90deg);
+}
+
+.param-items {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px;
+}
+
+.param-item {
+  display: grid;
+  grid-template-columns: 180px 120px 1fr;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  font-size: 13px;
+}
+
+.param-item .param-label {
+  font-weight: 600;
+}
+
+.param-item input[type="number"],
+.param-item input[type="text"] {
+  width: 100%;
+  padding: 5px 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--text);
+  font-size: 13px;
+}
+
+.param-item input.invalid {
+  border-color: #c00000;
+  box-shadow: 0 0 0 1px #c00000;
+}
+
+.param-item input[type="checkbox"] {
+  width: 16px;
+  height: 16px;
+  accent-color: var(--accent);
+}
+
+.param-item small {
+  color: var(--muted);
+}
+
+.activity-card {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+/* 已过期活动：红色边框提醒（#C00000） */
+.activity-card.expired {
+  border-color: #c00000;
+  border-width: 2px;
+}
+
+.activity-card.expired .activity-head strong {
+  color: #c00000;
+}
+
+.expired-badge {
+  background: #c00000;
+  color: #fff;
+  padding: 1px 8px;
+  border-radius: 10px;
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.activity-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 14px;
+}
+
+.activity-head input[type="checkbox"] {
+  width: 16px;
+  height: 16px;
+  accent-color: var(--accent);
+}
+
+.activity-head strong {
+  font-size: 15px;
+}
+
+.activity-head em {
+  font-style: normal;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.activity-head small {
+  color: var(--muted);
+}
+
+.act-fields {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px 14px;
+}
+
+.act-field {
+  display: grid;
+  grid-template-columns: 110px 1fr;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+}
+
+.act-field .act-field-label {
+  color: var(--text);
+}
+
+.act-field input[type="text"] {
+  width: 100%;
+  padding: 4px 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--text);
+  font-size: 12px;
+}
+
+.act-field input.invalid {
+  border-color: #c00000;
+  box-shadow: 0 0 0 1px #c00000;
+}
+
+.act-field input[type="checkbox"] {
+  width: 15px;
+  height: 15px;
+  justify-self: start;
+  accent-color: var(--accent);
+}
+
+.act-field small {
+  grid-column: 2;
+  color: var(--muted);
 }

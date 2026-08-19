@@ -10,11 +10,15 @@
     <div class="container">
       <h1>🐾 签到插件后台管理</h1>
 
+      <div id="debug-bar" class="debug-bar hidden"></div>
+
       <div class="tabs">
         <button class="tab active" data-tab="config">后台.txt 编辑器</button>
         <button class="tab" data-tab="crops">作物编辑器</button>
         <button class="tab" data-tab="ferts">肥料编辑器</button>
         <button class="tab" data-tab="loanpkgs">贷款套餐</button>
+        <button class="tab" data-tab="params">运行参数</button>
+        <button class="tab" data-tab="activities">活动中心</button>
         <button class="tab" data-tab="data">数据导入导出</button>
       </div>
 
@@ -56,6 +60,30 @@
         </div>
         <textarea id="loanpkgs-text" spellcheck="false" placeholder="点击「加载」读取 贷款套餐.txt 内容..."></textarea>
         <p class="hint">编辑自定义贷款套餐（代码 3~10）：最大金额 / 好感度等级要求 / 宠物等级要求 / 农场等级要求 / 利息，保存后立即生效。</p>
+      </section>
+
+      <section id="panel-params" class="panel hidden">
+        <div class="toolbar">
+          <button id="btn-load-params">加载</button>
+          <button id="btn-save-params" class="primary">保存并立即生效</button>
+          <span id="status-params" class="status"></span>
+        </div>
+        <div id="params-list" class="param-list">
+          <p class="hint">点击「加载」读取运行参数...</p>
+        </div>
+        <p class="hint">修改后点击「保存并立即生效」即可（无需重启插件）。参数保存在 plugin_data 的 data.json 中，重启后仍保留。</p>
+      </section>
+
+      <section id="panel-activities" class="panel hidden">
+        <div class="toolbar">
+          <button id="btn-load-activities">加载</button>
+          <button id="btn-save-activities" class="primary">保存活动配置</button>
+          <span id="status-activities" class="status"></span>
+        </div>
+        <div id="activities-list" class="activity-list">
+          <p class="hint">点击「加载」读取已注册的活动模块...</p>
+        </div>
+        <p class="hint">勾选启用活动，并可修改每个活动的起止时间 / 简介 / 参与要求 / 自定义参数，保存后立即生效（重启后保留）。活动的编写方式见 ACTIVITY.md。</p>
       </section>
 
       <section id="panel-data" class="panel hidden">
