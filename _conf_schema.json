@@ -39,6 +39,16 @@
     "type": "int",
     "default": 5
   },
+  "pill_daily_limit": {
+    "description": "属性丸每日最多使用次数",
+    "type": "int",
+    "default": 3
+  },
+  "exp_ball_daily_limit": {
+    "description": "农场经验球每日最多使用次数",
+    "type": "int",
+    "default": 3
+  },
   "money_event_chance": {
     "description": "玩耍触发「捡到钱了」的概率（0~1，0.01 表示 1%）",
     "type": "float",
@@ -53,5 +63,25 @@
     "description": "捡到钱了每个周期最多触发次数",
     "type": "int",
     "default": 2
+  },
+  "rain_amount": {
+    "description": "红包雨单轮总金额（金币）",
+    "type": "int",
+    "default": 1000
+  },
+  "rain_count": {
+    "description": "红包雨单轮红包个数",
+    "type": "int",
+    "default": 10
+  },
+  "rain_times": {
+    "description": "红包雨开启时间（小时，逗号分隔，如 8,12,16,20）",
+    "type": "string",
+    "default": "8,12,16,20"
+  },
+  "rain_hours": {
+    "description": "红包雨有效期（小时）",
+    "type": "float",
+    "default": 1
   }
 }
