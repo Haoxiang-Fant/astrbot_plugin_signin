@@ -26,6 +26,23 @@ try:
 except Exception:
     AiocqhttpMessageEvent = None
 
+# 消息链组件（文本+图片组合回复用）
+try:
+    from astrbot.core.message.components import Plain as _Plain
+    from astrbot.core.message.components import Image as _Image
+    from astrbot.core.message.message_event_result import MessageChain as _MessageChain
+except Exception:
+    _Plain = None
+    _Image = None
+    _MessageChain = None
+
+
+def _build_text_image_chain(text, img_path):
+    """构造「文本 + 图片」组合消息链（返回 None 时表示组件不可用）"""
+    if _Plain is None or _Image is None or _MessageChain is None:
+        return None
+    return _MessageChain(chain=[_Plain(text=text), _Image(file=img_path)])
+
 
 def _chain_to_onebot_segments(chain):
     """把 AstrBot 消息链转成 OneBot v11 段数组；本地图片读字节转 base64 最稳"""
@@ -241,6 +258,8 @@ IMAGE_COMMANDS = {
 
 # 插件消息发送后多少秒撤回（防刷屏，0 = 不撤回）
 RECALL_AFTER = 15
+# 全局撤回总开关：False 时所有消息都不撤回（WebUI 运行参数「撤回设置→通用」可改，默认开启）
+RECALL_ENABLED = True
 
 # 调试模式口令（管理员在对话框输入后解锁 WebUI 调试按钮）
 DEBUG_PASSWORD = "88224646"
@@ -263,6 +282,8 @@ RAIN_HOURS = 1
 # type 支持 int / float / bool / string；min/max 为校验范围；group 为一级折叠分组，subgroup 为二级折叠分组
 RUNTIME_PARAMS = [
     # ---- 撤回设置 ----
+    {"key": "RECALL_ENABLED", "label": "全局撤回开关", "type": "bool", "group": "撤回设置", "subgroup": "通用",
+     "desc": "全局总开关：开启 = 启用撤回功能（各指令按下方开关决定是否撤回）；关闭 = 所有消息都不撤回", "default": True},
     {"key": "RECALL_AFTER", "label": "消息撤回秒数", "type": "int", "group": "撤回设置", "subgroup": "通用",
      "desc": "插件消息发送后多少秒撤回（0 = 不撤回）", "default": 15, "min": 0, "max": 600},
     {"key": "RECALL_ACTIVITY", "label": "「活动」指令撤回", "type": "bool", "group": "撤回设置", "subgroup": "单指令开关",
@@ -315,6 +336,12 @@ RUNTIME_PARAMS = [
      "desc": "触发「捡到钱了」获得的金币", "default": 100, "min": 0, "max": 100000, "attr": "money_event_gain"},
     {"key": "MONEY_EVENT_MAX_PER_DAY", "label": "玩耍捡钱每日上限", "type": "int", "group": "宠物", "subgroup": "玩耍",
      "desc": "「捡到钱了」每个周期最多触发次数", "default": 2, "min": 1, "max": 100, "attr": "money_event_max_per_day"},
+    {"key": "WORK_CARD_COLS", "label": "打工列表每行卡片数", "type": "int", "group": "宠物", "subgroup": "打工玩耍",
+     "desc": "「打工」列表图片一行展示的卡片数量", "default": 2, "min": 1, "max": 4},
+    {"key": "PLAY_CARD_COLS", "label": "玩耍列表每行卡片数", "type": "int", "group": "宠物", "subgroup": "打工玩耍",
+     "desc": "「玩耍」列表图片一行展示的卡片数量", "default": 2, "min": 1, "max": 4},
+    {"key": "WORK_PLAY_CARD_WIDTH", "label": "打工玩耍卡片宽度", "type": "int", "group": "宠物", "subgroup": "打工玩耍",
+     "desc": "「打工/玩耍」列表每张内容卡片的宽度（默认 522 = 原 290 的 180%）", "default": 522, "min": 290, "max": 800},
     # ---- 商店（独立折叠分组） ----
     {"key": "SHOP_CARD_COLS", "label": "宠物商店每行卡片数", "type": "int", "group": "商店", "subgroup": "宠物商店",
      "desc": "宠物商店（商店指令）一行展示的卡片数量", "default": 3, "min": 2, "max": 6},
@@ -479,7 +506,7 @@ class RouletteGame:
         return "、".join(p["name"] for p in self.players)
 
 
-@register("astrbot_plugin_signin", "sishijiu", "群签到 + 左轮手枪 + 宠物养成 + 金币银行 + 农场", "1.7.0")
+@register("astrbot_plugin_signin", "sishijiu", "群签到 + 左轮手枪 + 宠物养成 + 金币银行 + 农场", "1.7.1")
 class SignInPlugin(Star):
     def __init__(self, context: Context, config: dict = None):
         super().__init__(context)
@@ -625,6 +652,12 @@ class SignInPlugin(Star):
             return
         if isinstance(reply, tuple) and len(reply) == 2 and reply[0] == "image":
             chain = event.image_result(reply[1])
+        elif isinstance(reply, tuple) and len(reply) == 3 and reply[0] == "image_text":
+            # 「文本 + 图片」组合回复（如种植后附加土地状态图）；组件不可用时回退纯文本
+            chain = _build_text_image_chain(reply[1], reply[2])
+            if chain is None:
+                logger.warning("[插件] 消息链组件不可用，种植附加图片回退为纯文本")
+                chain = event.plain_result(reply[1])
         else:
             # 指定指令的文本响应自动转成图片（签到/左轮/银行）
             img = self._to_image_for_command(head, reply)
@@ -645,10 +678,16 @@ class SignInPlugin(Star):
             yield chain
 
     def _should_recall(self, head: str) -> bool:
-        """判断该指令的回复是否需要撤回（WebUI 可单独设置活动/商店类指令）"""
+        """判断该指令的回复是否需要撤回。
+
+        全局总开关（RECALL_ENABLED）为总开关：关闭 → 所有消息都不撤回；
+        开启 → 按各指令的单独开关决定（RECALL_EXEMPT 中配置了开关的指令按其开关，
+        未单独配置的指令默认撤回）。"""
+        if not bool(globals().get("RECALL_ENABLED", True)):
+            return False  # 全局总开关关闭：所有消息不撤回
         key = RECALL_EXEMPT.get(head)
         if key is None:
-            return True  # 未配置的指令默认撤回
+            return True  # 未单独配置开关的指令默认撤回
         return bool(globals().get(key, False))
 
     async def _recall_later(self, event, mid):
@@ -896,11 +935,23 @@ class SignInPlugin(Star):
             data.setdefault("activities", {})
             data.setdefault("activity_config", {})
             data.setdefault("params", {})
+            # 旧数据迁移：宠物等级按新经验体系重算（所需经验 = 当前等级 × 100）
+            self._migrate_pet_levels(data)
             return data
         except Exception as e:
             logger.error(f"[插件] 读取数据失败: {e}")
             return {"users": {}, "roulette": {}, "pets": {}, "bank": {}, "farms": {}, "loans": {},
                     "ledger": {}, "redpackets": [], "activities": {}}
+
+    def _migrate_pet_levels(self, data: dict) -> None:
+        """按新经验体系重算所有宠物的等级（旧数据按经验总值匹配新等级体系）"""
+        try:
+            for pet in (data.get("pets") or {}).values():
+                if not isinstance(pet, dict):
+                    continue
+                pet["level"] = min(PET_MAX_LEVEL, self._pet_level_from_exp(float(pet.get("exp", 0.0))))
+        except Exception as e:
+            logger.error(f"[插件] 宠物等级迁移失败: {e}")
 
     # ================= WebUI 运行参数 =================
     def _apply_runtime_params(self, params: dict):
@@ -1158,6 +1209,13 @@ class SignInPlugin(Star):
         return (f"🐾 {pet.get('name', '宠物')}：饱食 {pet['satiety']:.0f}/{sat_max:.0f}，"
                 f"口渴 {pet['thirst']:.0f}/{thr_max:.0f}，体力 {pet['stamina']:.0f}/{sta_max:.0f}，"
                 f"心情 {pet['mood']:.0f}/{mood_max:.0f}，健康 {pet['health']:.0f}/{PET_MAX_HEALTH:.0f}")
+
+    @staticmethod
+    def _pet_busy_until(pet: dict) -> float:
+        """打工/玩耍共用冷却计时器：返回忙碌结束时间戳（兼容旧数据 work_until / play_until）"""
+        busy = float(pet.get("busy_until", 0) or 0)
+        old = max(float(pet.get("work_until", 0) or 0), float(pet.get("play_until", 0) or 0))
+        return max(busy, old)
 
     def _farm_state_snippet(self, farm: dict) -> str:
         """农场当前状态摘要（农场变更反馈末尾附加）"""
@@ -1447,8 +1505,26 @@ class SignInPlugin(Star):
             lines.append("⚠️ 有属性处于第三档（太差），注意喂食 / 饮水 / 陪伴！")
         return lines
 
+    @staticmethod
+    def _pet_level_from_exp(exp: float) -> int:
+        """新经验体系：所需经验 = 当前等级 × 100（累计 100+200+...+（L-1）×100 升到 Lv.L）"""
+        exp = max(0.0, float(exp))
+        # 解 100*(L-1)*L/2 <= exp → L = floor((1+sqrt(1+8*exp/100))/2)
+        L = int((1 + (1 + 8 * exp / 100.0) ** 0.5) / 2)
+        return min(PET_MAX_LEVEL, L)
+
+    @staticmethod
+    def _pet_exp_progress(exp: float) -> tuple:
+        """返回 (当前等级, 本级已得经验, 本级所需经验)，新经验体系：所需经验 = 当前等级 × 100"""
+        exp = max(0.0, float(exp))
+        level = SignInPlugin._pet_level_from_exp(exp)
+        need_prev = 100.0 * (level - 1) * level / 2.0  # 升到当前等级的累计经验
+        got = exp - need_prev
+        need = float(level) * 100.0
+        return level, got, need
+
     def _apply_exp(self, pet: dict) -> str:
-        new_level = min(PET_MAX_LEVEL, int(float(pet.get("exp", 0.0)) // PET_EXP_PER_LEVEL) + 1)
+        new_level = min(PET_MAX_LEVEL, self._pet_level_from_exp(float(pet.get("exp", 0.0))))
         old = int(pet.get("level", 1))
         pet["level"] = new_level
         if new_level > old:
@@ -1815,14 +1891,19 @@ class SignInPlugin(Star):
         self._bring_pet_up_to_date(pet, date.today().isoformat())
         self._save(data)
 
+        img = self._render_pet_status_image(name, pet)
+        if img is not None:
+            return img
+
+        # 回退：文本版
         sat_max, thr_max, sta_max, mood_max = self._attr_max(pet["health"])
-        need_exp = PET_EXP_PER_LEVEL - (pet["exp"] % PET_EXP_PER_LEVEL)
+        lv, got_exp, need_exp = self._pet_exp_progress(float(pet.get("exp", 0.0)))
         lines = [
             f"🐾 {name} 的宠物「{pet['name']}」：",
-            f"⭐ 等级：Lv.{pet['level']}（经验 {pet['exp']:.1f}）",
+            f"⭐ 等级：Lv.{lv}（经验 {pet['exp']:.1f}）",
         ]
-        if pet["level"] < PET_MAX_LEVEL:
-            lines.append(f"📚 距下一级还需 {need_exp:.0f} 经验")
+        if lv < PET_MAX_LEVEL:
+            lines.append(f"📚 距下一级还需 {need_exp - got_exp:.0f} 经验")
         lines += [
             f"🍖 饱食度：{pet['satiety']:.1f}/{sat_max:.0f}",
             f"💧 口渴值：{pet['thirst']:.1f}/{thr_max:.0f}",
@@ -1833,18 +1914,15 @@ class SignInPlugin(Star):
         if pet["health"] <= 39:
             lines.append("🤒 宠物生病了，快给它吃药吧！")
 
-        # 末尾显示宠物当前活动：打工 / 玩耍（冷却中）或发呆
+        # 末尾显示宠物当前活动：打工 / 玩耍（共用冷却计时器）或发呆
         now_ts = datetime.now().timestamp()
-        work_until = float(pet.get("work_until", 0) or 0)
-        play_until = float(pet.get("play_until", 0) or 0)
-        acts = []
-        if now_ts < work_until:
-            acts.append(f"💼 正在打工中（剩余 {self._fmt_duration(work_until - now_ts)}）")
-        if now_ts < play_until:
-            acts.append(f"🎾 正在玩耍中（剩余 {self._fmt_duration(play_until - now_ts)}）")
+        busy_until = self._pet_busy_until(pet)
+        act = pet.get("busy_activity", "")
         lines.append("")
-        if acts:
-            lines.extend(acts)
+        if now_ts < busy_until:
+            icon = "💼" if act == "打工" else "🎾"
+            label = "打工中" if act == "打工" else "玩耍中"
+            lines.append(f"{icon} 正在{label}（剩余 {self._fmt_duration(busy_until - now_ts)}）")
         else:
             lines.append("😴 宠物正在发呆，快带它去打工或玩耍吧～")
 
@@ -1875,7 +1953,7 @@ class SignInPlugin(Star):
         parts = event.message_str.split(maxsplit=1)
 
         if len(parts) < 2:
-            return self._work_list()
+            return self._work_list(event)
         job_name = parts[1].strip()
 
         cfg = self._load_config()
@@ -1889,11 +1967,11 @@ class SignInPlugin(Star):
             return f"{name} 还没有宠物，发送「解锁宠物」领养一只吧。"
         self._bring_pet_up_to_date(pet, date.today().isoformat())
 
-        # 冷却检查：打工中的宠物不能继续打工（冷却 = 该工作的「需要时间」）
+        # 冷却检查：打工/玩耍共用一个计时器，冷却期内不能进行新的打工或玩耍
         now_ts = datetime.now().timestamp()
-        work_until = float(pet.get("work_until", 0) or 0)
-        if now_ts < work_until:
-            return f"{name} 的宠物还在打工中（冷却剩余 {self._fmt_duration(work_until - now_ts)}），暂时不能打工。"
+        busy_until = self._pet_busy_until(pet)
+        if now_ts < busy_until:
+            return f"{name} 的宠物还在忙碌中（冷却剩余 {self._fmt_duration(busy_until - now_ts)}），暂时不能打工或玩耍。"
 
         # 要求检查
         if pet["level"] < job["min_level"]:
@@ -1917,8 +1995,10 @@ class SignInPlugin(Star):
         pet["exp"] = round(float(pet.get("exp", 0.0)) + job["exp"], 2)
         lvl_msg = self._apply_exp(pet)
         self._clamp_attrs(pet)
-        # 进入打工冷却
-        pet["work_until"] = now_ts + int(job["time"]) * 60
+        # 进入冷却（打工/玩耍共用计时器）
+        pet["busy_until"] = now_ts + int(job["time"]) * 60
+        pet["busy_start"] = now_ts
+        pet["busy_activity"] = "打工"
         self._save(data)
 
         cd = f"（冷却 {int(job['time'])} 分钟）" if job["time"] > 0 else ""
@@ -1927,10 +2007,17 @@ class SignInPlugin(Star):
                 f"{self._coin_line(data, key)}\n"
                 f"{self._pet_state_snippet(pet)}")
 
-    def _work_list(self):
+    def _work_list(self, event=None):
         cfg = self._load_config()
         if not cfg["jobs"]:
             return "后台还没有配置打工项目（请管理员编辑 后台.txt）。"
+        pet = None
+        if event is not None:
+            data = self._load()
+            pet = data.get("pets", {}).get(self._user_key(event))
+        img = self._render_work_play_image("打工", event.get_sender_name(), pet, cfg["jobs"])
+        if img is not None:
+            return img
         lines = ["发送「打工 <名称>」开始", ""]
         for j in cfg["jobs"]:
             lines.append(f"· {j['name']}：{j['desc']}｜要求 Lv.{int(j['min_level'])}+ / 健康 {j['min_health']:.0f}+ / 心情 {j['min_mood']:.0f}+｜耗时 {j['time']:.0f}分｜金币 +{int(j['coins'])} 经验 +{j['exp']:.0f}")
@@ -1945,7 +2032,7 @@ class SignInPlugin(Star):
         parts = event.message_str.split(maxsplit=1)
 
         if len(parts) < 2:
-            return self._play_list()
+            return self._play_list(event)
         play_name = parts[1].strip()
 
         cfg = self._load_config()
@@ -1959,11 +2046,11 @@ class SignInPlugin(Star):
             return f"{name} 还没有宠物，发送「解锁宠物」领养一只吧。"
         self._bring_pet_up_to_date(pet, date.today().isoformat())
 
-        # 冷却检查：玩耍中的宠物不能继续玩耍（冷却 = 该玩耍项目的「需要时间」）
+        # 冷却检查：打工/玩耍共用一个计时器，冷却期内不能进行新的打工或玩耍
         now_ts = datetime.now().timestamp()
-        play_until = float(pet.get("play_until", 0) or 0)
-        if now_ts < play_until:
-            return f"{name} 的宠物还在玩耍中（冷却剩余 {self._fmt_duration(play_until - now_ts)}），暂时不能玩耍。"
+        busy_until = self._pet_busy_until(pet)
+        if now_ts < busy_until:
+            return f"{name} 的宠物还在忙碌中（冷却剩余 {self._fmt_duration(busy_until - now_ts)}），暂时不能打工或玩耍。"
 
         if pet["level"] < play["min_level"]:
             return f"宠物等级不足（需要 Lv.{int(play['min_level'])}，当前 Lv.{pet['level']}）。"
@@ -1990,18 +2077,27 @@ class SignInPlugin(Star):
             pet["money_event_count"] = int(pet.get("money_event_count", 0)) + 1
             bonus = f"\n🍀 触发「捡到钱了」事件，金币 +{self.money_event_gain}！\n{self._coin_line(data, key)}"
 
-        # 进入玩耍冷却
-        pet["play_until"] = now_ts + int(play["time"]) * 60
+        # 进入冷却（打工/玩耍共用计时器）
+        pet["busy_until"] = now_ts + int(play["time"]) * 60
+        pet["busy_start"] = now_ts
+        pet["busy_activity"] = "玩耍"
         self._save(data)
         cd = f"（冷却 {int(play['time'])} 分钟）" if play["time"] > 0 else ""
         return (f"🎾 {name} 的宠物去「{play['name']}」玩耍完成！{cd}\n"
                 f"🐾 经验 +{play['exp']:.1f}，😊 心情 +{play['mood']:.1f}{lvl_msg}{bonus}\n"
                 f"{self._pet_state_snippet(pet)}")
 
-    def _play_list(self):
+    def _play_list(self, event=None):
         cfg = self._load_config()
         if not cfg["plays"]:
             return "后台还没有配置玩耍项目（请管理员编辑 后台.txt）。"
+        pet = None
+        if event is not None:
+            data = self._load()
+            pet = data.get("pets", {}).get(self._user_key(event))
+        img = self._render_work_play_image("玩耍", event.get_sender_name(), pet, cfg["plays"])
+        if img is not None:
+            return img
         lines = ["发送「玩耍 <名称>」开始", ""]
         for p in cfg["plays"]:
             lines.append(f"· {p['name']}：{p['desc']}｜要求 Lv.{int(p['min_level'])}+ / 健康 {p['min_health']:.0f}+ / 心情 {p['min_mood']:.0f}+｜耗时 {p['time']:.0f}分｜经验 +{p['exp']:.0f} 心情 +{p['mood']:.0f}")
@@ -2009,6 +2105,503 @@ class SignInPlugin(Star):
         if img is not None:
             return img
         return "\n".join(["🎾 玩耍列表（发送「玩耍 <名称>」开始）："] + lines)
+
+    def _render_pet_status_image(self, name, pet):
+        """「宠物」指令图片（1.7.1）：
+        标题(用户名称) + 宠物信息卡（名称/状态/等级/经验/升级进度条）+ 宠物属性条区（每个属性：名称 当前值/最大值 + 属性条(普通进度条高度的30%) + 状态解释）+ 底部空闲进度条（忙碌 #FFC000 不满 / 空闲 #92D050 满）+ 文字描述。
+        属性条颜色：红 #C00000（饱食<50 口渴<70 心情<50 体力<20 健康<40）、绿 #92D050（与最大值差值<20 且健康度≥41）、灰 #333333 默认。"""
+        try:
+            from PIL import Image, ImageDraw, ImageFont
+        except Exception as e:
+            logger.error(f"[插件] 缺少 Pillow，无法生成图片: {e}")
+            return None
+        if not os.path.exists(FONT_FILE):
+            return None
+        try:
+            title_font = ImageFont.truetype(FONT_FILE, 32)
+            pet_name_font = ImageFont.truetype(FONT_FILE, 26)   # 宠物名称大两号（相对正文 20）
+            status_font = ImageFont.truetype(FONT_FILE, 18)     # 状态小一号
+            lv_font = ImageFont.truetype(FONT_FILE, 20)         # 等级/正文
+            exp_font = ImageFont.truetype(FONT_FILE, 16)        # 经验值小两号
+            attr_font = ImageFont.truetype(FONT_FILE, 18)       # 属性名
+            hint_font = ImageFont.truetype(FONT_FILE, 16)       # 状态解释
+            desc_font = ImageFont.truetype(FONT_FILE, 18)       # 底部文字描述
+        except Exception as e:
+            logger.error(f"[插件] 加载字体 {FONT_FILE} 失败: {e}")
+            return None
+
+        now_ts = datetime.now().timestamp()
+        busy_until = self._pet_busy_until(pet)
+        busy = now_ts < busy_until
+        act = pet.get("busy_activity", "")
+        status = "忙碌中" if busy else "空闲中"
+
+        sat_max, thr_max, sta_max, mood_max = self._attr_max(pet["health"])
+        # 属性条数据：(标签, 当前值, 最大值, 提示词)
+        attrs = [
+            ("饱食度", pet["satiety"], sat_max, "宠物饿了"),
+            ("口渴值", pet["thirst"], thr_max, "宠物渴了"),
+            ("心情值", pet["mood"], mood_max, "宠物不开心"),
+            ("体力值", pet["stamina"], sta_max, "宠物累了"),
+            ("健康度", pet["health"], PET_MAX_HEALTH, "宠物生病了"),
+        ]
+
+        pad = 20
+        title_h = 52
+        inner = 10
+        name_row_h = 34
+        lv_row_h = 28
+        bar_h = 26            # 普通进度条行高（条高 16 = 升级/空闲进度条）
+        bar_h_px = 16
+        attr_label_h = 22     # 属性名行高
+        attr_bar_h = 16       # 属性条行高（条高 = 普通进度条的 30% ≈ 5px）
+        attr_bar_px = max(4, int(bar_h_px * 0.3))
+        rule_h = 20
+        idle_desc_h = 30
+
+        width = 640
+        content_w = width - pad * 2
+
+        probe = ImageDraw.Draw(Image.new("RGB", (8, 8)))
+
+        def tw(s, f):
+            return probe.textlength(s, font=f)
+
+        # 升级进度（新经验体系）
+        lv, got_exp, need_exp = self._pet_exp_progress(float(pet.get("exp", 0.0)))
+        exp_ratio = min(1.0, got_exp / need_exp) if need_exp > 0 else 1.0
+        exp_text = f"经验 {got_exp:.0f}/{need_exp:.0f}"
+
+        # 空闲进度条：忙碌 = 进度不满（#FFC000），空闲 = 进度满（#92D050）
+        idle_ratio = 1.0
+        if busy:
+            start = float(pet.get("busy_start", 0) or 0)
+            total = busy_until - start if busy_until > start else 1.0
+            idle_ratio = min(0.9, max(0.05, 1.0 - (busy_until - now_ts) / total))  # 忙碌中进度不满
+        idle_color = (146, 208, 80) if not busy else (255, 192, 0)
+
+        pet_card_h = inner * 2 + name_row_h + lv_row_h + bar_h + len(attrs) * (attr_label_h + attr_bar_h)
+        height = pad * 2 + title_h + pet_card_h + rule_h + bar_h + idle_desc_h + 6
+
+        img = Image.new("RGB", (width, height), (255, 255, 255))
+        d = ImageDraw.Draw(img)
+        y = pad
+
+        # 标题：<用户名称>
+        d.text((pad, y), f"{name} 的宠物", font=title_font, fill=(20, 20, 20))
+        y += title_h
+
+        # ---------- 宠物信息卡（横跨整行） ----------
+        d.rectangle([pad, y, width - pad, y + pet_card_h], outline=(205, 205, 205), width=1)
+        yy = y + inner
+        # 行1：宠物名称(大两号,左) + 状态(小一号,右)
+        d.text((int(pad + inner), yy), pet.get("name", "宠物"), font=pet_name_font, fill=(20, 20, 20))
+        d.text((int(width - pad - inner - tw(status, status_font)), yy + 10),
+               status, font=status_font, fill=(150, 150, 150))
+        yy += name_row_h
+        # 行2：等级(左) + 经验(右,小两号)
+        d.text((int(pad + inner), yy), f"Lv.{lv}", font=lv_font, fill=(40, 40, 40))
+        d.text((int(width - pad - inner - tw(exp_text, exp_font)), yy + 6),
+               exp_text, font=exp_font, fill=(110, 110, 110))
+        yy += lv_row_h
+        # 行3：升级进度条（普通进度条高度，含百分比）
+        bar_y = yy + (bar_h - bar_h_px) // 2
+        d.rectangle([pad + inner, bar_y, width - pad - inner, bar_y + bar_h_px], outline=(200, 200, 200), width=1)
+        if exp_ratio > 0:
+            d.rectangle([pad + inner + 1, bar_y + 1,
+                         int(pad + inner + 1 + (content_w - 2 * inner - 2) * exp_ratio), bar_y + bar_h_px - 1],
+                        fill=(52, 168, 83))
+        pct_text = f"{int(exp_ratio * 100)}%"
+        d.text((int(width - pad - inner - tw(pct_text, exp_font) - 4), bar_y - 4),
+               pct_text, font=exp_font, fill=(40, 40, 40))
+        yy += bar_h
+        # 行4+：宠物属性条区
+        attr_w = int(content_w * 0.55)  # 属性条宽度（剩余右侧放状态解释）
+        has_low = False  # 是否存在状态低（红色）条目
+        for label, val, amax, hint in attrs:
+            # 属性名 + 当前值/最大值
+            t = f"{label} {val:.0f}/{amax:.0f}"
+            d.text((int(pad + inner), yy), t, font=attr_font, fill=(60, 60, 60))
+            yy += attr_label_h
+            # 属性条颜色判定
+            if label == "饱食度":
+                red = val < 50
+            elif label == "口渴值":
+                red = val < 70
+            elif label == "心情值":
+                red = val < 50
+            elif label == "体力值":
+                red = val < 20
+            else:  # 健康度
+                red = val < 40
+            green = (amax - val) < 20 and pet["health"] >= 41
+            bar_color = (192, 0, 0) if red else ((146, 208, 80) if green else (51, 51, 51))
+            # 属性条（高度 = 普通进度条的 30%）
+            ay = yy + (attr_bar_h - attr_bar_px) // 2
+            ratio = max(0.0, min(1.0, val / amax)) if amax > 0 else 0.0
+            d.rectangle([pad + inner, ay, pad + inner + attr_w, ay + attr_bar_px],
+                        outline=(200, 200, 200), width=1)
+            if ratio > 0:
+                d.rectangle([pad + inner + 1, ay + 1,
+                             int(pad + inner + 1 + (attr_w - 2) * ratio), ay + attr_bar_px - 1],
+                            fill=bar_color)
+            # 状态解释：仅红色时固定显示在整个属性条区域的右侧（不随填充比例移动）
+            if red:
+                has_low = True
+                d.text((int(pad + inner + attr_w + 6), yy + 1), hint, font=hint_font, fill=(192, 0, 0))
+            yy += attr_bar_h
+        y += pet_card_h
+
+        # 分割线
+        d.line([(pad, y), (width - pad, y)], fill=(200, 200, 200), width=2)
+        y += rule_h
+
+        # ---------- 底部空闲进度条 ----------
+        bar_y = y + (bar_h - bar_h_px) // 2
+        d.rectangle([pad, bar_y, width - pad, bar_y + bar_h_px], outline=(200, 200, 200), width=1)
+        if idle_ratio > 0:
+            d.rectangle([pad + 1, bar_y + 1,
+                         int(pad + 1 + (content_w - 2) * idle_ratio), bar_y + bar_h_px - 1],
+                        fill=idle_color)
+        y += bar_h
+        # 文字描述
+        if busy:
+            act_label = "打工" if act == "打工" else "玩耍"
+            desc = f"{pet.get('name', '宠物')}正在{act_label}（剩余 {self._fmt_duration(busy_until - now_ts)}）"
+        elif has_low:
+            # 存在状态低（红色）条目：使用第二套提示（宠物不舒服）
+            desc = random.choice([
+                f"{pet.get('name', '宠物')}看起来不太舒服，快照料一下吧～",
+                f"{pet.get('name', '宠物')}有点不舒服，喂食 / 饮水 / 陪伴一下吧～",
+                f"{pet.get('name', '宠物')}状态不佳，需要你的照顾～",
+                f"{pet.get('name', '宠物')}蔫蔫的，好像生病了，快照顾它～",
+                f"{pet.get('name', '宠物')}精神不太好，检查一下它的状态吧～",
+            ])
+        else:
+            desc = random.choice([
+                f"{pet.get('name', '宠物')}正在悠闲地晒太阳～",
+                f"{pet.get('name', '宠物')}精神饱满，随时可以出发！",
+                f"{pet.get('name', '宠物')}正在开心地打盹～",
+                f"{pet.get('name', '宠物')}正在愉快地玩耍尾巴～",
+                f"{pet.get('name', '宠物')}状态满格，等待你的指令～",
+            ])
+        d.text((int(pad), y), desc, font=desc_font, fill=(70, 70, 70))
+
+        base = os.path.dirname(DATA_FILE)
+        path = os.path.join(base, f"_pet_{datetime.now().strftime('%Y%m%d%H%M%S%f')}.png")
+        try:
+            img.save(path)
+        except Exception as e:
+            logger.error(f"[插件] 保存宠物状态图片失败: {e}")
+            return None
+        try:
+            now = datetime.now().timestamp()
+            for fn in os.listdir(base):
+                if fn.startswith("_pet_") and fn.endswith(".png"):
+                    fp = os.path.join(base, fn)
+                    if now - os.path.getmtime(fp) > 600:
+                        os.remove(fp)
+        except Exception:
+            pass
+        return ("image", path)
+
+    def _render_work_play_image(self, kind, name, pet, items):
+        """打工/玩耍列表图片（1.7.1 布局）：
+        标题(用户名称) + 宠物信息卡片(横跨整行) + 分割线 + 内容卡片（每行 WORK/PLAY_CARD_COLS 个）。
+        宠物信息卡：宠物名称(大两号)+状态(小一号) / 等级+经验值(小两号,两端对齐) / 升级进度条(含百分比) / 属性(过低红色)。
+        内容卡：名称(大三号,居左)+时间(居右) / 描述 / 条件(如有) / 消耗 / 卡片内分割线 / 报酬或变更(红 #C00000,右,大一号)。
+        卡片高度自适应（按换行后行数），同行取最高；不能打工/玩耍的卡片灰(#D9D9D9)。
+        pet 可为 None（无宠物）：宠物信息卡显示「还没有宠物」提示，内容卡全部灰卡。"""
+        try:
+            return self._render_work_play_image_inner(kind, name, pet, items)
+        except Exception as e:
+            logger.error(f"[插件] 渲染{kind}列表图片异常: {e}")
+            return None
+
+    def _render_work_play_image_inner(self, kind, name, pet, items):
+        """打工/玩耍列表图片实际渲染（异常由外层捕获并回退文本）"""
+        try:
+            from PIL import Image, ImageDraw, ImageFont
+        except Exception as e:
+            logger.error(f"[插件] 缺少 Pillow，无法生成图片: {e}")
+            raise
+        if not os.path.exists(FONT_FILE):
+            raise FileNotFoundError(f"字体不存在: {FONT_FILE}")
+        try:
+            title_font = ImageFont.truetype(FONT_FILE, 32)
+            pet_name_font = ImageFont.truetype(FONT_FILE, 26)   # 宠物名称大两号（相对正文 20）
+            status_font = ImageFont.truetype(FONT_FILE, 18)     # 状态小一号（相对正文 20）
+            lv_font = ImageFont.truetype(FONT_FILE, 20)         # 等级/正文
+            exp_font = ImageFont.truetype(FONT_FILE, 16)        # 经验值小两号
+            attr_font = ImageFont.truetype(FONT_FILE, 18)       # 属性正文小一号
+            item_name_font = ImageFont.truetype(FONT_FILE, 28)  # 内容名称大三个字号（相对正文 20）
+            body_font = ImageFont.truetype(FONT_FILE, 20)       # 描述/条件/消耗
+            price_font = ImageFont.truetype(FONT_FILE, 22)      # 报酬/变更大一号
+        except Exception as e:
+            logger.error(f"[插件] 加载字体 {FONT_FILE} 失败: {e}")
+            raise
+
+        has_pet = pet is not None
+        now_ts = datetime.now().timestamp()
+        if has_pet:
+            # 宠物忙碌状态：打工/玩耍共用冷却计时器，任一忙碌即忙碌（与灰卡判定一致）
+            busy = now_ts < self._pet_busy_until(pet)
+            status = "忙碌中" if busy else "空闲中"
+            sat_max, thr_max, sta_max, mood_max = self._attr_max(pet["health"])
+            # 属性展示（过低红色高亮，与「宠物」指令属性条阈值一致）：饱食<50 / 口渴<70 / 体力<20 / 心情<50 / 健康<40
+            attrs = [
+                ("饱食", pet["satiety"], sat_max, pet["satiety"] < 50),
+                ("口渴", pet["thirst"], thr_max, pet["thirst"] < 70),
+                ("体力", pet["stamina"], sta_max, pet["stamina"] < 20),
+                ("心情", pet["mood"], mood_max, pet["mood"] < 50),
+                ("健康", pet["health"], PET_MAX_HEALTH, pet["health"] < 40),
+            ]
+        else:
+            status = "未解锁"
+
+        pad = 20
+        title_h = 52
+        rule_h = 22          # 宠物卡与内容卡之间的分割线
+        gap = 12
+        inner = 10
+        cols = int(globals().get("WORK_CARD_COLS" if kind == "打工" else "PLAY_CARD_COLS", 2))
+        cols = max(1, min(4, cols))
+        card_w = int(globals().get("WORK_PLAY_CARD_WIDTH", 522))  # 默认 522 = 原 290 的 180%
+        card_w = max(290, min(800, card_w))
+        width = pad * 2 + card_w * cols + gap * (cols - 1)
+        pet_w = width - pad * 2  # 宠物信息卡宽度 = 内容卡一行布局总宽度
+
+        name_row_h = 34
+        lv_row_h = 28
+        bar_h = 26
+        attr_row_h = 24
+        line_h = 26
+        item_name_h = 40
+        rule_card_h = 10
+        price_h = 30
+        n_pad = int(globals().get("SHOP_PRICE_PAD", 4))
+
+        probe = ImageDraw.Draw(Image.new("RGB", (8, 8)))
+
+        def tw(s, f):
+            return probe.textlength(s, font=f)
+
+        def wrap(text, font, max_w):
+            """按像素宽度自动换行：空格优先断行"""
+            lines = []
+            cur = ""
+            for ch in text:
+                if tw(cur + ch, font) <= max_w:
+                    cur += ch
+                else:
+                    sp = cur.rfind(" ")
+                    if sp > 0:
+                        lines.append(cur[:sp])
+                        cur = cur[sp + 1:] + ch
+                    else:
+                        if cur:
+                            lines.append(cur)
+                        cur = ch
+            if cur:
+                lines.append(cur)
+            return lines or [""]
+
+        # ---------- 宠物信息卡片 ----------
+        pet_content_w = pet_w - inner * 2
+        if has_pet:
+            # 属性行：每行 3 个（最后一行 2 个）
+            attr_rows = [attrs[:3], attrs[3:]]
+            pet_card_h = inner * 2 + name_row_h + lv_row_h + bar_h + len(attr_rows) * attr_row_h
+            # 升级进度：新经验体系（所需经验 = 当前等级 × 100）
+            lv, got_exp, need_exp = self._pet_exp_progress(float(pet.get("exp", 0.0)))
+            exp_ratio = min(1.0, got_exp / need_exp) if need_exp > 0 else 1.0
+            exp_text = f"经验 {got_exp:.0f}/{need_exp:.0f}"
+        else:
+            attr_rows = []
+            # 无宠物：名称行 + 提示行
+            pet_card_h = inner * 2 + name_row_h + lv_row_h
+            exp_ratio = 0.0
+            exp_text = ""
+
+        # ---------- 内容卡片预计算 ----------
+        def can_do(item):
+            if not has_pet:
+                return False
+            if now_ts < self._pet_busy_until(pet):  # 打工/玩耍共用冷却计时器
+                return False
+            if pet["level"] < item["min_level"]:
+                return False
+            if pet["health"] < item["min_health"]:
+                return False
+            if pet["mood"] < item["min_mood"]:
+                return False
+            for attr, cost in item["cost"].items():
+                if cost > 0 and pet[attr] < cost:
+                    return False
+            return True
+
+        def cond_text(item):
+            parts = []
+            if item["min_level"] > 0:
+                parts.append(f"Lv.{int(item['min_level'])}+")
+            if item["min_health"] > 0:
+                parts.append(f"健康 {item['min_health']:.0f}+")
+            if item["min_mood"] > 0:
+                parts.append(f"心情 {item['min_mood']:.0f}+")
+            return "条件：" + " / ".join(parts) if parts else ""
+
+        def cost_text(item):
+            parts = []
+            for attr, cost in item["cost"].items():
+                if cost > 0:
+                    parts.append(f"{ATTR_SHORT[attr]}-{cost:.0f}")
+            return "消耗：" + " ".join(parts) if parts else "消耗：无"
+
+        def reward_text(item):
+            if kind == "打工":
+                s = f"金币 +{int(item['coins'])}"
+                if item["exp"] > 0:
+                    s += f" · 经验 +{item['exp']:.0f}"
+                return s
+            else:
+                s = f"经验 +{item['exp']:.0f}"
+                if item["mood"] > 0:
+                    s += f" · 心情 +{item['mood']:.0f}"
+                return s
+
+        plans = []  # (item, ok, [行], 高度)
+        for it in items:
+            ok = can_do(it)
+            content_w = card_w - inner * 2
+            rows = []
+            rows.append(("pair", it["name"], f"{int(it['time'])} 分钟"))
+            for wl in wrap(it["desc"], body_font, content_w):
+                rows.append(("plain", wl, ""))
+            ct = cond_text(it)
+            if ct:
+                for wl in wrap(ct, body_font, content_w):
+                    rows.append(("plain", wl, ""))
+            if kind == "打工":
+                for wl in wrap(cost_text(it), body_font, content_w):
+                    rows.append(("plain", wl, ""))
+            rows.append(("rule", "", ""))
+            rows.append(("price", reward_text(it), ""))
+            h_before = inner * 2 + item_name_h + (len(rows) - 3) * line_h  # 去掉 rule/price 后的文本行数
+            h = h_before + rule_card_h + price_h + n_pad
+            plans.append((it, ok, rows, h))
+
+        # ---------- 总高度 ----------
+        rows_n = (len(plans) + cols - 1) // cols if plans else 0
+        cards_h = 0
+        for r in range(rows_n):
+            group = plans[r * cols:(r + 1) * cols]
+            cards_h += max(p[3] for p in group) + gap
+        if cards_h > 0:
+            cards_h -= gap
+        height = pad * 2 + title_h + pet_card_h + rule_h + cards_h
+
+        img = Image.new("RGB", (width, height), (255, 255, 255))
+        d = ImageDraw.Draw(img)
+        y = pad
+
+        # 标题：<用户名称>
+        d.text((pad, y), name, font=title_font, fill=(20, 20, 20))
+        y += title_h
+
+        # ---------- 宠物信息卡片（横跨整行） ----------
+        d.rectangle([pad, y, pad + pet_w, y + pet_card_h], outline=(205, 205, 205), width=1)
+        yy = y + inner
+        # 行1：宠物名称(大两号,左) + 状态(小一号,右)
+        pet_disp = pet.get("name", "宠物") if has_pet else "还没有宠物"
+        d.text((int(pad + inner), yy), pet_disp, font=pet_name_font, fill=(20, 20, 20))
+        d.text((int(pad + pet_w - inner - tw(status, status_font)), yy + 10),
+               status, font=status_font, fill=(150, 150, 150))
+        yy += name_row_h
+        if has_pet:
+            # 行2：等级(左) + 经验值(小两号,右)，两端对齐（本行宽 = 内容宽）
+            d.text((int(pad + inner), yy), f"Lv.{pet['level']}", font=lv_font, fill=(40, 40, 40))
+            d.text((int(pad + pet_w - inner - tw(exp_text, exp_font)), yy + 6),
+                   exp_text, font=exp_font, fill=(110, 110, 110))
+            yy += lv_row_h
+            # 行3：升级进度条（宽度与上一行相等 = 内容宽，含百分比）
+            bar_w = pet_content_w
+            bar_y = yy + (bar_h - 14) // 2
+            d.rectangle([pad + inner, bar_y, pad + inner + bar_w, bar_y + 14], outline=(200, 200, 200), width=1)
+            if exp_ratio > 0:
+                d.rectangle([pad + inner + 1, bar_y + 1,
+                             int(pad + inner + 1 + (bar_w - 2) * exp_ratio), bar_y + 13],
+                            fill=(52, 168, 83))
+            pct_text = f"{int(exp_ratio * 100)}%"
+            d.text((int(pad + pet_w - inner - tw(pct_text, exp_font) - 4), bar_y - 4),
+                   pct_text, font=exp_font, fill=(40, 40, 40))
+            yy += bar_h
+            # 行4+：宠物属性（过低红色高亮）
+            for group in attr_rows:
+                gx = pad + inner
+                for an, av, amax, low in group:
+                    t = f"{an} {av:.0f}/{amax:.0f}"
+                    d.text((int(gx), yy), t, font=attr_font,
+                           fill=(192, 0, 0) if low else (70, 70, 70))
+                    gx += tw(t, attr_font) + 22
+                yy += attr_row_h
+        else:
+            # 无宠物：提示行
+            d.text((int(pad + inner), yy), "发送「解锁宠物」领养一只吧", font=lv_font, fill=(140, 90, 0))
+            yy += lv_row_h
+        y += pet_card_h
+
+        # 分割线
+        d.line([(pad, y), (width - pad, y)], fill=(200, 200, 200), width=2)
+        y += rule_h
+
+        # ---------- 内容卡片 ----------
+        for r in range(rows_n):
+            group = plans[r * cols:(r + 1) * cols]
+            gh = max(p[3] for p in group)
+            for j, (it, ok, rows, _) in enumerate(group):
+                x0 = pad + j * (card_w + gap)
+                bg = (217, 217, 217) if not ok else (255, 255, 255)
+                d.rectangle([x0, y, x0 + card_w, y + gh], fill=bg, outline=(200, 200, 200), width=1)
+                yy = y + inner
+                for row in rows:
+                    kind_row = row[0]
+                    if kind_row == "pair":
+                        d.text((int(x0 + inner), yy), row[1], font=item_name_font, fill=(20, 20, 20))
+                        d.text((int(x0 + card_w - inner - tw(row[2], body_font)), yy + 12),
+                               row[2], font=body_font, fill=(150, 150, 150))
+                        yy += item_name_h
+                    elif kind_row == "plain":
+                        for wl in wrap(row[1], body_font, card_w - inner * 2):
+                            d.text((int(x0 + inner), yy), wl, font=body_font, fill=(70, 70, 70))
+                            yy += line_h
+                    elif kind_row == "rule":
+                        yy += rule_card_h // 2
+                        d.line([(x0 + 8, yy), (x0 + card_w - 8, yy)], fill=(200, 200, 200), width=1)
+                        yy += rule_card_h // 2
+                    elif kind_row == "price":
+                        py = y + gh - n_pad - price_h
+                        d.text((int(x0 + card_w - inner - tw(row[1], price_font)), py),
+                               row[1], font=price_font, fill=(192, 0, 0))
+                        break
+            y += gh + gap
+
+        base = os.path.dirname(DATA_FILE)
+        path = os.path.join(base, f"_wp_{datetime.now().strftime('%Y%m%d%H%M%S%f')}.png")
+        try:
+            img.save(path)
+        except Exception as e:
+            logger.error(f"[插件] 保存{kind}列表图片失败: {e}")
+            return None
+        try:
+            now = datetime.now().timestamp()
+            for fn in os.listdir(base):
+                if fn.startswith("_wp_") and fn.endswith(".png"):
+                    fp = os.path.join(base, fn)
+                    if now - os.path.getmtime(fp) > 600:
+                        os.remove(fp)
+        except Exception:
+            pass
+        return ("image", path)
 
     def _handle_shop(self, event: AstrMessageEvent) -> str:
         cfg = self._load_config()
@@ -2914,26 +3507,38 @@ class SignInPlugin(Star):
     # ================= 金币红包 =================
     def _redpacket_draw(self, rp: dict, uid: str) -> int:
         """按规则计算并登记当前用户抢到的红包金额，返回发放金额（调用方负责入账）。
-        抢完（left 变 0）时记录 finished_ts，供「来晚一步」60 秒倒计时提示使用。"""
+        抢完（left 变 0）时记录 finished_ts，供「来晚一步」60 秒倒计时提示使用。
+        金额逻辑（1.7.1）：总奖金=剩余金额，红包个数=剩余个数；
+        个数=1 → 直接发放剩余；否则 基准奖金=总奖金/个数，
+        40% 进入加成区甲（基准乘区 100% ~ (n×100−20)%）、60% 进入加成区乙（20% ~ 100%），
+        理论奖金=基准奖金×基准乘区，去尾取整、下限 1、上限 总奖金−个数−1。"""
         left = int(rp.get("left", 0))
         remain = int(rp.get("remain", 0))
         if left <= 1:
-            # 规则 1：只剩一个红包时直接发放剩余金额
+            # 规则：红包个数 = 1，直接发放红包剩余金币
             amount = remain
         else:
-            # 规则 1：基准 = 剩余金额 / 剩余个数（整数）
-            base = remain // left
-            # 规则 2：加成浮动 [-80%, n*100%-20%]，n 为剩余红包个数
-            bonus = random.uniform(-0.8, left * 1.0 - 0.2)
-            ref = int(base + base * bonus)
-            if ref < 1:
-                ref = 1
-            # 规则 3：保证剩余金额 >= 剩余红包数（每个至少 1 金币）
-            if remain - ref < left:
-                ref = remain - left
-            if ref < 1:
-                ref = 1
-            amount = ref
+            # 基准奖金 = 总奖金 / 红包个数
+            base = remain / left
+            # 判定奖金加成区：40% 加成区甲 / 60% 加成区乙
+            if random.random() < 0.4:
+                # 加成区甲：随机加成数值范围 100% ~ (n×100−20)%（n = 红包个数）
+                mult = random.uniform(1.0, left * 1.0 - 0.2)
+            else:
+                # 加成区乙：20% ~ 100%
+                mult = random.uniform(0.2, 1.0)
+            # 理论奖金 = 基准奖金 × 基准乘区
+            theoretical = base * mult
+            # 去尾法去掉小数（向下取整）
+            amount = int(theoretical)
+            # 下限：理论奖金 < 1 → 1
+            if amount < 1:
+                amount = 1
+            # 上限：理论奖金 + 红包个数 − 1 > 总奖金 → 理论奖金 = 总奖金 − 红包个数 − 1
+            if amount + left - 1 > remain:
+                amount = remain - left - 1
+            if amount < 1:
+                amount = 1
         rp.setdefault("claimed", {})[uid] = amount
         rp["remain"] = int(rp.get("remain", 0)) - amount
         rp["left"] = left - 1
@@ -4576,6 +5181,8 @@ class SignInPlugin(Star):
             return f"解锁农场需要 {FARM_UNLOCK_COST} 金币（当前 {self._coins_of(data, key)}）。"
         self._add_coins(data, key, -FARM_UNLOCK_COST, "解锁农场")
         farm = self._ensure_farm(data, key)
+        # 盈利公式：解锁农场计入成本
+        farm["total_profit"] = int(farm.get("total_profit", 0)) - FARM_UNLOCK_COST
         for _ in range(FARM_FREE_PLOTS):
             farm["plots"].append(self._new_plot())
         self._save(data)
@@ -4596,6 +5203,8 @@ class SignInPlugin(Star):
             return f"购买土地需要 {FARM_PLOT_COST} 金币（当前 {self._coins_of(data, key)}）。"
         self._add_coins(data, key, -FARM_PLOT_COST, "购买土地")
         farm["plots"].append(self._new_plot())
+        # 盈利公式：购买土地计入成本
+        farm["total_profit"] = int(farm.get("total_profit", 0)) - FARM_PLOT_COST
         self._save(data)
         return (f"✅ {name} 花费 {FARM_PLOT_COST} 金币开垦了一块新土地（当前共 {len(farm['plots'])} 块）。\n"
                 f"{self._coin_line(data, key)}\n"
@@ -4629,6 +5238,8 @@ class SignInPlugin(Star):
             return f"升级需要 {cost} 金币（当前 {self._coins_of(data, key)}）。"
         self._add_coins(data, key, -cost, f"升级土地·{num}号")
         plot["grade"] = grade + 1
+        # 盈利公式：升级土地计入成本
+        farm["total_profit"] = int(farm.get("total_profit", 0)) - cost
         self._save(data)
         ng = FARM_GRADES[grade + 1]
         return (f"✅ {num} 号土地升级为 {ng[0]}（产量 +{int(ng[1] * 100)}%，时间 -{int(ng[2] * 100)}%）！\n"
@@ -4791,8 +5402,17 @@ class SignInPlugin(Star):
         if wh[crop_name] <= 0:
             wh.pop(crop_name, None)
         self._save(data)
-        return (f"✅ 在 {len(targets)} 块土地上种下 {crop_name}（编号 {targets[0] + 1}~{targets[-1] + 1}）。\n"
+        text = (f"✅ 在 {len(targets)} 块土地上种下 {crop_name}（编号 {targets[0] + 1}~{targets[-1] + 1}）。\n"
                 f"{self._farm_state_snippet(farm)}")
+        # 响应末尾附加「土地状态」指令的响应内容（图片）；失败则纯文本
+        try:
+            img = self._render_plot_status(name, farm, crops, self._load_fertilizers())
+        except Exception as e:
+            logger.error(f"[插件] 渲染土地状态图片异常: {e}")
+            img = None
+        if img is not None and isinstance(img, tuple) and img[0] == "image":
+            return ("image_text", text, img[1])
+        return text
 
     def _apply_fert_use(self, data, key, name, farm, fert, count):
         """使用化肥 count 次：对全部生长中土地按需分配（每块地最多 max_uses 次）"""
@@ -5093,7 +5713,6 @@ class SignInPlugin(Star):
                 total += int(round(int(cnt) * (float(c["seed_sell_price"]) if c else 0.0)))
             wh.clear()
             self._add_coins(data, key, total, "售卖种子")
-            farm["total_profit"] = int(farm.get("total_profit", 0)) + total
             self._save(data)
             return (f"✅ 卖出全部种子，获得 {total} 金币。\n"
                     f"{self._coin_line(data, key)}\n"
@@ -5118,7 +5737,6 @@ class SignInPlugin(Star):
             cnt = have
         gain = int(round(cnt * price))
         self._add_coins(data, key, gain, f"售卖种子·{seed_name}")
-        farm["total_profit"] = int(farm.get("total_profit", 0)) + gain
         if cnt >= have:
             wh.pop(seed_name, None)
         else:
