@@ -172,6 +172,23 @@ textarea {
   resize: vertical;
 }
 
+/* 商店编辑：折叠组内的子编辑器 */
+.sub-editor {
+  padding: 8px 4px 4px;
+}
+
+.sub-editor textarea {
+  height: 320px;
+}
+
+.feature-item {
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  margin-bottom: 8px;
+  background: var(--bg);
+}
+
 input[type="file"] {
   color: var(--text);
 }

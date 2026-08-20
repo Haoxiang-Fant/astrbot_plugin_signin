@@ -13,43 +13,64 @@
       <div id="debug-bar" class="debug-bar hidden"></div>
 
       <div class="tabs">
-        <button class="tab active" data-tab="config">后台.txt 编辑器</button>
-        <button class="tab" data-tab="crops">作物编辑器</button>
-        <button class="tab" data-tab="ferts">肥料编辑器</button>
+        <button class="tab active" data-tab="shopedit">商店编辑</button>
+        <button class="tab" data-tab="config">打工玩耍</button>
         <button class="tab" data-tab="loanpkgs">贷款套餐</button>
+        <button class="tab" data-tab="features">功能开关</button>
         <button class="tab" data-tab="params">运行参数</button>
         <button class="tab" data-tab="activities">活动中心</button>
         <button class="tab" data-tab="data">数据导入导出</button>
       </div>
 
-      <section id="panel-config" class="panel">
+      <!-- 商店编辑：宠物商店（按类型）/ 农场商店（种子、肥料） -->
+      <section id="panel-shopedit" class="panel">
+        <details class="param-group" open>
+          <summary>🐾 宠物商店（按类型拆分：食物/饮料/药物/玩具）</summary>
+          <div class="param-subgroups">
+            <div id="petshop-editors"></div>
+            <p class="hint">1.7.2 起宠物商店商品按 食物 / 饮料 / 药物 / 玩具 拆分为独立文件编辑（原 宠物商店.txt 自动拆分迁移）。</p>
+          </div>
+        </details>
+        <details class="param-group" open>
+          <summary>🌾 农场商店</summary>
+          <div class="param-subgroups">
+            <details class="param-subgroup" open>
+              <summary>🌱 种子（作物.txt）</summary>
+              <div class="sub-editor">
+                <div class="toolbar">
+                  <button id="btn-load-crops">加载</button>
+                  <button id="btn-save-crops" class="primary">保存</button>
+                  <span id="status-crops" class="status"></span>
+                </div>
+                <textarea id="crops-text" spellcheck="false" placeholder="点击「加载」读取 作物.txt 内容..."></textarea>
+                <p class="hint">编辑作物配置（种子价格 / 产量 / 成熟时间等），保存后立即生效。</p>
+              </div>
+            </details>
+            <details class="param-subgroup" open>
+              <summary>🧪 肥料（肥料.txt）</summary>
+              <div class="sub-editor">
+                <div class="toolbar">
+                  <button id="btn-load-ferts">加载</button>
+                  <button id="btn-save-ferts" class="primary">保存</button>
+                  <span id="status-ferts" class="status"></span>
+                </div>
+                <textarea id="ferts-text" spellcheck="false" placeholder="点击「加载」读取 肥料.txt 内容..."></textarea>
+                <p class="hint">编辑肥料配置（价格 / 减时 / 增产 / 最大次数），保存后立即生效。</p>
+              </div>
+            </details>
+          </div>
+        </details>
+      </section>
+
+      <!-- 打工 / 玩耍（原后台.txt 剩余部分） -->
+      <section id="panel-config" class="panel hidden">
         <div class="toolbar">
           <button id="btn-load-config">加载</button>
           <button id="btn-save-config" class="primary">保存</button>
           <span id="status-config" class="status"></span>
         </div>
         <textarea id="config-text" spellcheck="false" placeholder="点击「加载」读取 后台.txt 内容..."></textarea>
-        <p class="hint">编辑打工 / 玩耍 / 商店配置，保存后立即生效（无需重启）。</p>
-      </section>
-
-      <section id="panel-crops" class="panel hidden">
-        <div class="toolbar">
-          <button id="btn-load-crops">加载</button>
-          <button id="btn-save-crops" class="primary">保存</button>
-          <span id="status-crops" class="status"></span>
-        </div>
-        <textarea id="crops-text" spellcheck="false" placeholder="点击「加载」读取 作物.txt 内容..."></textarea>
-        <p class="hint">编辑作物配置（种子价格 / 产量 / 成熟时间等），保存后立即生效。</p>
-      </section>
-
-      <section id="panel-ferts" class="panel hidden">
-        <div class="toolbar">
-          <button id="btn-load-ferts">加载</button>
-          <button id="btn-save-ferts" class="primary">保存</button>
-          <span id="status-ferts" class="status"></span>
-        </div>
-        <textarea id="ferts-text" spellcheck="false" placeholder="点击「加载」读取 肥料.txt 内容..."></textarea>
-        <p class="hint">编辑肥料配置（价格 / 减时 / 增产 / 最大次数），保存后立即生效。</p>
+        <p class="hint">编辑打工 / 玩耍配置（1.7.2：宠物商店商品已拆分到 宠物商店.txt，本文件仅含打工/玩耍），保存后立即生效。</p>
       </section>
 
       <section id="panel-loanpkgs" class="panel hidden">
@@ -60,6 +81,19 @@
         </div>
         <textarea id="loanpkgs-text" spellcheck="false" placeholder="点击「加载」读取 贷款套餐.txt 内容..."></textarea>
         <p class="hint">编辑自定义贷款套餐（代码 3~10）：最大金额 / 好感度等级要求 / 宠物等级要求 / 农场等级要求 / 利息，保存后立即生效。</p>
+      </section>
+
+      <!-- 功能开关 -->
+      <section id="panel-features" class="panel hidden">
+        <div class="toolbar">
+          <button id="btn-load-features">加载</button>
+          <button id="btn-save-features" class="primary">保存并立即生效</button>
+          <span id="status-features" class="status"></span>
+        </div>
+        <div id="features-list" class="param-list">
+          <p class="hint">点击「加载」读取功能开关...</p>
+        </div>
+        <p class="hint">每个系统可独立开关：关闭后对应指令在群聊中提示「功能已被管理员关闭」。默认全部开启，保存后立即生效（重启后保留）。</p>
       </section>
 
       <section id="panel-params" class="panel hidden">
@@ -88,12 +122,12 @@
 
       <section id="panel-data" class="panel hidden">
         <div class="toolbar">
-          <button id="btn-export-data">导出 data.json</button>
+          <button id="btn-export-data">导出全部数据</button>
           <input type="file" id="import-file" accept=".json,application/json" />
           <button id="btn-import-data" class="primary">导入</button>
           <span id="status-data" class="status"></span>
         </div>
-        <p class="hint">导出会把 data.json 下载到本地；导入会用所选文件覆盖 data.json（建议先导出备份）。</p>
+        <p class="hint">导出会把 **用户存档（data.json）+ 自定义配置（后台.txt / 宠物商店.txt / 作物.txt / 肥料.txt / 贷款套餐.txt）** 打包为单个 JSON 文件下载；导入会用所选文件覆盖以上全部文件（建议先导出备份）。</p>
       </section>
     </div>
 
