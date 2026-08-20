@@ -3,7 +3,8 @@ const bridge = window.AstrBotPluginPage;
 const $ = (id) => document.getElementById(id);
 
 function setStatus(id, text) {
-  $(id).textContent = text;
+  const el = $(id);
+  if (el) el.textContent = text;
 }
 
 async function loadConfig() {
@@ -28,35 +29,66 @@ async function saveConfig() {
   }
 }
 
+// 宠物商店固定类型（前端硬编码，不依赖后端返回；后端缺失 types 时按 content 解析填充）
+const PETSHOP_TYPES = ["食物", "饮料", "药物", "玩具"];
+
+// 从合并 content 中按 [商店:xxx] 段落提取属于某类型的文本
+function extractTypeContent(content, typeKey) {
+  if (!content) return "";
+  const sections = [];
+  let cur = null;
+  for (const line of content.split("\n")) {
+    const s = line.trim();
+    if (s.startsWith("[") && s.endsWith("]") && s.includes(":")) {
+      cur = { type: "", lines: [line + "\n"] };
+      sections.push(cur);
+      continue;
+    }
+    if (cur) cur.lines.push(line + "\n");
+    if (cur && s.startsWith("类型=")) {
+      let t = s.slice(3).trim();
+      if (t === "食品") t = "食物";
+      cur.type = t;
+    }
+  }
+  const out = sections
+    .filter((x) => x.type === typeKey)
+    .map((x) => x.lines.join(""))
+    .join("\n");
+  return out;
+}
+
 async function loadPetShop() {
   setStatus("status-petshop", "加载中...");
   try {
     const data = await bridge.apiGet("petshop");
     const types = (data && data.types) || [];
+    const mergedContent = (data && data.content) || "";
     const box = $("petshop-editors");
-    box.innerHTML = types
-      .map(
-        (t, i) => `<details class="param-subgroup" ${i === 0 ? "open" : ""}>
-          <summary>${t.label}</summary>
-          <div class="sub-editor">
-            <div class="toolbar">
-              <button data-petshop-load="${t.key}">加载</button>
-              <button data-petshop-save="${t.key}" class="primary">保存</button>
-              <span id="status-petshop-${t.key}" class="status"></span>
-            </div>
-            <textarea id="petshop-text-${t.key}" spellcheck="false" placeholder="点击「加载」读取 ${t.label} 配置..."></textarea>
+    // 永远渲染 4 个类型编辑器；内容优先 types，缺失时从合并 content 按类型提取
+    box.innerHTML = PETSHOP_TYPES.map((key, i) => {
+      const t = types.find((x) => x.key === key);
+      const content =
+        (t && t.content) || extractTypeContent(mergedContent, key);
+      return `<details class="param-subgroup" ${i === 0 ? "open" : ""}>
+        <summary>${key}</summary>
+        <div class="sub-editor">
+          <div class="toolbar">
+            <button data-petshop-load="${key}">加载</button>
+            <button data-petshop-save="${key}" class="primary">保存</button>
+            <span id="status-petshop-${key}" class="status"></span>
           </div>
-        </details>`,
-      )
-      .join("");
-    types.forEach((t) => {
+          <textarea id="petshop-text-${key}" spellcheck="false" placeholder="点击「加载」读取 ${key} 配置...">${content}</textarea>
+        </div>
+      </details>`;
+    }).join("");
+    PETSHOP_TYPES.forEach((key) => {
       document
-        .querySelector(`[data-petshop-load="${t.key}"]`)
-        .addEventListener("click", () => loadPetShopType(t.key));
+        .querySelector(`[data-petshop-load="${key}"]`)
+        .addEventListener("click", () => loadPetShopType(key));
       document
-        .querySelector(`[data-petshop-save="${t.key}"]`)
-        .addEventListener("click", () => savePetShopType(t.key));
-      $(`petshop-text-${t.key}`).value = t.content || "";
+        .querySelector(`[data-petshop-save="${key}"]`)
+        .addEventListener("click", () => savePetShopType(key));
     });
     setStatus("status-petshop", "✅ 已加载");
   } catch (e) {
@@ -70,7 +102,9 @@ async function loadPetShopType(key) {
     const data = await bridge.apiGet("petshop");
     const types = (data && data.types) || [];
     const t = types.find((x) => x.key === key);
-    if (t) $(`petshop-text-${key}`).value = t.content || "";
+    const mergedContent = (data && data.content) || "";
+    const content = (t && t.content) || extractTypeContent(mergedContent, key);
+    $(`petshop-text-${key}`).value = content || "";
     setStatus(`status-petshop-${key}`, "✅ 已加载");
   } catch (e) {
     setStatus(`status-petshop-${key}`, "❌ 加载失败：" + e.message);
@@ -86,6 +120,27 @@ async function savePetShopType(key) {
   } catch (e) {
     setStatus(`status-petshop-${key}`, "❌ 保存失败：" + e.message);
   }
+}
+
+async function loadPetShopAll() {
+  await loadPetShop(); // loadPetShop 已填充全部 4 个编辑器内容
+}
+
+async function savePetShopAll() {
+  setStatus("status-petshop", "保存中...");
+  let failed = false;
+  for (const key of PETSHOP_TYPES) {
+    const el = $(`petshop-text-${key}`);
+    if (!el) continue;
+    try {
+      await bridge.apiPost("petshop", { key, content: el.value });
+      setStatus(`status-petshop-${key}`, "✅ 已保存");
+    } catch (e) {
+      failed = true;
+      setStatus(`status-petshop-${key}`, "❌ 保存失败：" + e.message);
+    }
+  }
+  setStatus("status-petshop", failed ? "⚠️ 部分保存失败" : "✅ 已全部保存");
 }
 
 async function loadCrops() {
@@ -499,6 +554,8 @@ document.querySelectorAll(".tab").forEach((b) =>
 );
 $("btn-load-config").addEventListener("click", loadConfig);
 $("btn-save-config").addEventListener("click", saveConfig);
+$("btn-load-petshop-all").addEventListener("click", loadPetShopAll);
+$("btn-save-petshop-all").addEventListener("click", savePetShopAll);
 $("btn-load-crops").addEventListener("click", loadCrops);
 $("btn-save-crops").addEventListener("click", saveCrops);
 $("btn-load-ferts").addEventListener("click", loadFerts);

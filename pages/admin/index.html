@@ -26,9 +26,14 @@
       <section id="panel-shopedit" class="panel">
         <details class="param-group" open>
           <summary>🐾 宠物商店（按类型拆分：食物/饮料/药物/玩具）</summary>
+          <div class="toolbar">
+            <button id="btn-load-petshop-all">全部加载</button>
+            <button id="btn-save-petshop-all" class="primary">全部保存</button>
+            <span id="status-petshop" class="status"></span>
+          </div>
           <div class="param-subgroups">
             <div id="petshop-editors"></div>
-            <p class="hint">1.7.2 起宠物商店商品按 食物 / 饮料 / 药物 / 玩具 拆分为独立文件编辑（原 宠物商店.txt 自动拆分迁移）。</p>
+            <p class="hint">1.7.3 起宠物商店商品按 食物 / 饮料 / 药物 / 玩具 拆分为独立文件编辑（原 宠物商店.txt 自动拆分迁移）。</p>
           </div>
         </details>
         <details class="param-group" open>
@@ -70,7 +75,7 @@
           <span id="status-config" class="status"></span>
         </div>
         <textarea id="config-text" spellcheck="false" placeholder="点击「加载」读取 后台.txt 内容..."></textarea>
-        <p class="hint">编辑打工 / 玩耍配置（1.7.2：宠物商店商品已拆分到 宠物商店.txt，本文件仅含打工/玩耍），保存后立即生效。</p>
+        <p class="hint">编辑打工 / 玩耍配置（1.7.3：宠物商店商品已拆分到 宠物商店.txt，本文件仅含打工/玩耍），保存后立即生效。</p>
       </section>
 
       <section id="panel-loanpkgs" class="panel hidden">

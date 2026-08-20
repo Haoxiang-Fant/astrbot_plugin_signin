@@ -437,7 +437,7 @@ FERT_FILE = os.path.join(_DATA_DIR, "肥料.txt")
 LOAN_FILE = os.path.join(_DATA_DIR, "贷款套餐.txt")
 FONT_FILE = os.path.join(_PLUGIN_DIR, "OPPOSans-M.ttf")
 
-# 宠物商店按类型拆分的文件（1.7.2）
+# 宠物商店按类型拆分的文件（1.7.3）
 PET_SHOP_TYPE_FILES = {
     "食物": os.path.join(_DATA_DIR, "宠物商店-食物.txt"),
     "饮料": os.path.join(_DATA_DIR, "宠物商店-饮料.txt"),
@@ -468,7 +468,7 @@ def _migrate_old_data_files():
 
 def _migrate_split_shop_config():
     """1.7.2：把 后台.txt 里的 [商店:xxx] 段落拆到独立的 宠物商店.txt（自动迁移一次）。
-    1.7.2：把 宠物商店.txt 按 类型=食物/饮料/药物/玩具 拆到独立文件（自动迁移一次）。
+    1.7.3：把 宠物商店.txt 按 类型=食物/饮料/药物/玩具 拆到独立文件（自动迁移一次）。
     后台.txt 只保留打工/玩耍。"""
     try:
         # 1.7.2 迁移：后台.txt → 宠物商店.txt
@@ -500,7 +500,7 @@ def _migrate_split_shop_config():
                 with open(CONFIG_FILE, "w", encoding="utf-8") as f:
                     f.write("".join(keep_lines))
                 logger.info(f"[插件] 已将后台.txt 的商店段落拆分为 宠物商店.txt（{len(shop_lines)} 行）")
-        # 1.7.2 迁移：宠物商店.txt → 按类型文件
+        # 1.7.3 迁移：宠物商店.txt → 按类型文件
         _migrate_split_petshop_types()
     except Exception as e:
         logger.error(f"[插件] 拆分宠物商店配置失败: {e}")
@@ -583,6 +583,16 @@ def _parse_kv_sections(path: str, kind: str, types=None):
     except Exception as e:
         logger.error(f"[插件] 读取{kind}配置失败: {e}")
         return []
+    return _parse_kv_text(raw_lines, types)
+
+
+def _parse_kv_sections_text(text: str, kind: str, types=None):
+    """解析字符串形式的「[类型:名称] + key=value」配置（供旧版前端兼容保存使用）"""
+    return _parse_kv_text(text.splitlines(keepends=True), types)
+
+
+def _parse_kv_text(raw_lines, types=None):
+    """解析「[类型:名称] + key=value」行列表，types 为 None 接受所有类型"""
     sections = []
     cur = None
     for raw in raw_lines:
@@ -746,7 +756,7 @@ class RouletteGame:
         return "、".join(p["name"] for p in self.players)
 
 
-@register("astrbot_plugin_signin", "sishijiu", "群签到 + 左轮手枪 + 宠物养成 + 金币银行 + 农场", "1.7.2")
+@register("astrbot_plugin_signin", "sishijiu", "群签到 + 左轮手枪 + 宠物养成 + 金币银行 + 农场", "1.7.3")
 class SignInPlugin(Star):
     def __init__(self, context: Context, config: dict = None):
         super().__init__(context)
@@ -1806,7 +1816,7 @@ class SignInPlugin(Star):
 
     # ================= 后台配置解析 =================
     def _load_config(self) -> dict:
-        """打工/玩耍来自 后台.txt；宠物商店商品来自 宠物商店-食物/饮料/药物/玩具.txt（1.7.2 按类型拆分）。
+        """打工/玩耍来自 后台.txt；宠物商店商品来自 宠物商店-食物/饮料/药物/玩具.txt（1.7.3 按类型拆分）。
         兼容旧数据：后台.txt 中仍含 [商店:] 段落、或宠物商店.txt 未拆分时也读取。"""
         cfg = {"jobs": [], "plays": [], "shop": []}
         self._parse_work_play(CONFIG_FILE, cfg)
@@ -1963,30 +1973,50 @@ class SignInPlugin(Star):
             return json_response({"saved": True})
 
     async def web_get_petshop(self):
-        """读取宠物商店各类型文件内容：{types: [{key, label, content}]}"""
+        """读取宠物商店各类型文件内容：{types: [{key, label, content}], content: 合并内容}
+        content 字段供旧版前端（单 textarea）兼容显示；types 供新版前端按类型编辑。"""
         async with self._lock:
             items = []
+            merged = []
             for typ in PET_SHOP_TYPES:
-                items.append({
-                    "key": typ,
-                    "label": typ,
-                    "content": self._read_file(PET_SHOP_TYPE_FILES[typ]),
-                })
-            return json_response({"types": items})
+                content = self._read_file(PET_SHOP_TYPE_FILES[typ])
+                items.append({"key": typ, "label": typ, "content": content})
+                if content.strip():
+                    merged.append(content)
+            return json_response({"types": items, "content": "\n".join(merged)})
 
     async def web_save_petshop(self):
-        """保存宠物商店某类型文件内容：{key: 类型, content: 文本}"""
+        """保存宠物商店：新版前端 {key: 类型, content} 写入对应类型文件；
+        旧版前端 {content} 按 [商店:xxx] 段落类型拆分写入各类型文件（兼容）。"""
         async with self._lock:
             payload = await request.json(default={})
-            typ = payload.get("key")
             content = payload.get("content")
-            if typ not in PET_SHOP_TYPE_FILES:
-                return error_response("key 必须是 食物/饮料/药物/玩具", status_code=400)
             if not isinstance(content, str):
                 return error_response("content 必须是字符串", status_code=400)
-            ok, msg = self._write_file(PET_SHOP_TYPE_FILES[typ], content)
-            if not ok:
-                return error_response(msg, status_code=400)
+            typ = payload.get("key")
+            if typ in PET_SHOP_TYPE_FILES:
+                # 新版前端：按类型保存
+                ok, msg = self._write_file(PET_SHOP_TYPE_FILES[typ], content)
+                if not ok:
+                    return error_response(msg, status_code=400)
+                return json_response({"saved": True})
+            # 旧版前端：合并内容按类型拆分写入各文件
+            sections = _parse_kv_sections_text(content, "宠物商店", types=("商店",))
+            by_type = {t: [] for t in PET_SHOP_TYPES}
+            for sec in sections:
+                st = sec["data"].get("类型", "").strip() or "其他"
+                if st == "食品":
+                    st = "食物"
+                lines = [f"[商店:{sec['name']}]\n"]
+                for k, v in sec["data"].items():
+                    lines.append(f"{k}={v}\n")
+                lines.append("\n")
+                (by_type[st] if st in by_type else by_type.setdefault(st, [])).append("".join(lines))
+            for st, lines in by_type.items():
+                if lines:
+                    ok, msg = self._write_file(PET_SHOP_TYPE_FILES.get(st, os.path.join(_DATA_DIR, f"宠物商店-{st}.txt")), "".join(lines))
+                    if not ok:
+                        return error_response(msg, status_code=400)
             return json_response({"saved": True})
 
     # ================= 功能开关 =================
