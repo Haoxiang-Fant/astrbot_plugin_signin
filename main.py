@@ -371,6 +371,25 @@ RUNTIME_PARAMS = [
      "desc": "使用农场经验球获得升级所需总经验的最小百分比（0.05 = 5%）", "default": 0.05, "min": 0, "max": 1, "attr": "exp_ball_min_pct"},
     {"key": "EXP_BALL_MAX_PCT", "label": "经验球增加百分比上限", "type": "float", "group": "农场", "subgroup": "农场经验球",
      "desc": "使用农场经验球获得升级所需总经验的最大百分比（0.20 = 20%）", "default": 0.20, "min": 0, "max": 2, "attr": "exp_ball_max_pct"},
+    # ---- 偷菜 ----
+    {"key": "STEAL_ENABLED", "label": "偷菜功能开关", "type": "bool", "group": "偷菜", "subgroup": "通用",
+     "desc": "全局总开关：关闭后「偷菜」指令提示功能未开启", "default": True},
+    {"key": "STEAL_LOSS_MIN", "label": "偷菜损失比例下限", "type": "float", "group": "偷菜", "subgroup": "规则",
+     "desc": "每次偷菜被偷方损失的当前产量比例下限（0.10 = 10%）", "default": 0.10, "min": 0.01, "max": 1},
+    {"key": "STEAL_LOSS_MAX", "label": "偷菜损失比例上限", "type": "float", "group": "偷菜", "subgroup": "规则",
+     "desc": "每次偷菜被偷方损失的当前产量比例上限（0.20 = 20%）", "default": 0.20, "min": 0.01, "max": 1},
+    {"key": "STEAL_GUARD_HEALTH", "label": "看家宠物最低健康度", "type": "float", "group": "偷菜", "subgroup": "宠物防护",
+     "desc": "宠物健康度高于该值才可开启/生效看家防护", "default": 60, "min": 1, "max": 200},
+    {"key": "STEAL_GUARD_REDUCE_MIN", "label": "看家额外减免下限", "type": "float", "group": "偷菜", "subgroup": "宠物防护",
+     "desc": "看家生效时偷菜成功额外减少的损失比例下限（0.02 = 2%）", "default": 0.02, "min": 0, "max": 1},
+    {"key": "STEAL_GUARD_REDUCE_MAX", "label": "看家额外减免上限", "type": "float", "group": "偷菜", "subgroup": "宠物防护",
+     "desc": "看家生效时偷菜成功额外减少的损失比例上限（0.06 = 6%）", "default": 0.06, "min": 0, "max": 1},
+    {"key": "STEAL_SCENT_THRESHOLD", "label": "气味记忆触发次数", "type": "int", "group": "偷菜", "subgroup": "气味记忆",
+     "desc": "同一偷菜者24小时内尝试偷菜超过该次数，对方获得「气味记忆」", "default": 4, "min": 1, "max": 50},
+    {"key": "STEAL_SCENT_HOURS_MIN", "label": "气味记忆时长下限（小时）", "type": "int", "group": "偷菜", "subgroup": "气味记忆",
+     "desc": "气味记忆持续时间下限（小时）", "default": 12, "min": 1, "max": 168},
+    {"key": "STEAL_SCENT_HOURS_MAX", "label": "气味记忆时长上限（小时）", "type": "int", "group": "偷菜", "subgroup": "气味记忆",
+     "desc": "气味记忆持续时间上限（小时）", "default": 24, "min": 1, "max": 168},
     # ---- 左轮手枪 ----
     {"key": "ROULETTE_JOIN_TIMEOUT", "label": "左轮加入超时（秒）", "type": "int", "group": "左轮手枪", "subgroup": "规则",
      "desc": "左轮手枪开局后等待加入的超时秒数", "default": 30, "min": 10, "max": 300},
@@ -412,10 +431,20 @@ else:
 
 DATA_FILE = os.path.join(_DATA_DIR, "data.json")
 CONFIG_FILE = os.path.join(_DATA_DIR, "后台.txt")
+PET_SHOP_FILE = os.path.join(_DATA_DIR, "宠物商店.txt")
 CROP_FILE = os.path.join(_DATA_DIR, "作物.txt")
 FERT_FILE = os.path.join(_DATA_DIR, "肥料.txt")
 LOAN_FILE = os.path.join(_DATA_DIR, "贷款套餐.txt")
 FONT_FILE = os.path.join(_PLUGIN_DIR, "OPPOSans-M.ttf")
+
+# 宠物商店按类型拆分的文件（1.7.2）
+PET_SHOP_TYPE_FILES = {
+    "食物": os.path.join(_DATA_DIR, "宠物商店-食物.txt"),
+    "饮料": os.path.join(_DATA_DIR, "宠物商店-饮料.txt"),
+    "药物": os.path.join(_DATA_DIR, "宠物商店-药物.txt"),
+    "玩具": os.path.join(_DATA_DIR, "宠物商店-玩具.txt"),
+}
+PET_SHOP_TYPES = list(PET_SHOP_TYPE_FILES.keys())
 
 
 def _migrate_old_data_files():
@@ -426,6 +455,7 @@ def _migrate_old_data_files():
         ("作物.txt", CROP_FILE),
         ("肥料.txt", FERT_FILE),
         ("贷款套餐.txt", LOAN_FILE),
+        ("宠物商店.txt", PET_SHOP_FILE),
     ]
     try:
         for fn, target in pairs:
@@ -436,7 +466,80 @@ def _migrate_old_data_files():
         logger.error(f"[插件] 迁移旧数据文件失败: {e}")
 
 
-_migrate_old_data_files()
+def _migrate_split_shop_config():
+    """1.7.2：把 后台.txt 里的 [商店:xxx] 段落拆到独立的 宠物商店.txt（自动迁移一次）。
+    1.7.2：把 宠物商店.txt 按 类型=食物/饮料/药物/玩具 拆到独立文件（自动迁移一次）。
+    后台.txt 只保留打工/玩耍。"""
+    try:
+        # 1.7.2 迁移：后台.txt → 宠物商店.txt
+        if not os.path.exists(PET_SHOP_FILE) and os.path.exists(CONFIG_FILE):
+            with open(CONFIG_FILE, "r", encoding="utf-8") as f:
+                raw = f.read()
+            lines = raw.splitlines(keepends=True)
+            in_shop = False
+            shop_lines = []
+            keep_lines = []
+            for ln in lines:
+                s = ln.strip()
+                if s.startswith("[") and s.endswith("]"):
+                    if ":" in s[1:-1]:
+                        typ = s[1:-1].split(":", 1)[0].strip()
+                        if typ == "商店":
+                            in_shop = True
+                            shop_lines.append(ln)
+                            continue
+                        else:
+                            in_shop = False
+                if in_shop:
+                    shop_lines.append(ln)
+                else:
+                    keep_lines.append(ln)
+            if shop_lines:
+                with open(PET_SHOP_FILE, "w", encoding="utf-8") as f:
+                    f.write("".join(shop_lines))
+                with open(CONFIG_FILE, "w", encoding="utf-8") as f:
+                    f.write("".join(keep_lines))
+                logger.info(f"[插件] 已将后台.txt 的商店段落拆分为 宠物商店.txt（{len(shop_lines)} 行）")
+        # 1.7.2 迁移：宠物商店.txt → 按类型文件
+        _migrate_split_petshop_types()
+    except Exception as e:
+        logger.error(f"[插件] 拆分宠物商店配置失败: {e}")
+
+
+def _migrate_split_petshop_types():
+    """把 宠物商店.txt 按 类型= 字段拆到 PET_SHOP_TYPE_FILES；宠物商店.txt 保留（兼容回退）。
+    若任一类型文件不存在且宠物商店.txt 存在 → 按类型拆分。"""
+    try:
+        if not os.path.exists(PET_SHOP_FILE):
+            return
+        if all(os.path.exists(p) for p in PET_SHOP_TYPE_FILES.values()):
+            return
+        sections = _parse_kv_sections(PET_SHOP_FILE, "宠物商店", types=("商店",))
+        by_type = {t: [] for t in PET_SHOP_TYPES}
+        other = []
+        for sec in sections:
+            typ = sec["data"].get("类型", "").strip() or "其他"
+            # 兼容：旧类型「食品」归入「食物」文件
+            if typ == "食品":
+                typ = "食物"
+            lines = [f"[商店:{sec['name']}]\n"]
+            for k, v in sec["data"].items():
+                lines.append(f"{k}={v}\n")
+            lines.append("\n")
+            if typ in by_type:
+                by_type[typ].append("".join(lines))
+            else:
+                other.append("".join(lines))
+        wrote = False
+        for typ, lines in by_type.items():
+            if lines and not os.path.exists(PET_SHOP_TYPE_FILES[typ]):
+                with open(PET_SHOP_TYPE_FILES[typ], "w", encoding="utf-8") as f:
+                    f.write("".join(lines))
+                wrote = True
+        if wrote:
+            logger.info("[插件] 已将 宠物商店.txt 按类型拆分为独立文件（食物/饮料/药物/玩具）")
+    except Exception as e:
+        logger.error(f"[插件] 拆分宠物商店类型文件失败: {e}")
 
 
 def _load_activity_modules():
@@ -461,6 +564,143 @@ def _load_activity_modules():
 
 ATTR_LABELS = {"satiety": "饱食度", "thirst": "口渴值", "stamina": "体力", "mood": "心情值", "health": "健康度"}
 ATTR_SHORT = {"satiety": "饱食", "thirst": "口渴", "stamina": "体力", "mood": "心情", "health": "健康"}
+
+# 临时图片保留秒数（超过则在下次生成同类图片时清理）
+TEMP_IMAGE_TTL = 600
+
+
+def _parse_kv_sections(path: str, kind: str, types=None):
+    """解析「[类型:名称] + key=value」格式的配置文件。
+
+    types 为 None 时接受所有段落类型；否则只保留其中列出的类型。
+    返回 [{"type": 类型, "name": 名称, "data": {k: v}}]，读取失败返回空列表。
+    """
+    if not os.path.exists(path):
+        return []
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            raw_lines = f.readlines()
+    except Exception as e:
+        logger.error(f"[插件] 读取{kind}配置失败: {e}")
+        return []
+    sections = []
+    cur = None
+    for raw in raw_lines:
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line.startswith("[") and line.endswith("]"):
+            cur = None
+            inner = line[1:-1]
+            if ":" in inner:
+                typ, nm = inner.split(":", 1)
+                typ, nm = typ.strip(), nm.strip()
+                if types is None or typ in types:
+                    cur = {"type": typ, "name": nm, "data": {}}
+                    sections.append(cur)
+            continue
+        if cur is None:
+            continue
+        if "=" in line:
+            k, v = line.split("=", 1)
+            cur["data"][k.strip()] = v.strip()
+    return sections
+
+
+# 数据文件迁移（依赖 _parse_kv_sections，须在其定义之后执行）
+_migrate_old_data_files()
+_migrate_split_shop_config()
+
+
+_FONT_CACHE = {}
+
+
+def _load_fonts(*sizes):
+    """按字号批量加载 OPPOSans 字体（带进程内缓存）。
+
+    返回字号对应的字体元组；Pillow 缺失、字体文件缺失或加载失败时返回 None。
+    """
+    try:
+        from PIL import ImageFont
+    except Exception as e:
+        logger.error(f"[插件] 缺少 Pillow，无法生成图片: {e}")
+        return None
+    if not os.path.exists(FONT_FILE):
+        logger.error(f"[插件] 字体文件不存在: {FONT_FILE}")
+        return None
+    fonts = []
+    for size in sizes:
+        font = _FONT_CACHE.get(size)
+        if font is None:
+            try:
+                font = ImageFont.truetype(FONT_FILE, size)
+            except Exception as e:
+                logger.error(f"[插件] 加载字体 {FONT_FILE} 失败: {e}")
+                return None
+            _FONT_CACHE[size] = font
+        fonts.append(font)
+    return tuple(fonts)
+
+
+def _text_measurer():
+    """返回像素宽度测量函数 tw(text, font)；Pillow 不可用时返回 None"""
+    try:
+        from PIL import Image, ImageDraw
+    except Exception:
+        return None
+    probe = ImageDraw.Draw(Image.new("RGB", (8, 8)))
+
+    def tw(s, font):
+        return probe.textlength(s, font=font)
+
+    return tw
+
+
+def _make_wrapper(tw, default_width):
+    """生成按像素宽度换行的函数：优先在空格处断行，无空格则按字符硬切"""
+
+    def wrap(text, font, max_w=None):
+        limit = default_width if max_w is None else max_w
+        lines = []
+        cur = ""
+        for ch in text:
+            if tw(cur + ch, font) <= limit:
+                cur += ch
+                continue
+            sp = cur.rfind(" ")
+            if sp > 0:
+                lines.append(cur[:sp])
+                cur = cur[sp + 1:] + ch
+            else:
+                if cur:
+                    lines.append(cur)
+                cur = ch
+        if cur:
+            lines.append(cur)
+        return lines or [""]
+
+    return wrap
+
+
+def _save_temp_image(img, prefix: str, kind: str):
+    """保存渲染结果到数据目录并清理同前缀的过期图片。返回 ("image", path) 或 None"""
+    base = os.path.dirname(DATA_FILE)
+    path = os.path.join(base, f"{prefix}{datetime.now().strftime('%Y%m%d%H%M%S%f')}.png")
+    try:
+        img.save(path)
+    except Exception as e:
+        logger.error(f"[插件] 保存{kind}图片失败: {e}")
+        return None
+    try:
+        now = datetime.now().timestamp()
+        for fn in os.listdir(base):
+            if fn.startswith(prefix) and fn.endswith(".png"):
+                fp = os.path.join(base, fn)
+                if now - os.path.getmtime(fp) > TEMP_IMAGE_TTL:
+                    os.remove(fp)
+    except Exception:
+        pass
+    return ("image", path)
 
 
 def _parse_item_qty(message_str):
@@ -506,7 +746,7 @@ class RouletteGame:
         return "、".join(p["name"] for p in self.players)
 
 
-@register("astrbot_plugin_signin", "sishijiu", "群签到 + 左轮手枪 + 宠物养成 + 金币银行 + 农场", "1.7.1")
+@register("astrbot_plugin_signin", "sishijiu", "群签到 + 左轮手枪 + 宠物养成 + 金币银行 + 农场", "1.7.2")
 class SignInPlugin(Star):
     def __init__(self, context: Context, config: dict = None):
         super().__init__(context)
@@ -583,16 +823,28 @@ class SignInPlugin(Star):
 
         # 注册 WebUI Pages 的后端 API
         context.register_web_api(
-            f"/{PLUGIN_NAME}/backend/config", self.web_get_backend_config, ["GET"], "读取后台.txt"
+            f"/{PLUGIN_NAME}/backend/config", self.web_get_backend_config, ["GET"], "读取后台.txt（打工/玩耍）"
         )
         context.register_web_api(
-            f"/{PLUGIN_NAME}/backend/config", self.web_save_backend_config, ["POST"], "保存后台.txt"
+            f"/{PLUGIN_NAME}/backend/config", self.web_save_backend_config, ["POST"], "保存后台.txt（打工/玩耍）"
         )
         context.register_web_api(
-            f"/{PLUGIN_NAME}/data/export", self.web_export_data, ["GET"], "导出 data.json"
+            f"/{PLUGIN_NAME}/petshop", self.web_get_petshop, ["GET"], "读取宠物商店.txt"
         )
         context.register_web_api(
-            f"/{PLUGIN_NAME}/data/import", self.web_import_data, ["POST"], "导入 data.json"
+            f"/{PLUGIN_NAME}/petshop", self.web_save_petshop, ["POST"], "保存宠物商店.txt"
+        )
+        context.register_web_api(
+            f"/{PLUGIN_NAME}/feature/status", self.web_get_feature_status, ["GET"], "读取功能开关"
+        )
+        context.register_web_api(
+            f"/{PLUGIN_NAME}/feature/status", self.web_save_feature_status, ["POST"], "保存功能开关"
+        )
+        context.register_web_api(
+            f"/{PLUGIN_NAME}/data/export", self.web_export_data, ["GET"], "导出全部数据（存档+自定义配置）"
+        )
+        context.register_web_api(
+            f"/{PLUGIN_NAME}/data/import", self.web_import_data, ["POST"], "导入全部数据（存档+自定义配置）"
         )
         context.register_web_api(
             f"/{PLUGIN_NAME}/farm/crops", self.web_get_crops, ["GET"], "读取作物.txt"
@@ -783,6 +1035,13 @@ class SignInPlugin(Star):
         return self._render_text_image(title, reply.splitlines())
 
     def _route(self, head: str, event: AstrMessageEvent):
+        # 功能开关拦截：对应模块关闭时返回提示（帮助类指令不受影响）
+        mod = self.FEATURE_CMD_MAP.get(head)
+        if mod is not None:
+            data = self._load()
+            if not self._feature_enabled(data, mod):
+                label = next((m["label"] for m in self.FEATURE_MODULES if m["key"] == mod), mod)
+                return f"⚠️ 「{label}」功能已被管理员关闭，暂时无法使用。"
         if head == "签到":
             return self._handle_sign_in(event)
         if head == "我的签到":
@@ -889,6 +1148,10 @@ class SignInPlugin(Star):
             return self._handle_farm_sell_seed(event)
         if head == "售卖":
             return self._handle_farm_sell(event)
+        if head == "偷菜":
+            return self._handle_steal(event)
+        if head == "看家":
+            return self._handle_guard(event)
         # 调试模式口令（仅管理员在对话框输入）：解锁 WebUI 的调试按钮
         if head == DEBUG_PASSWORD:
             self._debug_unlocked = True
@@ -1543,45 +1806,38 @@ class SignInPlugin(Star):
 
     # ================= 后台配置解析 =================
     def _load_config(self) -> dict:
+        """打工/玩耍来自 后台.txt；宠物商店商品来自 宠物商店-食物/饮料/药物/玩具.txt（1.7.2 按类型拆分）。
+        兼容旧数据：后台.txt 中仍含 [商店:] 段落、或宠物商店.txt 未拆分时也读取。"""
         cfg = {"jobs": [], "plays": [], "shop": []}
-        if not os.path.exists(CONFIG_FILE):
-            return cfg
-        try:
-            with open(CONFIG_FILE, "r", encoding="utf-8") as f:
-                raw_lines = f.readlines()
-        except Exception as e:
-            logger.error(f"[插件] 读取后台配置失败: {e}")
-            return cfg
-
-        cur = None
-        for raw in raw_lines:
-            line = raw.strip()
-            if not line or line.startswith("#"):
-                continue
-            if line.startswith("[") and line.endswith("]"):
-                inner = line[1:-1]
-                if ":" in inner:
-                    typ, nm = inner.split(":", 1)
-                    typ, nm = typ.strip(), nm.strip()
-                    cur = {"type": typ, "name": nm, "data": {}}
-                    if typ == "打工":
-                        cfg["jobs"].append(cur)
-                    elif typ == "玩耍":
-                        cfg["plays"].append(cur)
-                    elif typ == "商店":
-                        cfg["shop"].append(cur)
-                    else:
-                        cur = None
-                continue
-            if cur is None:
-                continue
-            if "=" in line:
-                k, v = line.split("=", 1)
-                cur["data"][k.strip()] = v.strip()
-
+        self._parse_work_play(CONFIG_FILE, cfg)
+        # 商店：优先 4 个类型文件；若类型文件不存在回退读 宠物商店.txt；再回退 后台.txt
+        type_files = [p for p in PET_SHOP_TYPE_FILES.values() if os.path.exists(p)]
+        if type_files:
+            for p in type_files:
+                self._parse_shop(p, cfg)
+        elif os.path.exists(PET_SHOP_FILE):
+            self._parse_shop(PET_SHOP_FILE, cfg)
+        else:
+            self._parse_shop(CONFIG_FILE, cfg)
         return self._normalize_config(cfg)
 
+    def _parse_work_play(self, path, cfg: dict) -> None:
+        """解析 后台.txt 的打工/玩耍段落"""
+        for sec in _parse_kv_sections(path, "后台", types=("打工", "玩耍")):
+            cfg["jobs" if sec["type"] == "打工" else "plays"].append(sec)
+
+    def _parse_shop(self, path, cfg: dict) -> None:
+        """解析商店段落（[商店:xxx]）到 cfg["shop"]"""
+        cfg["shop"].extend(_parse_kv_sections(path, "商店", types=("商店",)))
+
     def _normalize_config(self, cfg: dict) -> dict:
+        def _c(d, *keys):
+            """兼容多个字段名取值（如 消耗健康度/消耗健康值/消耗健康）"""
+            for k in keys:
+                if k in d and str(d[k]).strip() != "":
+                    return d[k]
+            return 0
+
         jobs = []
         for j in cfg["jobs"]:
             d = j["data"]
@@ -1595,7 +1851,7 @@ class SignInPlugin(Star):
                     "stamina": self._f(d.get("消耗体力", 0)),
                     "satiety": self._f(d.get("消耗饱食度", 0)),
                     "thirst": self._f(d.get("消耗口渴值", 0)),
-                    "health": self._f(d.get("消耗健康度", 0)),
+                    "health": self._f(_c(d, "消耗健康度", "消耗健康值", "消耗健康")),
                     "mood": self._f(d.get("消耗心情值", 0)),
                 },
                 "time": self._f(d.get("需要时间", 0)),
@@ -1616,7 +1872,7 @@ class SignInPlugin(Star):
                     "stamina": self._f(d.get("消耗体力", 0)),
                     "satiety": self._f(d.get("消耗饱食度", 0)),
                     "thirst": self._f(d.get("消耗口渴值", 0)),
-                    "health": self._f(d.get("消耗健康度", 0)),
+                    "health": self._f(_c(d, "消耗健康度", "消耗健康值", "消耗健康")),
                 },
                 "time": self._f(d.get("需要时间", 0)),
                 "exp": self._f(d.get("经验", 0)),
@@ -1690,12 +1946,12 @@ class SignInPlugin(Star):
 
     # ================= WebUI Pages 后端 API =================
     async def web_get_backend_config(self):
-        """读取 后台.txt 内容"""
+        """读取 后台.txt 内容（打工/玩耍）"""
         async with self._lock:
             return json_response({"content": self._read_config_text()})
 
     async def web_save_backend_config(self):
-        """保存 后台.txt 内容"""
+        """保存 后台.txt 内容（打工/玩耍）"""
         async with self._lock:
             payload = await request.json(default={})
             content = payload.get("content")
@@ -1706,25 +1962,145 @@ class SignInPlugin(Star):
                 return error_response(msg, status_code=400)
             return json_response({"saved": True})
 
-    async def web_export_data(self):
-        """导出 data.json：返回 JSON 内容，由前端用 Blob 触发下载"""
+    async def web_get_petshop(self):
+        """读取宠物商店各类型文件内容：{types: [{key, label, content}]}"""
         async with self._lock:
-            if not os.path.exists(DATA_FILE):
-                return error_response("data.json 不存在", status_code=404)
-            try:
-                with open(DATA_FILE, "r", encoding="utf-8") as f:
-                    content = f.read()
-            except Exception as e:
-                return error_response(f"读取失败: {e}", status_code=500)
-            return json_response({"content": content})
+            items = []
+            for typ in PET_SHOP_TYPES:
+                items.append({
+                    "key": typ,
+                    "label": typ,
+                    "content": self._read_file(PET_SHOP_TYPE_FILES[typ]),
+                })
+            return json_response({"types": items})
 
-    async def web_import_data(self):
-        """导入 data.json：JSON 请求体携带 content，覆盖写入"""
+    async def web_save_petshop(self):
+        """保存宠物商店某类型文件内容：{key: 类型, content: 文本}"""
         async with self._lock:
             payload = await request.json(default={})
+            typ = payload.get("key")
             content = payload.get("content")
+            if typ not in PET_SHOP_TYPE_FILES:
+                return error_response("key 必须是 食物/饮料/药物/玩具", status_code=400)
             if not isinstance(content, str):
                 return error_response("content 必须是字符串", status_code=400)
+            ok, msg = self._write_file(PET_SHOP_TYPE_FILES[typ], content)
+            if not ok:
+                return error_response(msg, status_code=400)
+            return json_response({"saved": True})
+
+    # ================= 功能开关 =================
+    FEATURE_MODULES = [
+        {"key": "farm", "label": "农场系统"},
+        {"key": "signin", "label": "签到系统"},
+        {"key": "activity", "label": "活动系统"},
+        {"key": "pet", "label": "宠物系统"},
+        {"key": "redpacket", "label": "金币红包"},
+        {"key": "bank_loan", "label": "银行-贷款"},
+        {"key": "bank_saving", "label": "银行-储蓄"},
+        {"key": "steal", "label": "偷菜系统"},
+    ]
+    # 指令 → 所属功能模块（关闭时该指令返回「功能已关闭」）
+    FEATURE_CMD_MAP = {
+        "签到": "signin", "我的签到": "signin", "签到帮助": "signin",
+        "宠物": "pet", "解锁宠物": "pet", "更改宠物名字": "pet",
+        "打工": "pet", "玩耍": "pet", "商店": "pet", "购买": "pet",
+        "使用": "pet", "背包": "pet", "宠物帮助": "pet",
+        "活动": "activity", "活动中心": "activity",
+        "金币红包": "redpacket", "开": "redpacket", "开红包": "redpacket", "抢红包": "redpacket",
+        "借款": "bank_loan", "还款": "bank_loan", "我的贷款": "bank_loan", "我的征信": "bank_loan",
+        "存款": "bank_saving", "取款": "bank_saving", "银行统计": "bank_saving",
+        # 农场系统
+        "解锁农场": "farm", "购买土地": "farm", "土地升级": "farm",
+        "农场商店": "farm", "种子商店": "farm", "肥料商店": "farm",
+        "购买种子": "farm", "购买肥料": "farm",
+        "种植": "farm", "施肥": "farm", "收割": "farm", "取消种植": "farm",
+        "土地状态": "farm", "我的农场": "farm", "农场仓库": "farm",
+        "售卖": "farm", "售卖种子": "farm", "农场帮助": "farm",
+        # 偷菜系统
+        "偷菜": "steal", "看家": "steal",
+    }
+
+    def _feature_enabled(self, data: dict, key: str) -> bool:
+        """功能开关是否开启（默认开启）"""
+        return bool(data.get("feature_switches", {}).get(key, True))
+
+    async def web_get_feature_status(self):
+        """读取功能开关：返回所有模块 + 当前开关状态"""
+        async with self._lock:
+            data = self._load()
+            switches = data.get("feature_switches", {})
+            return json_response({
+                "modules": [
+                    {"key": m["key"], "label": m["label"],
+                     "enabled": bool(switches.get(m["key"], True))}
+                    for m in self.FEATURE_MODULES
+                ]
+            })
+
+    async def web_save_feature_status(self):
+        """保存功能开关：{switches: {key: bool}}"""
+        async with self._lock:
+            payload = await request.json(default={})
+            switches = payload.get("switches")
+            if not isinstance(switches, dict):
+                return error_response("switches 必须是对象", status_code=400)
+            data = self._load()
+            cur = dict(data.get("feature_switches", {}))
+            for m in self.FEATURE_MODULES:
+                if m["key"] in switches:
+                    cur[m["key"]] = bool(switches[m["key"]])
+            data["feature_switches"] = cur
+            self._save(data)
+            return json_response({"saved": True})
+
+    async def web_export_data(self):
+        """导出全部数据：data.json + 自定义 .txt（后台/宠物商店/作物/肥料/贷款套餐）。
+        打包为单个 JSON 文件（files: {文件名: 内容}），由前端下载。"""
+        async with self._lock:
+            files = {}
+            for fn, path in self._exportable_files():
+                files[fn] = self._read_file(path)
+            return json_response({"files": files})
+
+    def _exportable_files(self):
+        """可导出的文件列表：存档 data.json + 自定义配置 txt"""
+        files = [
+            ("data.json", DATA_FILE),
+            ("后台.txt", CONFIG_FILE),
+            ("宠物商店.txt", PET_SHOP_FILE),
+            ("作物.txt", CROP_FILE),
+            ("肥料.txt", FERT_FILE),
+            ("贷款套餐.txt", LOAN_FILE),
+        ]
+        for typ in PET_SHOP_TYPES:
+            files.append((f"宠物商店-{typ}.txt", PET_SHOP_TYPE_FILES[typ]))
+        return files
+
+    async def web_import_data(self):
+        """导入全部数据：JSON 请求体携带 files（{文件名: 内容}），覆盖写入对应文件。
+        兼容旧格式：若只有 content（旧版 data.json 导出），则只还原 data.json。"""
+        async with self._lock:
+            payload = await request.json(default={})
+            files = payload.get("files")
+            if isinstance(files, dict):
+                written = []
+                for fn, path in self._exportable_files():
+                    if fn in files and isinstance(files[fn], str):
+                        if fn == "data.json":
+                            ok, msg = self._write_data_text(files[fn])
+                        else:
+                            ok, msg = self._write_file(path, files[fn])
+                        if ok:
+                            written.append(fn)
+                        else:
+                            return error_response(f"{fn} 导入失败: {msg}", status_code=400)
+                _migrate_split_shop_config()
+                return json_response({"imported": True, "files": written})
+            # 旧版格式：仅 data.json
+            content = payload.get("content")
+            if not isinstance(content, str):
+                return error_response("files 或 content 必须提供", status_code=400)
             ok, msg = self._write_data_text(content)
             if not ok:
                 return error_response(msg, status_code=400)
@@ -2111,24 +2487,16 @@ class SignInPlugin(Star):
         标题(用户名称) + 宠物信息卡（名称/状态/等级/经验/升级进度条）+ 宠物属性条区（每个属性：名称 当前值/最大值 + 属性条(普通进度条高度的30%) + 状态解释）+ 底部空闲进度条（忙碌 #FFC000 不满 / 空闲 #92D050 满）+ 文字描述。
         属性条颜色：红 #C00000（饱食<50 口渴<70 心情<50 体力<20 健康<40）、绿 #92D050（与最大值差值<20 且健康度≥41）、灰 #333333 默认。"""
         try:
-            from PIL import Image, ImageDraw, ImageFont
+            from PIL import Image, ImageDraw
         except Exception as e:
             logger.error(f"[插件] 缺少 Pillow，无法生成图片: {e}")
             return None
-        if not os.path.exists(FONT_FILE):
+        # 字号语义：标题 32 / 宠物名 26（大两号）/ 状态 18 / 正文 20 / 经验 16 / 属性名 18 / 提示 16 / 描述 18
+        fonts = _load_fonts(32, 26, 18, 20, 16, 18, 16, 18)
+        if fonts is None:
             return None
-        try:
-            title_font = ImageFont.truetype(FONT_FILE, 32)
-            pet_name_font = ImageFont.truetype(FONT_FILE, 26)   # 宠物名称大两号（相对正文 20）
-            status_font = ImageFont.truetype(FONT_FILE, 18)     # 状态小一号
-            lv_font = ImageFont.truetype(FONT_FILE, 20)         # 等级/正文
-            exp_font = ImageFont.truetype(FONT_FILE, 16)        # 经验值小两号
-            attr_font = ImageFont.truetype(FONT_FILE, 18)       # 属性名
-            hint_font = ImageFont.truetype(FONT_FILE, 16)       # 状态解释
-            desc_font = ImageFont.truetype(FONT_FILE, 18)       # 底部文字描述
-        except Exception as e:
-            logger.error(f"[插件] 加载字体 {FONT_FILE} 失败: {e}")
-            return None
+        (title_font, pet_name_font, status_font, lv_font,
+         exp_font, attr_font, hint_font, desc_font) = fonts
 
         now_ts = datetime.now().timestamp()
         busy_until = self._pet_busy_until(pet)
@@ -2162,10 +2530,9 @@ class SignInPlugin(Star):
         width = 640
         content_w = width - pad * 2
 
-        probe = ImageDraw.Draw(Image.new("RGB", (8, 8)))
-
-        def tw(s, f):
-            return probe.textlength(s, font=f)
+        tw = _text_measurer()
+        if tw is None:
+            return None
 
         # 升级进度（新经验体系）
         lv, got_exp, need_exp = self._pet_exp_progress(float(pet.get("exp", 0.0)))
@@ -2278,32 +2645,25 @@ class SignInPlugin(Star):
                 f"{pet.get('name', '宠物')}精神不太好，检查一下它的状态吧～",
             ])
         else:
-            desc = random.choice([
-                f"{pet.get('name', '宠物')}正在悠闲地晒太阳～",
-                f"{pet.get('name', '宠物')}精神饱满，随时可以出发！",
-                f"{pet.get('name', '宠物')}正在开心地打盹～",
-                f"{pet.get('name', '宠物')}正在愉快地玩耍尾巴～",
-                f"{pet.get('name', '宠物')}状态满格，等待你的指令～",
-            ])
+            # 看家开启且宠物空闲 → 看守农场相关文字
+            if pet.get("guard"):
+                desc = random.choice([
+                    f"闲来没事，{pet.get('name', '宠物')}正在巡逻你的农场",
+                    f"{pet.get('name', '宠物')}尽职尽责，正在农场周围巡视～",
+                    f"{pet.get('name', '宠物')}竖起耳朵，警惕地看守着农场",
+                    f"{pet.get('name', '宠物')}正绕着农场巡逻，防止偷菜贼～",
+                ])
+            else:
+                desc = random.choice([
+                    f"{pet.get('name', '宠物')}正在悠闲地晒太阳～",
+                    f"{pet.get('name', '宠物')}精神饱满，随时可以出发！",
+                    f"{pet.get('name', '宠物')}正在开心地打盹～",
+                    f"{pet.get('name', '宠物')}正在愉快地玩耍尾巴～",
+                    f"{pet.get('name', '宠物')}状态满格，等待你的指令～",
+                ])
         d.text((int(pad), y), desc, font=desc_font, fill=(70, 70, 70))
 
-        base = os.path.dirname(DATA_FILE)
-        path = os.path.join(base, f"_pet_{datetime.now().strftime('%Y%m%d%H%M%S%f')}.png")
-        try:
-            img.save(path)
-        except Exception as e:
-            logger.error(f"[插件] 保存宠物状态图片失败: {e}")
-            return None
-        try:
-            now = datetime.now().timestamp()
-            for fn in os.listdir(base):
-                if fn.startswith("_pet_") and fn.endswith(".png"):
-                    fp = os.path.join(base, fn)
-                    if now - os.path.getmtime(fp) > 600:
-                        os.remove(fp)
-        except Exception:
-            pass
-        return ("image", path)
+        return _save_temp_image(img, "_pet_", "宠物状态")
 
     def _render_work_play_image(self, kind, name, pet, items):
         """打工/玩耍列表图片（1.7.1 布局）：
@@ -2321,25 +2681,16 @@ class SignInPlugin(Star):
     def _render_work_play_image_inner(self, kind, name, pet, items):
         """打工/玩耍列表图片实际渲染（异常由外层捕获并回退文本）"""
         try:
-            from PIL import Image, ImageDraw, ImageFont
+            from PIL import Image, ImageDraw
         except Exception as e:
             logger.error(f"[插件] 缺少 Pillow，无法生成图片: {e}")
             raise
-        if not os.path.exists(FONT_FILE):
-            raise FileNotFoundError(f"字体不存在: {FONT_FILE}")
-        try:
-            title_font = ImageFont.truetype(FONT_FILE, 32)
-            pet_name_font = ImageFont.truetype(FONT_FILE, 26)   # 宠物名称大两号（相对正文 20）
-            status_font = ImageFont.truetype(FONT_FILE, 18)     # 状态小一号（相对正文 20）
-            lv_font = ImageFont.truetype(FONT_FILE, 20)         # 等级/正文
-            exp_font = ImageFont.truetype(FONT_FILE, 16)        # 经验值小两号
-            attr_font = ImageFont.truetype(FONT_FILE, 18)       # 属性正文小一号
-            item_name_font = ImageFont.truetype(FONT_FILE, 28)  # 内容名称大三个字号（相对正文 20）
-            body_font = ImageFont.truetype(FONT_FILE, 20)       # 描述/条件/消耗
-            price_font = ImageFont.truetype(FONT_FILE, 22)      # 报酬/变更大一号
-        except Exception as e:
-            logger.error(f"[插件] 加载字体 {FONT_FILE} 失败: {e}")
-            raise
+        # 字号语义：标题 32 / 宠物名 26 / 状态 18 / 正文 20 / 经验 16 / 属性 18 / 内容名 28 / 描述 20 / 报酬 22
+        fonts = _load_fonts(32, 26, 18, 20, 16, 18, 28, 20, 22)
+        if fonts is None:
+            raise RuntimeError(f"字体加载失败: {FONT_FILE}")
+        (title_font, pet_name_font, status_font, lv_font, exp_font,
+         attr_font, item_name_font, body_font, price_font) = fonts
 
         has_pet = pet is not None
         now_ts = datetime.now().timestamp()
@@ -2381,30 +2732,11 @@ class SignInPlugin(Star):
         price_h = 30
         n_pad = int(globals().get("SHOP_PRICE_PAD", 4))
 
-        probe = ImageDraw.Draw(Image.new("RGB", (8, 8)))
+        tw = _text_measurer()
+        if tw is None:
+            raise RuntimeError("Pillow 不可用，无法测量文本宽度")
 
-        def tw(s, f):
-            return probe.textlength(s, font=f)
-
-        def wrap(text, font, max_w):
-            """按像素宽度自动换行：空格优先断行"""
-            lines = []
-            cur = ""
-            for ch in text:
-                if tw(cur + ch, font) <= max_w:
-                    cur += ch
-                else:
-                    sp = cur.rfind(" ")
-                    if sp > 0:
-                        lines.append(cur[:sp])
-                        cur = cur[sp + 1:] + ch
-                    else:
-                        if cur:
-                            lines.append(cur)
-                        cur = ch
-            if cur:
-                lines.append(cur)
-            return lines or [""]
+        wrap = _make_wrapper(tw, 0)
 
         # ---------- 宠物信息卡片 ----------
         pet_content_w = pet_w - inner * 2
@@ -2585,23 +2917,7 @@ class SignInPlugin(Star):
                         break
             y += gh + gap
 
-        base = os.path.dirname(DATA_FILE)
-        path = os.path.join(base, f"_wp_{datetime.now().strftime('%Y%m%d%H%M%S%f')}.png")
-        try:
-            img.save(path)
-        except Exception as e:
-            logger.error(f"[插件] 保存{kind}列表图片失败: {e}")
-            return None
-        try:
-            now = datetime.now().timestamp()
-            for fn in os.listdir(base):
-                if fn.startswith("_wp_") and fn.endswith(".png"):
-                    fp = os.path.join(base, fn)
-                    if now - os.path.getmtime(fp) > 600:
-                        os.remove(fp)
-        except Exception:
-            pass
-        return ("image", path)
+        return _save_temp_image(img, "_wp_", f"{kind}列表")
 
     def _handle_shop(self, event: AstrMessageEvent) -> str:
         cfg = self._load_config()
@@ -2638,21 +2954,15 @@ class SignInPlugin(Star):
         """宠物商店：每行 SHOP_CARD_COLS 个卡片；名称(大三号)/持有数 / 效果(空格优先换行) / 分割线 / 价格(红、右、大一号、分割线与底边之间 N 像素)
         卡片高度自适应，同行取最高；被拉伸的低卡片忽略价格与分割线的 N 约束。"""
         try:
-            from PIL import Image, ImageDraw, ImageFont
+            from PIL import Image, ImageDraw
         except Exception as e:
             logger.error(f"[插件] 缺少 Pillow，无法生成图片: {e}")
             return None
-        if not os.path.exists(FONT_FILE):
+        # 字号语义：标题 32 / 分类 26 / 名称 26（大三号）/ 正文 18 / 价格 20（大一号）
+        fonts = _load_fonts(32, 26, 26, 18, 20)
+        if fonts is None:
             return None
-        try:
-            title_font = ImageFont.truetype(FONT_FILE, 32)
-            cat_font = ImageFont.truetype(FONT_FILE, 26)
-            name_font = ImageFont.truetype(FONT_FILE, 26)  # 名称大三号
-            body_font = ImageFont.truetype(FONT_FILE, 18)
-            price_font = ImageFont.truetype(FONT_FILE, 20)  # 价格大一号
-        except Exception as e:
-            logger.error(f"[插件] 加载字体 {FONT_FILE} 失败: {e}")
-            return None
+        title_font, cat_font, name_font, body_font, price_font = fonts
 
         pad = 20
         title_h = 52
@@ -2667,32 +2977,13 @@ class SignInPlugin(Star):
         line_h = 26
         price_h = 26
 
-        probe = ImageDraw.Draw(Image.new("RGB", (8, 8)))
-
-        def tw(s, f):
-            return probe.textlength(s, font=f)
+        tw = _text_measurer()
+        if tw is None:
+            return None
 
         content_w = card_w - inner * 2
 
-        def wrap(text, font):
-            """按像素宽度自动换行：空格位置断行优先，只有确定会溢出才在别处断行"""
-            lines = []
-            cur = ""
-            for ch in text:
-                if tw(cur + ch, font) <= content_w:
-                    cur += ch
-                else:
-                    sp = cur.rfind(" ")
-                    if sp > 0:
-                        lines.append(cur[:sp])
-                        cur = cur[sp + 1:] + ch
-                    else:
-                        if cur:
-                            lines.append(cur)
-                        cur = ch
-            if cur:
-                lines.append(cur)
-            return lines or [""]
+        wrap = _make_wrapper(tw, content_w)
 
         def _card_plan(it):
             """返回 (行列表, 高度, 分割线前高度)。行 = (kind, text, extra)"""
@@ -2710,8 +3001,8 @@ class SignInPlugin(Star):
             h_before = inner * 2 + sum(name_h if (i == 0 and r[0] == "pair") else line_h for i, r in enumerate(rows))
             rows.append(("rule", "", ""))
             rows.append(("price", f"{int(it['price'])} 金币", ""))
-            # 总高 = 分割线前内容 + 分割线半行 + 价格区（价格高 + 上下各 N）
-            h = h_before + line_h // 2 + price_h + 2 * n_pad
+            # 总高 = 分割线前内容 + 分割线距价格上方 N + 线 1px + 价格区（价格高 + 底边 N）
+            h = h_before + n_pad + 1 + price_h + n_pad
             return rows, h, h_before
 
         # 预计算每个类别的卡片排版
@@ -2777,6 +3068,7 @@ class SignInPlugin(Star):
                     d.rectangle([x0, y, x0 + card_w, y + gh], outline=(200, 200, 200), width=1)
                     yy = y + inner
                     rule_y = None
+                    price_y = y + gh - n_pad - price_h  # 价格基线（贴底边 N）
                     for row in rows:
                         kind = row[0]
                         if kind == "pair":
@@ -2789,16 +3081,14 @@ class SignInPlugin(Star):
                                 d.text((int(x0 + inner), yy), wl, font=body_font, fill=(70, 70, 70))
                                 yy += line_h
                         elif kind == "rule":
-                            yy += line_h // 2
-                            rule_y = yy
-                            d.line([(x0 + 8, yy), (x0 + card_w - 8, yy)], fill=(200, 200, 200), width=1)
-                            yy += line_h // 2
+                            rule_y = price_y - n_pad  # 分割线固定在价格上方 N 距离
                         elif kind == "price":
-                            # 价格距卡片底部固定 N 像素（分割线在价格上方，正常卡片距两端均 N；拉伸时忽略分割线侧 N）
-                            py = y + gh - n_pad - price_h
-                            d.text((int(x0 + card_w - inner - tw(row[1], price_font)), py),
+                            # 价格贴底边 N
+                            d.text((int(x0 + card_w - inner - tw(row[1], price_font)), price_y),
                                    row[1], font=price_font, fill=(192, 0, 0))
                             break
+                    if rule_y is not None:
+                        d.line([(x0 + 8, rule_y), (x0 + card_w - 8, rule_y)], fill=(200, 200, 200), width=1)
                 y += gh + gap
 
         # 底部：特殊道具提示（自动换行，不溢出图片）
@@ -2807,23 +3097,7 @@ class SignInPlugin(Star):
             d.text((pad, y), ln, font=body_font, fill=(120, 120, 120))
             y += 26
 
-        base = os.path.dirname(DATA_FILE)
-        path = os.path.join(base, f"_shop_{datetime.now().strftime('%Y%m%d%H%M%S%f')}.png")
-        try:
-            img.save(path)
-        except Exception as e:
-            logger.error(f"[插件] 保存商店图片失败: {e}")
-            return None
-        try:
-            now = datetime.now().timestamp()
-            for fn in os.listdir(base):
-                if fn.startswith("_shop_") and fn.endswith(".png"):
-                    fp = os.path.join(base, fn)
-                    if now - os.path.getmtime(fp) > 600:
-                        os.remove(fp)
-        except Exception:
-            pass
-        return ("image", path)
+        return _save_temp_image(img, "_shop_", "商店")
 
     def _effect_desc(self, effects: dict) -> str:
         parts = []
@@ -2838,32 +3112,26 @@ class SignInPlugin(Star):
     def _render_text_image(self, title: str, lines):
         """把标题 + 正文行渲染为 PNG 图片（使用 OPPOSans-M.ttf）。返回 ("image", path)；失败返回 None"""
         try:
-            from PIL import Image, ImageDraw, ImageFont
+            from PIL import Image, ImageDraw
         except Exception as e:
             logger.error(f"[插件] 缺少 Pillow，无法生成图片: {e}")
             return None
-        if not os.path.exists(FONT_FILE):
+        # 字号语义：标题 36 / 正文 24
+        fonts = _load_fonts(36, 24)
+        if fonts is None:
             return None
-        try:
-            title_font = ImageFont.truetype(FONT_FILE, 36)
-            body_font = ImageFont.truetype(FONT_FILE, 24)
-        except Exception as e:
-            logger.error(f"[插件] 加载字体 {FONT_FILE} 失败: {e}")
-            return None
+        title_font, body_font = fonts
 
         pad = 30
         title_h = 64
         line_h = 42
 
-        try:
-            probe = ImageDraw.Draw(Image.new("RGB", (8, 8)))
-            def _w(s, f):
-                b = probe.textbbox((0, 0), s, font=f)
-                return b[2] - b[0]
-            all_w = [_w(title, title_font)] + [_w(l, body_font) for l in lines]
-            width = max(480, int(max(all_w) + pad * 2))
-        except Exception:
+        tw = _text_measurer()
+        if tw is None:
             width = 720
+        else:
+            all_w = [tw(title, title_font)] + [tw(l, body_font) for l in lines]
+            width = max(480, int(max(all_w) + pad * 2))
 
         height = pad * 2 + title_h + line_h * len(lines)
         img = Image.new("RGB", (width, height), (255, 255, 255))
@@ -2875,26 +3143,7 @@ class SignInPlugin(Star):
             draw.text((pad, y), line, font=body_font, fill=(70, 70, 70))
             y += line_h
 
-        base = os.path.dirname(DATA_FILE)
-        path = os.path.join(base, f"_list_{datetime.now().strftime('%Y%m%d%H%M%S%f')}.png")
-        try:
-            img.save(path)
-        except Exception as e:
-            logger.error(f"[插件] 保存图片失败: {e}")
-            return None
-
-        # 清理 10 分钟前的临时图片，避免堆积
-        try:
-            now = datetime.now().timestamp()
-            for fn in os.listdir(base):
-                if fn.startswith("_list_") and fn.endswith(".png"):
-                    fp = os.path.join(base, fn)
-                    if now - os.path.getmtime(fp) > 600:
-                        os.remove(fp)
-        except Exception:
-            pass
-
-        return ("image", path)
+        return _save_temp_image(img, "_list_", "")
 
     def _handle_buy(self, event: AstrMessageEvent) -> str:
         """购买 <名称> [数量]：宠物商店道具 / 农场种子 / 农场化肥"""
@@ -3207,20 +3456,22 @@ class SignInPlugin(Star):
         return f"✅ {msg}" if ok else f"❌ {msg}"
 
     def _handle_export_data(self) -> str:
-        data = self._load()
+        """导出全部数据（存档 + 自定义配置）到 plugin_data 备份文件，小数据直接返回内容"""
         ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-        bak = os.path.join(os.path.dirname(DATA_FILE), f"data_export_{ts}.json")
+        bak = os.path.join(os.path.dirname(DATA_FILE), f"signin_export_{ts}.json")
+        files = {fn: self._read_file(path) for fn, path in self._exportable_files()}
         try:
             with open(bak, "w", encoding="utf-8") as f:
-                json.dump(data, f, ensure_ascii=False, indent=2)
+                json.dump({"files": files}, f, ensure_ascii=False, indent=2)
         except Exception as e:
             return f"❌ 导出失败: {e}"
-        s = json.dumps(data, ensure_ascii=False)
+        s = json.dumps({"files": files}, ensure_ascii=False)
         if len(s) <= 3500:
             return f"✅ 数据已导出到：{bak}\n内容：\n{s}"
         return f"✅ 数据已导出到：{bak}\n数据较大（{len(s)} 字符），请直接到上述路径取文件。"
 
     def _handle_import_data(self, event: AstrMessageEvent) -> str:
+        """导入全部数据（兼容新版 files 打包与旧版仅 data.json 的 content）"""
         parts = event.message_str.split(maxsplit=1)
         if len(parts) >= 2 and parts[1].strip():
             raw = parts[1].strip()
@@ -3233,6 +3484,22 @@ class SignInPlugin(Star):
                     raw = f.read()
             except Exception as e:
                 return f"❌ 读取 data_import.json 失败: {e}"
+        try:
+            parsed = json.loads(raw)
+        except Exception as e:
+            return f"❌ JSON 格式错误: {e}"
+        files = parsed.get("files") if isinstance(parsed, dict) else None
+        if isinstance(files, dict):
+            for fn, path in self._exportable_files():
+                if fn in files and isinstance(files[fn], str):
+                    if fn == "data.json":
+                        ok, msg = self._write_data_text(files[fn])
+                    else:
+                        ok, msg = self._write_file(path, files[fn])
+                    if not ok:
+                        return f"❌ {fn} 导入失败: {msg}"
+            _migrate_split_shop_config()
+            return "✅ 导入成功（存档 + 自定义配置已还原）！"
         ok, msg = self._write_data_text(raw)
         return "✅ 导入成功！" if ok else f"❌ {msg}"
 
@@ -3761,19 +4028,15 @@ class SignInPlugin(Star):
     def _render_activity_image(self, activities):
         """活动中心：每个活动一个矩形卡片，一行一卡（名称/时间/简介/要求/指令）；文字自动换行、卡片高度自适应"""
         try:
-            from PIL import Image, ImageDraw, ImageFont
+            from PIL import Image, ImageDraw
         except Exception as e:
             logger.error(f"[插件] 缺少 Pillow，无法生成图片: {e}")
             return None
-        if not os.path.exists(FONT_FILE):
+        # 字号语义：标题 32 / 名称 26 / 正文 18
+        fonts = _load_fonts(32, 26, 18)
+        if fonts is None:
             return None
-        try:
-            title_font = ImageFont.truetype(FONT_FILE, 32)
-            name_font = ImageFont.truetype(FONT_FILE, 26)
-            body_font = ImageFont.truetype(FONT_FILE, 18)
-        except Exception as e:
-            logger.error(f"[插件] 加载字体 {FONT_FILE} 失败: {e}")
-            return None
+        title_font, name_font, body_font = fonts
 
         pad = 20
         title_h = 52
@@ -3782,10 +4045,9 @@ class SignInPlugin(Star):
         name_h = 40
         line_h = 30
 
-        probe = ImageDraw.Draw(Image.new("RGB", (8, 8)))
-
-        def tw(s, f):
-            return probe.textlength(s, font=f)
+        tw = _text_measurer()
+        if tw is None:
+            return None
 
         # 每张卡片的原始内容行（名称 / 时间 / 简介 / 要求 [+指令]）
         def _raw_lines(a):
@@ -3804,25 +4066,7 @@ class SignInPlugin(Star):
         width = min(int(max_w) + pad * 2 + inner * 2 + 4, 900)
         content_w = width - pad * 2 - inner * 2
 
-        def wrap(text, font):
-            """按像素宽度自动换行：优先在最近的空格处断行，无空格时按字符硬切"""
-            lines = []
-            cur = ""
-            for ch in text:
-                if tw(cur + ch, font) <= content_w:
-                    cur += ch
-                else:
-                    sp = cur.rfind(" ")
-                    if sp > 0:
-                        lines.append(cur[:sp])
-                        cur = cur[sp + 1:] + ch
-                    else:
-                        if cur:
-                            lines.append(cur)
-                        cur = ch
-            if cur:
-                lines.append(cur)
-            return lines or [""]
+        wrap = _make_wrapper(tw, content_w)
 
         # 预计算每个卡片换行后的行列表与高度
         card_plans = []  # (rows, height)；rows = (text, font, color, is_name)
@@ -3855,23 +4099,7 @@ class SignInPlugin(Star):
                 yy += name_h if is_name else line_h
             y += ch + card_gap
 
-        base = os.path.dirname(DATA_FILE)
-        path = os.path.join(base, f"_act_{datetime.now().strftime('%Y%m%d%H%M%S%f')}.png")
-        try:
-            img.save(path)
-        except Exception as e:
-            logger.error(f"[插件] 保存活动中心图片失败: {e}")
-            return None
-        try:
-            now = datetime.now().timestamp()
-            for fn in os.listdir(base):
-                if fn.startswith("_act_") and fn.endswith(".png"):
-                    fp = os.path.join(base, fn)
-                    if now - os.path.getmtime(fp) > 600:
-                        os.remove(fp)
-        except Exception:
-            pass
-        return ("image", path)
+        return _save_temp_image(img, "_act_", "活动中心")
 
     def _activity_command(self, head: str, event) -> str:
         """活动模块自定义指令分发：仅处理「已启用 + 时间有效 + 满足参与要求」的活动指令"""
@@ -3925,38 +4153,12 @@ class SignInPlugin(Star):
     # ================= 银行贷款 =================
     def _load_loan_packages(self):
         """自定义贷款套餐（代码 3~10）"""
-        pkgs = []
-        if not os.path.exists(LOAN_FILE):
-            return pkgs
-        try:
-            with open(LOAN_FILE, "r", encoding="utf-8") as f:
-                raw_lines = f.readlines()
-        except Exception as e:
-            logger.error(f"[插件] 读取贷款套餐配置失败: {e}")
-            return pkgs
-        cur = None
-        for raw in raw_lines:
-            line = raw.strip()
-            if not line or line.startswith("#"):
-                continue
-            if line.startswith("[") and line.endswith("]"):
-                inner = line[1:-1]
-                if ":" in inner:
-                    _, code = inner.split(":", 1)
-                    cur = {"code": code.strip(), "data": {}}
-                    pkgs.append(cur)
-                continue
-            if cur is None:
-                continue
-            if "=" in line:
-                k, v = line.split("=", 1)
-                cur["data"][k.strip()] = v.strip()
         result = []
-        for it in pkgs:
+        for it in _parse_kv_sections(LOAN_FILE, "贷款套餐"):
             d = it["data"]
             try:
                 result.append({
-                    "code": int(it["code"]),
+                    "code": int(it["name"]),
                     "max_amount": int(self._f(d.get("最大金额", 0))),
                     "fav_req": int(self._f(d.get("好感度等级要求", 0))),
                     "pet_req": int(self._f(d.get("宠物等级要求", 0))),
@@ -4491,32 +4693,7 @@ class SignInPlugin(Star):
 
     # ================= 农场 =================
     def _parse_crop_fert(self, path: str, kind: str):
-        items = []
-        if not os.path.exists(path):
-            return items
-        try:
-            with open(path, "r", encoding="utf-8") as f:
-                raw_lines = f.readlines()
-        except Exception as e:
-            logger.error(f"[插件] 读取{kind}配置失败: {e}")
-            return items
-        cur = None
-        for raw in raw_lines:
-            line = raw.strip()
-            if not line or line.startswith("#"):
-                continue
-            if line.startswith("[") and line.endswith("]"):
-                inner = line[1:-1]
-                if ":" in inner:
-                    _, nm = inner.split(":", 1)
-                    cur = {"name": nm.strip(), "data": {}}
-                    items.append(cur)
-                continue
-            if cur is None:
-                continue
-            if "=" in line:
-                k, v = line.split("=", 1)
-                cur["data"][k.strip()] = v.strip()
+        items = _parse_kv_sections(path, kind)
         result = []
         for it in items:
             d = it["data"]
@@ -4555,6 +4732,7 @@ class SignInPlugin(Star):
             "level": 0, "exp": 0.0, "plots": [],
             "warehouse": {"crops": {}, "seeds": {}, "fertilizers": {}},
             "total_profit": 0,
+            "steal_infos": [], "steal_log": {}, "scent_memory": {},
         })
 
     @staticmethod
@@ -4628,23 +4806,20 @@ class SignInPlugin(Star):
     def _render_rich_image(self, title, rows):
         """rows: 每行是 (text, color, strike) 元组列表。返回 ('image', path) 或 None"""
         try:
-            from PIL import Image, ImageDraw, ImageFont
+            from PIL import Image, ImageDraw
         except Exception:
             return None
-        if not os.path.exists(FONT_FILE):
+        # 字号语义：标题 34 / 正文 24
+        fonts = _load_fonts(34, 24)
+        if fonts is None:
             return None
-        try:
-            title_font = ImageFont.truetype(FONT_FILE, 34)
-            body_font = ImageFont.truetype(FONT_FILE, 24)
-        except Exception:
-            return None
+        title_font, body_font = fonts
         pad = 26
         title_h = 56
         line_h = 40
-        probe = ImageDraw.Draw(Image.new("RGB", (8, 8)))
-
-        def sw(t, font):
-            return probe.textlength(t, font=font)
+        sw = _text_measurer()
+        if sw is None:
+            return None
 
         max_w = sw(title, title_font)
         for r in rows:
@@ -4669,23 +4844,7 @@ class SignInPlugin(Star):
                 x += sw(text, body_font)
             y += line_h
 
-        base = os.path.dirname(DATA_FILE)
-        path = os.path.join(base, f"_farm_{datetime.now().strftime('%Y%m%d%H%M%S%f')}.png")
-        try:
-            img.save(path)
-        except Exception as e:
-            logger.error(f"[插件] 保存农场图片失败: {e}")
-            return None
-        try:
-            now = datetime.now().timestamp()
-            for fn in os.listdir(base):
-                if fn.startswith("_farm_") and fn.endswith(".png"):
-                    fp = os.path.join(base, fn)
-                    if now - os.path.getmtime(fp) > 600:
-                        os.remove(fp)
-        except Exception:
-            pass
-        return ("image", path)
+        return _save_temp_image(img, "_farm_", "农场")
 
     def _render_help(self, title, sections):
         """把帮助菜单渲染成图片。sections: [(小标题, [(指令, 说明), ...]), ...]"""
@@ -4747,20 +4906,15 @@ class SignInPlugin(Star):
         默认：能买等级最大的 9 款种子 + 不能买等级最低的 3 款（灰卡）；化肥全部。
         展开：按等级从高到低分页显示全部能购买的种子（每页 9 款）。"""
         try:
-            from PIL import Image, ImageDraw, ImageFont
+            from PIL import Image, ImageDraw
         except Exception as e:
             logger.error(f"[插件] 缺少 Pillow，无法生成图片: {e}")
             return None
-        if not os.path.exists(FONT_FILE):
+        # 字号语义：标题 32 / 分类 26 / 名称 26（大三号）/ 正文 18 / 价格 20（大一号）
+        fonts = _load_fonts(32, 26, 26, 18, 20)
+        if fonts is None:
             return None
-        try:
-            title_font = ImageFont.truetype(FONT_FILE, 32)
-            cat_font = ImageFont.truetype(FONT_FILE, 26)
-            name_font = ImageFont.truetype(FONT_FILE, 26)  # 名称大三号
-            body_font = ImageFont.truetype(FONT_FILE, 18)
-            price_font = ImageFont.truetype(FONT_FILE, 20)  # 价格大一号
-        except Exception:
-            return None
+        title_font, cat_font, name_font, body_font, price_font = fonts
 
         pad = 20
         title_h = 52
@@ -4776,30 +4930,11 @@ class SignInPlugin(Star):
         content_w = card_w - inner * 2
         n_pad = int(globals().get("SHOP_PRICE_PAD", 4))  # N：价格距分割线/底边
 
-        probe = ImageDraw.Draw(Image.new("RGB", (8, 8)))
+        tw = _text_measurer()
+        if tw is None:
+            return None
 
-        def tw(s, f):
-            return probe.textlength(s, font=f)
-
-        def wrap(text, font):
-            """按像素宽度自动换行：空格位置断行优先，只有确定会溢出才在别处断行"""
-            lines = []
-            cur = ""
-            for ch in text:
-                if tw(cur + ch, font) <= content_w:
-                    cur += ch
-                else:
-                    sp = cur.rfind(" ")
-                    if sp > 0:
-                        lines.append(cur[:sp])
-                        cur = cur[sp + 1:] + ch
-                    else:
-                        if cur:
-                            lines.append(cur)
-                        cur = ch
-            if cur:
-                lines.append(cur)
-            return lines or [""]
+        wrap = _make_wrapper(tw, content_w)
 
         farm_lv = int(farm.get("level", 0))
         mult = self._farm_seed_mult(farm)
@@ -4820,6 +4955,12 @@ class SignInPlugin(Star):
             seed_list = top9 + low3
 
         # ---- 卡片行规划（plain 行已按宽度换行展开，保证高度自适应） ----
+        # 行类型：
+        #   ("pair", 左, 右)   名称(大三号,左) + 持有数(右)
+        #   ("pair2", 左, 右)  等级条件(左) + 成熟时间(右) / 售价(左) + 经验(右)
+        #   ("plain", 文本)    普通文本行（自动换行）
+        #   ("rule", "", "")   卡片内分割线（位置固定在价格上方 N，见下）
+        #   ("price", 文本)    价格（红、右、大一号、贴底边 N）
         def seed_rows(c):
             rows = []
             cnt_text = f"×{int(seeds_have.get(c['name'], 0))}"
@@ -4829,13 +4970,16 @@ class SignInPlugin(Star):
                 for ln in wrap(c["name"], name_font):
                     rows.append(("plain", ln, ""))
                 rows.append(("plain", cnt_text, ""))
-            if c["min_level"] > 0:
-                for ln in wrap(f"需要 Lv.{c['min_level']}", body_font):
-                    rows.append(("plain", ln, ""))
-            # 成熟后售价：一块贫瘠土地（无土地加成）且无肥料状态下的产量 × 单价
+            # 等级条件（左）+ 成熟时间（右）
+            lv_t = f"需要 Lv.{c['min_level']}" if c["min_level"] > 0 else ""
+            tm_t = f"成熟 {c['grow_minutes']} 分钟"
+            if lv_t:
+                rows.append(("pair2", lv_t, tm_t))
+            else:
+                rows.append(("plain", tm_t, ""))
+            # 成熟后售价（贫瘠土地 + 无肥料状态）+ 收割农场经验（仅种子）
             sell_v = int(round(float(c["yield"]) * float(c["crop_price"])))
-            for ln in wrap(f"售价 {sell_v} 金币 经验 {c['exp']}", body_font):
-                rows.append(("plain", ln, ""))
+            rows.append(("pair2", f"售价 {sell_v} 金币", f"经验 {c['exp']}"))
             rows.append(("rule", "", ""))
             price = int(round(float(c["seed_price"]) * mult))
             rows.append(("price", f"{price} 金币", ""))
@@ -4861,15 +5005,19 @@ class SignInPlugin(Star):
         seed_plans = [(c, seed_rows(c), c["min_level"] > farm_lv) for c in seed_list]
         fert_plans = [(f, fert_rows(f), False) for f in ferts]
 
+        # 卡片高度：内容区（inner*2 + 各行）+ 分割线间隙 N + 分割线半行 + 价格区（价格高 + 底边 N）
+        # 分割线固定在价格上方 N 距离（N = SHOP_PRICE_PAD）
         def card_height(rows):
             h = inner * 2
             for r in rows:
                 if r[0] == "pair":
                     h += name_h
+                elif r[0] == "pair2":
+                    h += line_h
                 elif r[0] == "rule":
-                    h += line_h // 2
+                    h += n_pad + 1  # 分割线距价格上方固定 N + 线本身 1px
                 elif r[0] == "price":
-                    h += price_h + 2 * n_pad  # 价格区 = 价格高 + 上下各 N
+                    h += price_h + n_pad  # 价格区 = 价格高 + 底边 N
                 else:
                     h += line_h
             return h
@@ -4920,6 +5068,8 @@ class SignInPlugin(Star):
                     else:
                         d.rectangle([x0, y, x0 + card_w, y + gh], outline=(200, 200, 200), width=1)
                     yy = y + inner
+                    rule_y = None  # 分割线 y 坐标（固定在价格上方 N 距离）
+                    price_y = y + gh - n_pad - price_h  # 价格基线
                     for r in rows:
                         kind = r[0]
                         if kind == "pair":
@@ -4927,40 +5077,31 @@ class SignInPlugin(Star):
                             d.text((int(x0 + card_w - inner - tw(r[2], body_font)), yy + 4),
                                    r[2], font=body_font, fill=(140, 90, 0))
                             yy += name_h
+                        elif kind == "pair2":
+                            # 左 + 右 两列文字（等级条件+成熟时间 / 售价+经验）
+                            if r[1]:
+                                d.text((int(x0 + inner), yy), r[1], font=body_font, fill=(70, 70, 70))
+                            if r[2]:
+                                d.text((int(x0 + card_w - inner - tw(r[2], body_font)), yy + 2),
+                                       r[2], font=body_font, fill=(90, 90, 90))
+                            yy += line_h
                         elif kind == "plain":
                             for wl in wrap(r[1], body_font):
                                 d.text((int(x0 + inner), yy), wl, font=body_font, fill=(70, 70, 70))
                                 yy += line_h
                         elif kind == "rule":
-                            yy += line_h // 2
-                            d.line([(x0 + 8, yy), (x0 + card_w - 8, yy)], fill=(200, 200, 200), width=1)
-                            yy += line_h // 2
+                            rule_y = price_y - n_pad  # 分割线固定在价格上方 N 距离
                         elif kind == "price":
-                            # 价格距卡片底部固定 N 像素（分割线在价格上方，正常卡片距两端均 N；拉伸时忽略分割线侧 N）
-                            py = y + gh - n_pad - price_h
-                            d.text((int(x0 + card_w - inner - tw(r[1], price_font)), py),
+                            # 价格贴底边 N
+                            d.text((int(x0 + card_w - inner - tw(r[1], price_font)), price_y),
                                    r[1], font=price_font, fill=(192, 0, 0))
                             break
+                    if rule_y is not None:
+                        d.line([(x0 + 8, rule_y), (x0 + card_w - 8, rule_y)], fill=(200, 200, 200), width=1)
                 y += gh + gap
             y -= gap
 
-        base = os.path.dirname(DATA_FILE)
-        path = os.path.join(base, f"_farmshop_{datetime.now().strftime('%Y%m%d%H%M%S%f')}.png")
-        try:
-            img.save(path)
-        except Exception as e:
-            logger.error(f"[插件] 保存农场商店图片失败: {e}")
-            return None
-        try:
-            now = datetime.now().timestamp()
-            for fn in os.listdir(base):
-                if fn.startswith("_farmshop_") and fn.endswith(".png"):
-                    fp = os.path.join(base, fn)
-                    if now - os.path.getmtime(fp) > 600:
-                        os.remove(fp)
-        except Exception:
-            pass
-        return ("image", path)
+        return _save_temp_image(img, "_farmshop_", "农场商店")
 
     def _render_warehouse(self, farm, crops, ferts):
         wh = farm.get("warehouse", {})
@@ -4990,21 +5131,20 @@ class SignInPlugin(Star):
         bad = [f["name"] for f in ferts if f["max_uses"] >= 0 and int(used.get(f["name"], 0)) >= f["max_uses"]]
         return "、".join(bad) if bad else "无"
 
-    def _render_plot_status(self, name, farm, crops, ferts):
-        """土地状态 / 我的农场：顶部农场属性（等级/经验/升级进度条/总盈利）+ 4 列土地卡片（自动换行、高度自适应）"""
+    def _render_plot_status(self, name, farm, crops, ferts, steal_lines=None,
+                            highlight_plots=None, new_plots=None):
+        """土地状态 / 我的农场：顶部农场属性（等级/经验/升级进度条/总盈利）+ 4 列土地卡片（自动换行、高度自适应）
+        steal_lines：偷菜信息表格行（可选）；highlight_plots：黄色高亮的地块编号集合（1-based，施肥用）；
+        new_plots：新种植地块编号集合（1-based，植株名后加「新种」+ 黄色高亮）。"""
         try:
-            from PIL import Image, ImageDraw, ImageFont
+            from PIL import Image, ImageDraw
         except Exception:
             return None
-        if not os.path.exists(FONT_FILE):
+        # 字号语义：标题 32 / 等级 26 / 小字 18 / 经验 16（小两号）
+        fonts = _load_fonts(32, 26, 18, 16)
+        if fonts is None:
             return None
-        try:
-            title_font = ImageFont.truetype(FONT_FILE, 32)
-            lv_font = ImageFont.truetype(FONT_FILE, 26)
-            small_font = ImageFont.truetype(FONT_FILE, 18)
-            exp_font = ImageFont.truetype(FONT_FILE, 16)  # 经验值字号小两号
-        except Exception:
-            return None
+        title_font, lv_font, small_font, exp_font = fonts
         now = datetime.now().timestamp()
         plots = farm.get("plots", [])
         level = int(farm.get("level", 0))
@@ -5012,8 +5152,11 @@ class SignInPlugin(Star):
         need = FARM_EXP_BASE * (level + 1) if level < FARM_MAX_LEVEL else 0
         profit = int(farm.get("total_profit", 0))
 
+        highlight_plots = set(highlight_plots or [])
+        new_plots = set(new_plots or [])
+
         # ---------- 土地卡片内容 ----------
-        cards = []
+        cards = []  # (行列表, 是否高亮)
         for i, plot in enumerate(plots):
             num = i + 1
             gname = self._plot_grade(int(plot.get("grade", 0)))[0]
@@ -5022,11 +5165,14 @@ class SignInPlugin(Star):
                 upgrade = "🏆 已满级"
             else:
                 upgrade = f"⬆️ 升级 {FARM_UPGRADE_COSTS[grade]}金"
+            hl = num in highlight_plots or num in new_plots
             if plot.get("crop") is None:
                 lines = [f"#{num} {gname}", "空闲中", upgrade]
             else:
                 crop_name = plot.get("crop", "")
-                c = self._find_item(crops, crop_name)
+                if num in new_plots:
+                    crop_name = f"{crop_name} 新种"
+                c = self._find_item(crops, crop_name.replace(" 新种", ""))
                 price = c["crop_price"] if c else 0.0
                 income = int(round(int(plot.get("yield", 0)) * float(price)))
                 if now >= plot.get("mature_ts", 0):
@@ -5041,7 +5187,7 @@ class SignInPlugin(Star):
                     f"剩余 {remain} 预计 {income}金",
                     upgrade,
                 ]
-            cards.append(lines)
+            cards.append((lines, hl))
 
         # ---------- 布局参数 ----------
         pad = 20
@@ -5053,39 +5199,20 @@ class SignInPlugin(Star):
         card_w = int(globals().get("FARM_PLOT_CARD_WIDTH", 270))
         content_w = card_w - inner * 2
 
-        probe = ImageDraw.Draw(Image.new("RGB", (8, 8)))
+        tw = _text_measurer()
+        if tw is None:
+            return None
 
-        def tw(s, f):
-            return probe.textlength(s, font=f)
-
-        def wrap(text, font):
-            """按像素宽度自动换行：优先在空格处断行，无空格按字符硬切"""
-            lines = []
-            cur = ""
-            for ch in text:
-                if tw(cur + ch, font) <= content_w:
-                    cur += ch
-                else:
-                    sp = cur.rfind(" ")
-                    if sp > 0:
-                        lines.append(cur[:sp])
-                        cur = cur[sp + 1:] + ch
-                    else:
-                        if cur:
-                            lines.append(cur)
-                        cur = ch
-            if cur:
-                lines.append(cur)
-            return lines or [""]
+        wrap = _make_wrapper(tw, content_w)
 
         # 预计算每张卡片换行后的行数与高度
-        card_rows = []  # (行列表, 高度)
-        for lines in cards:
+        card_rows = []  # (行列表, 高度, 是否高亮)
+        for lines, hl in cards:
             rows = []
             for ln in lines:
                 for wl in wrap(ln, small_font):
                     rows.append(wl)
-            card_rows.append((rows, inner * 2 + len(rows) * line_h))
+            card_rows.append((rows, inner * 2 + len(rows) * line_h, hl))
 
         # 顶部属性区高度
         profit_h = 28
@@ -5100,7 +5227,14 @@ class SignInPlugin(Star):
         cards_h = sum(max(card_rows[r * cols:(r + 1) * cols][j][1] for j in range(len(card_rows[r * cols:(r + 1) * cols])))
                       for r in range(rows_n)) + gap * max(0, rows_n - 1) if card_rows else 0
 
-        height = pad * 2 + title_h + profit_h + lv_row_h + bar_h + rule_h + cards_h
+        # 偷菜信息区（底部）：表格行数（含标题行）
+        steal_table = []
+        steal_h = 0
+        if steal_lines:
+            steal_table, steal_h = self._layout_steal_table(steal_lines, width - pad * 2, small_font, tw)
+            steal_h += 8 + line_h  # 分割线间距 + 标题行
+
+        height = pad * 2 + title_h + profit_h + lv_row_h + bar_h + rule_h + cards_h + steal_h
 
         img = Image.new("RGB", (width, height), (255, 255, 255))
         d = ImageDraw.Draw(img)
@@ -5137,33 +5271,80 @@ class SignInPlugin(Star):
         # 土地卡片（4 列，自动换行，同行取最高）
         for r in range(rows_n):
             group = card_rows[r * cols:(r + 1) * cols]
-            gh = max(h for _, h in group)
-            for j, (rows, _) in enumerate(group):
+            gh = max(h for _, h, _ in group)
+            for j, (rows, _, hl) in enumerate(group):
                 x0 = pad + j * (card_w + gap)
-                d.rectangle([x0, y, x0 + card_w, y + gh], outline=(205, 205, 205), width=1)
+                fill = (255, 230, 153) if hl else None  # 黄色 #FFE699 高亮
+                d.rectangle([x0, y, x0 + card_w, y + gh], fill=fill, outline=(205, 205, 205), width=1)
                 yy = y + inner
                 for ln in rows:
                     d.text((int(x0 + inner), yy), ln, font=small_font, fill=(40, 40, 40))
                     yy += line_h
             y += gh + gap
 
-        base = os.path.dirname(DATA_FILE)
-        path = os.path.join(base, f"_farm_{datetime.now().strftime('%Y%m%d%H%M%S%f')}.png")
-        try:
-            img.save(path)
-        except Exception as e:
-            logger.error(f"[插件] 保存土地状态图片失败: {e}")
-            return None
-        try:
-            now = datetime.now().timestamp()
-            for fn in os.listdir(base):
-                if fn.startswith("_farm_") and fn.endswith(".png"):
-                    fp = os.path.join(base, fn)
-                    if now - os.path.getmtime(fp) > 600:
-                        os.remove(fp)
-        except Exception:
-            pass
-        return ("image", path)
+        # 偷菜信息区（底部）：分割线 + 标题行 + 表格
+        if steal_lines:
+            d.line([(pad, y), (width - pad, y)], fill=(200, 200, 200), width=1)
+            y += 8
+            title_line = steal_lines[0] if steal_lines else ""
+            d.text((pad, y), title_line, font=small_font, fill=(120, 120, 120))
+            y += line_h
+            steal_h += 8 + line_h
+            self._draw_steal_table(d, steal_table, pad, y, width - pad, small_font)
+
+        return _save_temp_image(img, "_farm_", "土地状态")
+
+    def _layout_steal_table(self, lines, max_w, font, tw):
+        """偷菜信息无框线表格：行 = 用户|作物 * 数量|损失金额|状态。
+        返回 (单元格二维列表, 总高度)。列宽按内容自适应。"""
+        rows_data = []
+        for ln in lines:
+            if "|" not in ln:
+                continue
+            cells = [c.strip() for c in ln.split("|")]
+            if len(cells) < 4:
+                cells += [""] * (4 - len(cells))
+            rows_data.append(cells[:4])
+        if not rows_data:
+            return [], 0
+        # 计算列宽（按最长内容，含换行：同一用户多作物换行显示在作物列）
+        n_cols = 4
+        col_w = [0] * n_cols
+        for cells in rows_data:
+            for i in range(n_cols):
+                col_w[i] = max(col_w[i], tw(cells[i], font))
+        # 多作物换行：作物列内容含换行 → 按行拆
+        line_h = 26
+        total = 0
+        table = []
+        for cells in rows_data:
+            # 作物列可能含多行（换行）
+            crop_lines = cells[1].split("\n") if "\n" in cells[1] else [cells[1]]
+            table.append((cells, crop_lines))
+            total += line_h * len(crop_lines)
+        return table, total
+
+    def _draw_steal_table(self, d, table, x0, y0, x1, font):
+        """绘制偷菜表格：无框线，列宽自适应；失败 #7F7F7F / 成功 #C00000 / 宠物起作用 #BF9000"""
+        line_h = 26
+        y = y0
+        for cells, crop_lines in table:
+            name = cells[0]
+            loss = cells[2]
+            status = cells[3]
+            # 颜色由状态决定
+            if "失败" in status:
+                color = (127, 127, 127)
+            elif "宠物" in status or "追回" in status:
+                color = (191, 144, 0)
+            else:
+                color = (192, 0, 0)
+            for k, crop_line in enumerate(crop_lines):
+                d.text((int(x0), y), name if k == 0 else "", font=font, fill=color)
+                d.text((int(x0 + 90), y), crop_line, font=font, fill=color)
+                d.text((int(x0 + 90 + 160), y), loss if k == 0 else "", font=font, fill=color)
+                d.text((int(x0 + 90 + 160 + 90), y), status if k == 0 else "", font=font, fill=color)
+                y += line_h
 
     # ---- 农场指令 ----
     def _farm_need(self, data, key, name):
@@ -5404,9 +5585,11 @@ class SignInPlugin(Star):
         self._save(data)
         text = (f"✅ 在 {len(targets)} 块土地上种下 {crop_name}（编号 {targets[0] + 1}~{targets[-1] + 1}）。\n"
                 f"{self._farm_state_snippet(farm)}")
-        # 响应末尾附加「土地状态」指令的响应内容（图片）；失败则纯文本
+        # 响应末尾附加「土地状态」指令的响应内容（图片）；新种地块黄色高亮 + 名称加「新种」；失败则纯文本
         try:
-            img = self._render_plot_status(name, farm, crops, self._load_fertilizers())
+            new_plots = [i + 1 for i in targets]
+            img = self._render_plot_status(name, farm, crops, self._load_fertilizers(),
+                                           new_plots=new_plots)
         except Exception as e:
             logger.error(f"[插件] 渲染土地状态图片异常: {e}")
             img = None
@@ -5542,8 +5725,19 @@ class SignInPlugin(Star):
         if wh[fert_name] <= 0:
             wh.pop(fert_name, None)
         self._save(data)
-        return (f"✅ 对 {len(use_plan)} 块地使用了 {fert_name} ×{total_need}（剩余 {wh.get(fert_name, 0)}）。\n"
+        text = (f"✅ 对 {len(use_plan)} 块地使用了 {fert_name} ×{total_need}（剩余 {wh.get(fert_name, 0)}）。\n"
                 f"{self._farm_state_snippet(farm)}")
+        # 响应末尾附加「土地状态」图片，使用化肥的地块黄色高亮；失败则纯文本
+        try:
+            highlight_plots = [i + 1 for i in use_plan]
+            img = self._render_plot_status(name, farm, self._load_crops(), ferts,
+                                           highlight_plots=highlight_plots)
+        except Exception as e:
+            logger.error(f"[插件] 渲染土地状态图片异常: {e}")
+            img = None
+        if img is not None and isinstance(img, tuple) and img[0] == "image":
+            return ("image_text", text, img[1])
+        return text
 
     def _handle_farm_harvest(self, event):
         name = event.get_sender_name()
@@ -5599,9 +5793,313 @@ class SignInPlugin(Star):
         if not harvested:
             return "指定的土地没有成熟作物。"
         lvl_msg = self._farm_gain_exp(farm, total_exp)
+        # 被偷批次：本次收割的地块若有偷菜信息，标记 harvest_ts（24h 内可见）
+        now_ts = datetime.now().timestamp()
+        for it in farm.get("steal_infos", []):
+            if it.get("harvest_ts") is None:
+                it["harvest_ts"] = now_ts
         self._save(data)
-        return (f"✅ 收割了 {len(harvested)} 块地（编号 {harvested}），作物已入库，农场经验 +{total_exp}{lvl_msg}。\n"
+        text = (f"✅ 收割了 {len(harvested)} 块地（编号 {harvested}），作物已入库，农场经验 +{total_exp}{lvl_msg}。\n"
                 f"{self._farm_state_snippet(farm)}")
+        # 附加偷菜信息（收割后 24h 内可见）
+        steal_lines = self._steal_info_lines(farm, now_ts)
+        if steal_lines:
+            text += "\n" + "\n".join(steal_lines)
+        return text
+
+    # ================= 偷菜 =================
+    def _steal_enabled(self, data) -> bool:
+        return bool(globals().get("STEAL_ENABLED", True)) and self._feature_enabled(data, "steal")
+
+    def _target_from_event(self, event, data):
+        """解析偷菜目标用户 key：优先 @（message_obj 中的 At 组件），其次 昵称/QQ 号 文本"""
+        # 1) @ 组件
+        try:
+            chain = getattr(getattr(event, "message_obj", None), "message", None) \
+                or getattr(event, "message_obj", None)
+            if chain is not None:
+                comps = chain.chain if hasattr(chain, "chain") else (chain if isinstance(chain, list) else [])
+                for comp in comps:
+                    if type(comp).__name__ == "At":
+                        qq = str(getattr(comp, "qq", "") or "")
+                        if qq:
+                            return qq
+        except Exception:
+            pass
+        # 2) 文本：偷菜 <目标>
+        parts = event.message_str.split(maxsplit=1)
+        if len(parts) >= 2:
+            target = parts[1].strip()
+            if target:
+                # QQ 号
+                if target.isdigit():
+                    return target
+                # 昵称匹配（跨群共享 uid，取第一个匹配的）
+                for uid, u in (data.get("users") or {}).items():
+                    if u.get("name") == target or u.get("nickname") == target:
+                        return uid
+        return None
+
+    def _handle_guard(self, event):
+        """看家 <开/关>：开启/关闭宠物看家防护"""
+        name = event.get_sender_name()
+        key = self._user_key(event)
+        parts = event.message_str.split(maxsplit=1)
+        if len(parts) < 2 or parts[1].strip() not in ("开", "关"):
+            return "格式：看家 开 / 看家 关"
+        data = self._load()
+        pet = data.get("pets", {}).get(key)
+        if not pet:
+            return f"{name} 还没有宠物，无法开启看家防护。"
+        on = parts[1].strip() == "开"
+        if on:
+            health_req = float(globals().get("STEAL_GUARD_HEALTH", 60))
+            if pet["health"] <= health_req:
+                return f"{name} 的宠物健康度 {pet['health']:.0f} 不满足看家要求（需 > {health_req:.0f}），先照顾好它吧。"
+        pet["guard"] = on
+        self._save(data)
+        return f"✅ 看家防护已{'开启' if on else '关闭'}：宠物将守护你的农场（偷菜时可触发护卫）。"
+
+    def _handle_steal(self, event):
+        """偷菜 <@目标>：一键偷走目标所有已成熟地块的一部分作物"""
+        name = event.get_sender_name()
+        key = self._user_key(event)
+        data = self._load()
+        if not self._steal_enabled(data):
+            return "⚠️ 「偷菜系统」功能已被管理员关闭，暂时无法使用。"
+        # 前提：偷菜者需解锁农场
+        err = self._farm_need(data, key, name)
+        if err:
+            return err
+        farm = self._farm_of(data, key)
+        if not farm.get("plots"):
+            return "你的农场还没有土地，无法偷菜。"
+        # 目标用户
+        tkey = self._target_from_event(event, data)
+        if not tkey or tkey == key:
+            return "请 @ 一位开通农场的用户作为偷菜目标（格式：偷菜 @对方）。"
+        tdata_farm = self._farm_of(data, tkey)
+        if not tdata_farm:
+            return "对方还没有解锁农场，无法偷菜。"
+        tplots = tdata_farm.get("plots", [])
+        now_ts = datetime.now().timestamp()
+        crops = self._load_crops()
+
+        # 目标已成熟地块（未收割）
+        ripe = [(i, p) for i, p in enumerate(tplots)
+                if p.get("crop") is not None and now_ts >= p.get("mature_ts", 0)]
+        if not ripe:
+            return "对方农场没有已成熟的作物可偷。"
+
+        # 基本防御：目标作物最低等级 > 偷菜者农场等级 + 5 → 无法偷该作物
+        # 逐地块尝试偷菜（每个成熟地块独立判定）
+        events = []   # 本次偷菜结果明细（被偷方视角）
+        my_gain = 0   # 偷菜方金币收益（成功偷走的作物按售价折算）
+        thief_pet = data.get("pets", {}).get(key)
+        thief_pet_lv = int(thief_pet.get("level", 0)) if thief_pet else 0
+
+        # 气味记忆检查（偷菜者身上记着对目标的记忆 → 必被宠物发现）
+        thief_scent = data.get("farms", {}).get(key, {}).get("scent_memory", {}) if data.get("farms", {}).get(key) else {}
+        has_scent = float(thief_scent.get(tkey, 0) or 0) > now_ts
+
+        # 被偷方宠物看家判定
+        tpet = data.get("pets", {}).get(tkey)
+        guard_on = bool(tpet and tpet.get("guard"))
+        guard_health_ok = bool(tpet and tpet["health"] > float(globals().get("STEAL_GUARD_HEALTH", 60)))
+        guard_effective = guard_on and guard_health_ok
+
+        # 被偷方看家时：同一偷菜者 24h 内尝试次数累计
+        t_steal_log = tdata_farm.setdefault("steal_log", {})
+        t_steal_log.setdefault(key, {"ts": 0, "count": 0})
+        log_entry = t_steal_log[key]
+        if now_ts - log_entry["ts"] > 86400:
+            log_entry["ts"] = now_ts
+            log_entry["count"] = 0
+        log_entry["count"] += 1
+        # 气味记忆：被偷方获得针对偷菜者的记忆（记在偷菜者身上）
+        thief_farm = data.setdefault("farms", {}).setdefault(key, {})
+        thief_scent = thief_farm.setdefault("scent_memory", {})
+        threshold = int(globals().get("STEAL_SCENT_THRESHOLD", 4))
+        if log_entry["count"] > threshold:
+            h_min = int(globals().get("STEAL_SCENT_HOURS_MIN", 12))
+            h_max = int(globals().get("STEAL_SCENT_HOURS_MAX", 24))
+            thief_scent[tkey] = now_ts + random.randint(h_min, h_max) * 3600
+
+        # 随机护卫效果（被偷方宠物体力 > 40 且未忙碌）
+        pet_guard_effect = None  # "catch"(抓到你了) / "return"(给我站住) / "slack"(摸鱼)
+        tpet_busy = bool(tpet and now_ts < self._pet_busy_until(tpet))
+        if guard_effective and tpet is not None and not tpet_busy and tpet["stamina"] > 40:
+            r = random.random()
+            if r < 0.30:
+                pet_guard_effect = "return"   # 给我站住：追回 40-60%
+            elif r < 0.50:
+                pet_guard_effect = "catch"    # 抓到你了：偷菜失败 + 罚款 + 气味记忆
+            else:
+                pet_guard_effect = "slack"    # 摸鱼：偷菜方溜之大吉
+        elif guard_effective and tpet is not None and tpet_busy:
+            pet_guard_effect = "slack"        # 忙碌 100% 摸鱼
+
+        # 气味记忆 → 必被宠物发现（若看家生效）
+        if guard_effective and has_scent:
+            pet_guard_effect = "catch"
+
+        # 宠物压制：偷菜者宠物等级比被偷者高 5 级 → 偷菜惩罚降低 30-70%
+        suppress = 1.0
+        if tpet is not None and thief_pet_lv - int(tpet.get("level", 0)) >= 5:
+            suppress = random.uniform(0.3, 0.7)
+
+        loss_min = float(globals().get("STEAL_LOSS_MIN", 0.10))
+        loss_max = float(globals().get("STEAL_LOSS_MAX", 0.20))
+
+        for i, plot in ripe:
+            crop_name = plot.get("crop", "")
+            c = self._find_item(crops, crop_name)
+            if c is None:
+                continue
+            # 基本防御
+            if int(c.get("min_level", 0)) > int(farm.get("level", 0)) + 5:
+                events.append({"ts": now_ts, "thief_uid": key, "thief_name": name,
+                               "crop": crop_name, "qty": 0, "loss": 0,
+                               "status": "level_fail"})
+                continue
+            yield_now = int(plot.get("yield", 0))
+            if yield_now <= 0:
+                continue
+            # 偷走比例 10-20%
+            pct = random.uniform(loss_min, loss_max)
+            # 看家额外减免 2-6%（偷菜成功固定减少损失）
+            if guard_effective:
+                r_min = float(globals().get("STEAL_GUARD_REDUCE_MIN", 0.02))
+                r_max = float(globals().get("STEAL_GUARD_REDUCE_MAX", 0.06))
+                pct *= (1.0 - random.uniform(r_min, r_max))
+            qty = max(1, int(yield_now * pct))
+            # 「抓到你了」：偷菜失败，qty 追回
+            if pet_guard_effect == "catch":
+                events.append({"ts": now_ts, "thief_uid": key, "thief_name": name,
+                               "crop": crop_name, "qty": 0, "loss": 0, "status": "pet_catch"})
+                continue
+            # 「给我站住」：追回 40-60%（转金币给宠物主人）
+            if pet_guard_effect == "return":
+                back_pct = random.uniform(0.4, 0.6) * suppress
+                back = max(1, int(qty * back_pct))
+                kept = qty - back
+                if kept > 0:
+                    plot["yield"] = max(0, yield_now - kept)
+                    gain = int(round(kept * float(c["crop_price"])))
+                    self._add_coins(data, key, gain, f"偷菜·{crop_name}")
+                    my_gain += gain
+                    events.append({"ts": now_ts, "thief_uid": key, "thief_name": name,
+                                   "crop": crop_name, "qty": kept, "loss": gain,
+                                   "status": "pet_return"})
+                else:
+                    events.append({"ts": now_ts, "thief_uid": key, "thief_name": name,
+                                   "crop": crop_name, "qty": 0, "loss": 0, "status": "pet_return"})
+                continue
+            # 成功（含摸鱼）
+            plot["yield"] = max(0, yield_now - qty)
+            gain = int(round(qty * float(c["crop_price"])))
+            self._add_coins(data, key, gain, f"偷菜·{crop_name}")
+            my_gain += gain
+            events.append({"ts": now_ts, "thief_uid": key, "thief_name": name,
+                           "crop": crop_name, "qty": qty, "loss": gain,
+                           "status": "success"})
+
+        if not events:
+            return "对方农场没有可偷的成熟作物。"
+
+        # 记录被偷事件（含本次批次收割时间戳，24h 有效期）
+        t_events = tdata_farm.setdefault("steal_infos", [])
+        t_events.append({
+            "ts": now_ts,
+            "thief_uid": key,
+            "thief_name": name,
+            "items": [
+                {"crop": e["crop"], "qty": e["qty"], "loss": e["loss"], "status": e["status"]}
+                for e in events
+            ],
+            "harvest_ts": None,   # 被偷批次收割时填充；显示条件：now - harvest_ts <= 24h
+        })
+        if len(t_events) > 50:
+            del t_events[:len(t_events) - 50]
+
+        # 宠物消耗与罚款
+        fine = 0
+        if pet_guard_effect == "catch" and tpet is not None:
+            # 抓到你了：罚款偷菜金额 10-20%（压制降低）
+            fine_pct = random.uniform(0.10, 0.20) * suppress
+            fine = int(round(max(0, my_gain) * fine_pct)) if my_gain > 0 else int(round(100 * fine_pct))
+            if fine > 0 and self._coins_of(data, key) >= fine:
+                self._add_coins(data, key, -fine, "偷菜被抓罚款")
+                self._add_coins(data, tkey, fine, "偷菜罚款赔偿")
+            # 体力消耗 1-3
+            tpet["stamina"] = round(max(0.0, tpet["stamina"] - random.randint(1, 3)), 2)
+        elif pet_guard_effect == "return" and tpet is not None:
+            # 给我站住：体力消耗 2-5
+            tpet["stamina"] = round(max(0.0, tpet["stamina"] - random.randint(2, 5)), 2)
+
+        self._save(data)
+
+        # 偷菜方视角摘要
+        ok_count = sum(1 for e in events if e["status"] in ("success", "pet_return"))
+        fail_count = sum(1 for e in events if e["status"] in ("level_fail", "pet_catch"))
+        tname = self._user_name(data, tkey) or "对方"
+        lines = [f"🥬 {name} 对 {tname} 的农场进行了偷菜："]
+        if my_gain > 0:
+            lines.append(f"💰 偷得作物折合 {my_gain} 金币！")
+        if fail_count:
+            lines.append(f"🛡️ {fail_count} 个地块防御成功（等级不足/被宠物发现）")
+        if pet_guard_effect == "return":
+            lines.append("🐾 对方的宠物触发了「给我站住」，追回了部分作物！")
+        elif pet_guard_effect == "catch":
+            lines.append(f"🐾 对方的宠物触发了「抓到你了」，偷菜失败！罚款 {fine} 金币！")
+        elif pet_guard_effect == "slack":
+            lines.append("🐾 对方的宠物摸鱼了，溜之大吉～")
+        return "\n".join(lines)
+
+    def _user_name(self, data, uid):
+        u = data.get("users", {}).get(uid, {})
+        return u.get("name") or u.get("nickname") or ""
+
+    def _steal_info_lines(self, farm, now_ts):
+        """生成偷菜信息表格行（被偷方视角，无框线表格）：
+        用户1|白菜 * 10|损失0|失败：对方等级过低
+        有效期：被偷批次作物主动收割后 24 小时"""
+        infos = farm.get("steal_infos", [])
+        # 过滤：harvest_ts 为空（未收割）→ 显示；已收割且 24h 内 → 显示
+        alive = []
+        for it in infos:
+            hts = it.get("harvest_ts")
+            if hts is None or now_ts - hts <= 86400:
+                alive.append(it)
+        if not alive:
+            return []
+        # 按偷菜者聚合（同一偷菜者一行，多种作物换行）
+        by_thief = {}
+        for it in alive:
+            tid = it["thief_uid"]
+            d = by_thief.setdefault(tid, {"name": it["thief_name"], "rows": []})
+            for item in it.get("items", []):
+                status = item.get("status", "success")
+                qty = item.get("qty", 0)
+                loss = item.get("loss", 0)
+                if status == "level_fail":
+                    st = "失败：对方等级过低"
+                    color = "#7F7F7F"
+                elif status == "pet_catch":
+                    st = "失败：宠物发现"
+                    color = "#BF9000"
+                elif status == "pet_return":
+                    st = "成功（宠物追回部分）"
+                    color = "#BF9000"
+                else:
+                    st = "成功"
+                    color = "#C00000"
+                d["rows"].append((f"{item['crop']} * {qty}", f"损失{loss}", st, color))
+        lines = ["🥬 偷菜记录（被偷批次收割后 24 小时内显示）："]
+        for tid, d in by_thief.items():
+            for crop_txt, loss_txt, st, color in d["rows"]:
+                lines.append(f"{d['name']}|{crop_txt}|{loss_txt}|{st}")
+        return lines
 
     def _handle_farm_cancel(self, event):
         name = event.get_sender_name()
@@ -5819,7 +6317,9 @@ class SignInPlugin(Star):
             return err
         crops = self._load_crops()
         ferts = self._load_fertilizers()
-        img = self._render_plot_status(name, self._farm_of(data, key), crops, ferts)
+        farm = self._farm_of(data, key)
+        steal_lines = self._steal_info_lines(farm, datetime.now().timestamp())
+        img = self._render_plot_status(name, farm, crops, ferts, steal_lines=steal_lines)
         if img is not None:
             return img
         return "图片生成失败（缺少 Pillow 或字体），请查看日志。"

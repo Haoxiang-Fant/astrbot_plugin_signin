@@ -28,6 +28,66 @@ async function saveConfig() {
   }
 }
 
+async function loadPetShop() {
+  setStatus("status-petshop", "加载中...");
+  try {
+    const data = await bridge.apiGet("petshop");
+    const types = (data && data.types) || [];
+    const box = $("petshop-editors");
+    box.innerHTML = types
+      .map(
+        (t, i) => `<details class="param-subgroup" ${i === 0 ? "open" : ""}>
+          <summary>${t.label}</summary>
+          <div class="sub-editor">
+            <div class="toolbar">
+              <button data-petshop-load="${t.key}">加载</button>
+              <button data-petshop-save="${t.key}" class="primary">保存</button>
+              <span id="status-petshop-${t.key}" class="status"></span>
+            </div>
+            <textarea id="petshop-text-${t.key}" spellcheck="false" placeholder="点击「加载」读取 ${t.label} 配置..."></textarea>
+          </div>
+        </details>`,
+      )
+      .join("");
+    types.forEach((t) => {
+      document
+        .querySelector(`[data-petshop-load="${t.key}"]`)
+        .addEventListener("click", () => loadPetShopType(t.key));
+      document
+        .querySelector(`[data-petshop-save="${t.key}"]`)
+        .addEventListener("click", () => savePetShopType(t.key));
+      $(`petshop-text-${t.key}`).value = t.content || "";
+    });
+    setStatus("status-petshop", "✅ 已加载");
+  } catch (e) {
+    setStatus("status-petshop", "❌ 加载失败：" + e.message);
+  }
+}
+
+async function loadPetShopType(key) {
+  setStatus(`status-petshop-${key}`, "加载中...");
+  try {
+    const data = await bridge.apiGet("petshop");
+    const types = (data && data.types) || [];
+    const t = types.find((x) => x.key === key);
+    if (t) $(`petshop-text-${key}`).value = t.content || "";
+    setStatus(`status-petshop-${key}`, "✅ 已加载");
+  } catch (e) {
+    setStatus(`status-petshop-${key}`, "❌ 加载失败：" + e.message);
+  }
+}
+
+async function savePetShopType(key) {
+  const content = $(`petshop-text-${key}`).value;
+  setStatus(`status-petshop-${key}`, "保存中...");
+  try {
+    await bridge.apiPost("petshop", { key, content });
+    setStatus(`status-petshop-${key}`, "✅ 已保存");
+  } catch (e) {
+    setStatus(`status-petshop-${key}`, "❌ 保存失败：" + e.message);
+  }
+}
+
 async function loadCrops() {
   setStatus("status-crops", "加载中...");
   try {
@@ -106,12 +166,12 @@ async function exportData() {
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
-    a.download = "data.json";
+    a.download = "signin_backup.json";
     document.body.appendChild(a);
     a.click();
     a.remove();
     setTimeout(() => URL.revokeObjectURL(url), 1000);
-    setStatus("status-data", "✅ 已导出 data.json");
+    setStatus("status-data", "✅ 已导出全部数据（存档 + 自定义配置）");
   } catch (e) {
     setStatus("status-data", "❌ 导出失败：" + e.message);
   }
@@ -126,8 +186,11 @@ async function importData() {
   setStatus("status-data", "导入中...");
   try {
     const content = await file.text();
-    await bridge.apiPost("data/import", { content });
-    setStatus("status-data", "✅ 导入成功");
+    const parsed = JSON.parse(content);
+    // 新版：files 打包；旧版：仅 data.json 的 content 字段
+    const payload = parsed && parsed.files ? { files: parsed.files } : { content };
+    await bridge.apiPost("data/import", payload);
+    setStatus("status-data", "✅ 导入成功（存档 + 自定义配置已还原）");
   } catch (e) {
     setStatus("status-data", "❌ 导入失败：" + e.message);
   }
@@ -369,17 +432,64 @@ async function saveParams() {
   }
 }
 
+async function loadFeatures() {
+  setStatus("status-features", "加载中...");
+  try {
+    const data = await bridge.apiGet("feature/status");
+    const modules = (data && data.modules) || [];
+    const box = $("features-list");
+    if (!modules.length) {
+      box.innerHTML = '<p class="hint">没有可配置的功能模块。</p>';
+    } else {
+      box.innerHTML = modules
+        .map(
+          (m) => `<label class="param-item feature-item">
+            <span class="param-label">${m.label}</span>
+            <span class="param-input">
+              <input type="checkbox" data-feature="${m.key}" data-label="${m.label}" ${m.enabled ? "checked" : ""} />
+            </span>
+            <small>关闭后对应指令提示「功能已被管理员关闭」</small>
+          </label>`,
+        )
+        .join("");
+    }
+    setStatus("status-features", "✅ 已加载");
+  } catch (e) {
+    setStatus("status-features", "❌ 加载失败：" + e.message);
+  }
+}
+
+async function saveFeatures() {
+  const switches = {};
+  document.querySelectorAll("#features-list [data-feature]").forEach((cb) => {
+    switches[cb.dataset.feature] = cb.checked;
+  });
+  setStatus("status-features", "保存中...");
+  try {
+    await bridge.apiPost("feature/status", { switches });
+    setStatus("status-features", "✅ 已保存并立即生效");
+  } catch (e) {
+    setStatus("status-features", "❌ 保存失败：" + e.message);
+  }
+}
+
 function switchTab(name) {
   document
     .querySelectorAll(".tab")
     .forEach((b) => b.classList.toggle("active", b.dataset.tab === name));
+  $("panel-shopedit").classList.toggle("hidden", name !== "shopedit");
   $("panel-config").classList.toggle("hidden", name !== "config");
-  $("panel-crops").classList.toggle("hidden", name !== "crops");
-  $("panel-ferts").classList.toggle("hidden", name !== "ferts");
   $("panel-loanpkgs").classList.toggle("hidden", name !== "loanpkgs");
+  $("panel-features").classList.toggle("hidden", name !== "features");
   $("panel-params").classList.toggle("hidden", name !== "params");
   $("panel-activities").classList.toggle("hidden", name !== "activities");
   $("panel-data").classList.toggle("hidden", name !== "data");
+  if (name === "shopedit") {
+    loadPetShop();
+    loadCrops();
+    loadFerts();
+  }
+  if (name === "features") loadFeatures();
   if (name === "params") loadParams();
   if (name === "activities") loadActivities();
 }
@@ -395,6 +505,8 @@ $("btn-load-ferts").addEventListener("click", loadFerts);
 $("btn-save-ferts").addEventListener("click", saveFerts);
 $("btn-load-loanpkgs").addEventListener("click", loadLoanPkgs);
 $("btn-save-loanpkgs").addEventListener("click", saveLoanPkgs);
+$("btn-load-features").addEventListener("click", loadFeatures);
+$("btn-save-features").addEventListener("click", saveFeatures);
 $("btn-load-activities").addEventListener("click", loadActivities);
 $("btn-save-activities").addEventListener("click", saveActivities);
 $("btn-load-params").addEventListener("click", loadParams);
@@ -436,5 +548,8 @@ async function toggleDebug() {
 }
 
 await bridge.ready();
-loadConfig();
+// 默认进入「商店编辑」选项卡
+loadPetShop();
+loadCrops();
+loadFerts();
 loadDebugStatus();
