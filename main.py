@@ -277,6 +277,31 @@ RAIN_COUNT = 10
 RAIN_TIMES = "8,12,16,20"
 RAIN_HOURS = 1
 
+# ============ 排行榜（1.7.4） ============
+RANK_DISPLAY = 20                        # 每个排行榜最多展示的名次数（前 N 名）
+RANK_HIGHLIGHT_COLOR = "#375623"         # 查询人自己在榜上的高亮颜色（十六进制）
+RANK_IMAGE_SCALE = 2.5                   # 排行榜图片宽度倍数（2.5 = 内容宽度的 250%）
+RANK_BAR_LIGHTEN = 0.2                   # 进度条颜色比文字颜色浅的比例（0.2 = 浅 20%）
+RANK_NAME_MAX_CHARS = 6                  # 排行榜名字显示最大字符数（超出部分用 ... 代替）
+RANK_BAR_GAP_LEFT_MULT = 2.0             # 进度条左侧留白倍数（基准 12px，2 = 200%）
+RANK_BAR_GAP_RIGHT_MULT = 3.0            # 进度条右侧留白倍数（基准 12px，3 = 300%）
+RANK_ROW_SEP_PCT = 0.1                   # 行间分割线高度 = 文字行高的比例（0.1 = 10%）
+GROUP_MEMBER_TTL_HOURS = 48              # 本群成员标记有效期（小时）：触发插件功能后维持
+# 金币排行：积分 = 持有金币 × 金币权重 + 银行存款 × 存款权重
+RANK_COIN_COIN_W = 1.0
+RANK_COIN_BANK_W = 1.0
+# 宠物排行：积分 = 经验 × 权重 + 健康度 × 权重 + （饱食+口渴+体力+心情）× 权重
+RANK_PET_EXP_W = 2.0
+RANK_PET_HEALTH_W = 1.5
+RANK_PET_ATTR_W = 0.5
+# 农场排行：积分 = 经验 × 权重 + （土地数-2）× 权重 + 土地等级分合计 × 权重
+RANK_FARM_EXP_W = 2.0
+RANK_FARM_PLOT_W = 400.0
+RANK_FARM_GRADE_W = 0.5
+# 土地等级分：各土地等级的累计升级花费（贫瘠→红→普通→肥沃→黑；WebUI 可改）
+RANK_PLOT_SCORES = (0, 1000, 2500, 4500, 7500)
+# =============================================
+
 # ============ WebUI 运行参数（协议：GET/POST /astrbot_plugin_signin/params） ============
 # 每项：key=模块常量名（保存后 globals 更新、立即生效），attr=同时同步的实例属性名（可选）
 # type 支持 int / float / bool / string；min/max 为校验范围；group 为一级折叠分组，subgroup 为二级折叠分组
@@ -399,6 +424,124 @@ RUNTIME_PARAMS = [
     # ---- 金币账单 ----
     {"key": "LEDGER_SHOW", "label": "金币账单展示条数", "type": "int", "group": "金币账单", "subgroup": "展示",
      "desc": "「查询流水」最多展示最近多少条", "default": 30, "min": 5, "max": 200},
+    # ---- 签到 · 好感度（补充） ----
+    {"key": "MIN_FAV", "label": "签到最少好感度", "type": "float", "group": "签到", "subgroup": "好感度",
+     "desc": "每次签到最少增加的好感度", "default": 0.01, "min": 0, "max": 10, "attr": "min_fav"},
+    {"key": "MAX_FAV", "label": "签到最多好感度", "type": "float", "group": "签到", "subgroup": "好感度",
+     "desc": "每次签到最多增加的好感度", "default": 1.0, "min": 0, "max": 100, "attr": "max_fav"},
+    {"key": "MAX_LEVEL", "label": "好感度最高等级", "type": "int", "group": "签到", "subgroup": "好感度",
+     "desc": "好感度最高等级（初始为 0）", "default": 10, "min": 1, "max": 100},
+    {"key": "LEVEL_STEP", "label": "好感度每级所需点数", "type": "float", "group": "签到", "subgroup": "好感度",
+     "desc": "好感度每满该值提升一级", "default": 10.0, "min": 1, "max": 1000, "attr": "level_step"},
+    # ---- 左轮手枪（补充） ----
+    {"key": "ROULETTE_MAGAZINES", "label": "弹匣数量", "type": "int", "group": "左轮手枪", "subgroup": "规则",
+     "desc": "左轮手枪弹匣容量", "default": 7, "min": 3, "max": 20},
+    {"key": "ROULETTE_MAX_BULLETS", "label": "子弹数量上限", "type": "int", "group": "左轮手枪", "subgroup": "规则",
+     "desc": "单局最多装的子弹数量", "default": 6, "min": 1, "max": 10},
+    {"key": "ROULETTE_MIN_PLAYERS", "label": "最少玩家人数", "type": "int", "group": "左轮手枪", "subgroup": "规则",
+     "desc": "开局所需的最少玩家人数", "default": 2, "min": 2, "max": 5},
+    {"key": "ROULETTE_MAX_PLAYERS", "label": "最多玩家人数", "type": "int", "group": "左轮手枪", "subgroup": "规则",
+     "desc": "一局最多参与的玩家人数", "default": 3, "min": 2, "max": 6},
+    {"key": "ROULETTE_FEE_RATE", "label": "手续费比例", "type": "float", "group": "左轮手枪", "subgroup": "规则",
+     "desc": "左轮手枪抽取的手续费比例（0.1 = 10%，3 人局固定 5%）", "default": 0.1, "min": 0, "max": 0.5},
+    # ---- 宠物（补充） ----
+    {"key": "PET_MAX_LEVEL", "label": "宠物最大等级", "type": "int", "group": "宠物", "subgroup": "解锁",
+     "desc": "宠物等级上限", "default": 100, "min": 10, "max": 999},
+    {"key": "PET_MAX_HEALTH", "label": "健康度最大值", "type": "float", "group": "宠物", "subgroup": "属性",
+     "desc": "宠物健康度上限", "default": 200.0, "min": 50, "max": 1000},
+    {"key": "PILL_NAME", "label": "属性丸道具名", "type": "string", "group": "宠物", "subgroup": "属性丸",
+     "desc": "签到获得的属性丸名称", "default": "属性丸"},
+    {"key": "EXP_BALL_NAME", "label": "农场经验球道具名", "type": "string", "group": "农场", "subgroup": "农场经验球",
+     "desc": "签到获得的农场经验球名称", "default": "农场经验球"},
+    {"key": "ITEM_TO_COIN", "label": "道具转金币单价", "type": "int", "group": "宠物", "subgroup": "属性丸",
+     "desc": "未开通对应功能时，属性丸/经验球自动转换为金币的单价", "default": 10, "min": 1, "max": 100000},
+    # ---- 农场（补充） ----
+    {"key": "FARM_FREE_PLOTS", "label": "解锁赠送土地数", "type": "int", "group": "农场", "subgroup": "价格",
+     "desc": "解锁农场时赠送的土地数量", "default": 2, "min": 1, "max": 10},
+    {"key": "FARM_MAX_LEVEL", "label": "农场最大等级", "type": "int", "group": "农场", "subgroup": "土地",
+     "desc": "农场等级上限", "default": 100, "min": 10, "max": 999},
+    {"key": "FARM_EXP_BASE", "label": "农场升级经验基数", "type": "float", "group": "农场", "subgroup": "土地",
+     "desc": "升到 N 级需 1000×N 经验（此值即基数 1000）", "default": 1000.0, "min": 100, "max": 100000},
+    {"key": "FARM_UPGRADE_COSTS", "label": "土地升级费用（逗号分隔）", "type": "list", "group": "农场", "subgroup": "土地",
+     "desc": "土地从当前等级升到下一级的金币，依次为 贫瘠→红→普通→肥沃→黑", "default": "1000,1500,2000,3000"},
+    # ---- 贷款（补充） ----
+    {"key": "LOAN_SPECIAL_RATE", "label": "特别贷款日息", "type": "float", "group": "贷款", "subgroup": "特别贷款",
+     "desc": "特别贷款每日利息（% / 日）", "default": 1.0, "min": 0, "max": 100, "attr": "loan_special_rate"},
+    {"key": "LOAN_SPECIAL_DAYS", "label": "特别贷款限期（天）", "type": "int", "group": "贷款", "subgroup": "特别贷款",
+     "desc": "特别贷款还款限期天数", "default": 30, "min": 1, "max": 365, "attr": "loan_special_days"},
+    {"key": "LOAN_SPECIAL_TAKE", "label": "特别贷款逾期收取比例", "type": "float", "group": "贷款", "subgroup": "特别贷款",
+     "desc": "特别贷款逾期后收取仓库价值的比例（0.2 = 20%）", "default": 0.2, "min": 0, "max": 1},
+    {"key": "LOAN_COIN_DEDUCT", "label": "逾期金币自动扣款比例", "type": "float", "group": "贷款", "subgroup": "规则",
+     "desc": "有逾期贷款时，获得金币自动扣款还款的比例（0.2 = 20%）", "default": 0.2, "min": 0, "max": 1},
+    {"key": "LOAN_FAV_DROP_SPECIAL", "label": "特别贷款逾期好感度降低范围", "type": "list", "group": "贷款", "subgroup": "规则",
+     "desc": "特别贷款逾期每日好感度降低的随机范围（逗号分隔，如 1.0,1.5）", "default": "1.0,1.5"},
+    {"key": "LOAN_FAV_DROP_NORMAL", "label": "一般逾期好感度降低范围", "type": "list", "group": "贷款", "subgroup": "规则",
+     "desc": "一般逾期每日好感度降低的随机范围（逗号分隔，如 1.01,1.25）", "default": "1.01,1.25"},
+    {"key": "LOAN_OVERDUE_YEAR_LIMIT", "label": "每年最多逾期次数", "type": "int", "group": "贷款", "subgroup": "规则",
+     "desc": "每年逾期次数达到该值后禁用贷款功能", "default": 4, "min": 1, "max": 100},
+    {"key": "LOAN_GENERAL_OVERDUE_DAYS", "label": "一般套餐逾期天数", "type": "int", "group": "贷款", "subgroup": "规则",
+     "desc": "一般/自定义套餐的还款限期天数", "default": 15, "min": 1, "max": 365},
+    {"key": "LOAN_SHORT_GRACE_DAYS", "label": "短期套餐免息天数", "type": "int", "group": "贷款", "subgroup": "规则",
+     "desc": "短期套餐免息期天数", "default": 10, "min": 1, "max": 365},
+    {"key": "LOAN_SHORT_RATE", "label": "短期套餐逾期日利率", "type": "float", "group": "贷款", "subgroup": "规则",
+     "desc": "短期套餐逾期后的日利率（% / 日）", "default": 6.0, "min": 0, "max": 100},
+    {"key": "LOAN_DAILY_MULT", "label": "每日累计贷款倍数", "type": "float", "group": "贷款", "subgroup": "规则",
+     "desc": "每日累计贷款上限 = 该值 × 套餐上限", "default": 2.0, "min": 1, "max": 100},
+    {"key": "LOAN_FARM_ROLLBACK_DAYS", "label": "逾期农场回退天数", "type": "int", "group": "贷款", "subgroup": "规则",
+     "desc": "逾期超过该天数后农场回退至初始状态", "default": 30, "min": 1, "max": 365},
+    {"key": "LOAN_AUTO_TIME", "label": "每日自动处理时间（时,分）", "type": "list", "group": "贷款", "subgroup": "规则",
+     "desc": "每日自动卖仓库/自动签到还款的时间（逗号分隔，如 23,0）", "default": "23,0"},
+    # ---- 红包雨 ----
+    {"key": "RAIN_AMOUNT", "label": "红包雨单轮总金额", "type": "int", "group": "金币红包", "subgroup": "红包雨",
+     "desc": "每轮红包雨的总金币数", "default": 1000, "min": 10, "max": 1000000, "attr": "rain_amount"},
+    {"key": "RAIN_COUNT", "label": "红包雨红包个数", "type": "int", "group": "金币红包", "subgroup": "红包雨",
+     "desc": "每轮红包雨拆分的红包个数", "default": 10, "min": 1, "max": 100, "attr": "rain_count"},
+    {"key": "RAIN_TIMES", "label": "红包雨开启时间（小时）", "type": "string", "group": "金币红包", "subgroup": "红包雨",
+     "desc": "每天开启红包雨的整点小时，逗号分隔（如 8,12,16,20）", "default": "8,12,16,20", "attr": "rain_times"},
+    {"key": "RAIN_HOURS", "label": "红包雨有效期（小时）", "type": "float", "group": "金币红包", "subgroup": "红包雨",
+     "desc": "每轮红包雨的有效期小时数", "default": 1, "min": 0.5, "max": 24, "attr": "rain_hours"},
+    # ---- 调试 / 通用 ----
+    {"key": "DEBUG_PASSWORD", "label": "调试模式口令", "type": "string", "group": "调试", "subgroup": "口令",
+     "desc": "管理员在对话框输入此口令解锁 WebUI 调试按钮（重启后失效）", "default": "88224646"},
+    {"key": "TEMP_IMAGE_TTL", "label": "临时图片保留秒数", "type": "int", "group": "调试", "subgroup": "图片",
+     "desc": "生成的临时图片超过该秒数后清理（0 表示不清理）", "default": 600, "min": 0, "max": 86400},
+    # ---- 排行榜 ----
+    {"key": "RANK_DISPLAY", "label": "排行榜展示名次", "type": "int", "group": "排行榜", "subgroup": "通用",
+     "desc": "每个排行榜最多展示的名次数（前 N 名）", "default": 20, "min": 5, "max": 100},
+    {"key": "RANK_HIGHLIGHT_COLOR", "label": "我的名次高亮颜色", "type": "string", "group": "排行榜", "subgroup": "通用",
+     "desc": "查询人自己在榜上的高亮颜色（十六进制，如 #375623）", "default": "#375623"},
+    {"key": "RANK_IMAGE_SCALE", "label": "图片宽度倍数", "type": "float", "group": "排行榜", "subgroup": "通用",
+     "desc": "排行榜图片宽度 = 内容宽度 × 该倍数（默认 2.5 = 原来的 250%）", "default": 2.5, "min": 1.0, "max": 10.0},
+    {"key": "RANK_BAR_LIGHTEN", "label": "进度条颜色浅化比例", "type": "float", "group": "排行榜", "subgroup": "通用",
+     "desc": "进度条颜色比文字颜色浅的比例（默认 0.2 = 浅 20%）", "default": 0.2, "min": 0.0, "max": 0.9},
+    {"key": "RANK_NAME_MAX_CHARS", "label": "名字显示最大字符数", "type": "int", "group": "排行榜", "subgroup": "通用",
+     "desc": "用户名超过该字符数时截断，超出部分用 ... 代替", "default": 6, "min": 1, "max": 20},
+    {"key": "RANK_BAR_GAP_LEFT_MULT", "label": "进度条左侧留白倍数", "type": "float", "group": "排行榜", "subgroup": "通用",
+     "desc": "进度条左侧留白 = 基准 12px × 该倍数（2 = 原先的 200%）", "default": 2.0, "min": 0.5, "max": 10.0},
+    {"key": "RANK_BAR_GAP_RIGHT_MULT", "label": "进度条右侧留白倍数", "type": "float", "group": "排行榜", "subgroup": "通用",
+     "desc": "进度条右侧留白 = 基准 12px × 该倍数（3 = 原先的 300%）", "default": 3.0, "min": 0.5, "max": 10.0},
+    {"key": "RANK_ROW_SEP_PCT", "label": "行分割线高度占比", "type": "float", "group": "排行榜", "subgroup": "通用",
+     "desc": "行间分割线高度 = 文字行高 × 该比例（默认 0.1 = 文字的 10%）", "default": 0.1, "min": 0.0, "max": 0.5},
+    {"key": "GROUP_MEMBER_TTL_HOURS", "label": "群成员标记有效期（小时）", "type": "float", "group": "排行榜", "subgroup": "通用",
+     "desc": "用户在本群触发插件功能后被标记为本群成员的时长，超时后按非本群用户脱敏显示", "default": 48, "min": 1, "max": 720},
+    {"key": "RANK_COIN_COIN_W", "label": "金币权重（持有金币）", "type": "float", "group": "排行榜", "subgroup": "金币排行",
+     "desc": "金币排行积分 = 持有金币 × 该权重 + 银行存款 × 存款权重", "default": 1.0, "min": 0, "max": 1000},
+    {"key": "RANK_COIN_BANK_W", "label": "银行存款权重", "type": "float", "group": "排行榜", "subgroup": "金币排行",
+     "desc": "金币排行积分 = 持有金币 × 金币权重 + 银行存款 × 该权重", "default": 1.0, "min": 0, "max": 1000},
+    {"key": "RANK_PET_EXP_W", "label": "宠物经验权重", "type": "float", "group": "排行榜", "subgroup": "宠物排行",
+     "desc": "宠物排行积分 = 经验 × 该权重 + 健康度 × 健康权重 + 其它属性 × 属性权重", "default": 2.0, "min": 0, "max": 1000},
+    {"key": "RANK_PET_HEALTH_W", "label": "宠物健康度权重", "type": "float", "group": "排行榜", "subgroup": "宠物排行",
+     "desc": "宠物排行中健康度的权重", "default": 1.5, "min": 0, "max": 1000},
+    {"key": "RANK_PET_ATTR_W", "label": "其它属性权重", "type": "float", "group": "排行榜", "subgroup": "宠物排行",
+     "desc": "宠物排行中饱食+口渴+体力+心情 总和的权重", "default": 0.5, "min": 0, "max": 1000},
+    {"key": "RANK_FARM_EXP_W", "label": "农场经验权重", "type": "float", "group": "排行榜", "subgroup": "农场排行",
+     "desc": "农场排行积分 = 经验 × 该权重 + (土地数-2) × 土地权重 + 等级分合计 × 等级权重", "default": 2.0, "min": 0, "max": 1000},
+    {"key": "RANK_FARM_PLOT_W", "label": "土地数权重", "type": "float", "group": "排行榜", "subgroup": "农场排行",
+     "desc": "农场排行中（拥有土地数 - 2）× 该权重", "default": 400.0, "min": 0, "max": 100000},
+    {"key": "RANK_FARM_GRADE_W", "label": "土地等级分权重", "type": "float", "group": "排行榜", "subgroup": "农场排行",
+     "desc": "农场排行中土地等级分合计 × 该权重", "default": 0.5, "min": 0, "max": 1000},
+    {"key": "RANK_PLOT_SCORES", "label": "土地等级分（逗号分隔）", "type": "list", "group": "排行榜", "subgroup": "农场排行",
+     "desc": "各土地等级的累计升级分数：贫瘠→红→普通→肥沃→黑（如 0,1000,2500,4500,7500）", "default": "0,1000,2500,4500,7500"},
 ]
 PARAM_KEYS = {p["key"]: p for p in RUNTIME_PARAMS}
 
@@ -756,7 +899,7 @@ class RouletteGame:
         return "、".join(p["name"] for p in self.players)
 
 
-@register("astrbot_plugin_signin", "sishijiu", "群签到 + 左轮手枪 + 宠物养成 + 金币银行 + 农场", "1.7.3")
+@register("astrbot_plugin_signin", "sishijiu", "群签到 + 左轮手枪 + 宠物养成 + 金币银行 + 农场", "1.7.4")
 class SignInPlugin(Star):
     def __init__(self, context: Context, config: dict = None):
         super().__init__(context)
@@ -788,6 +931,11 @@ class SignInPlugin(Star):
         self.money_event_chance = _get("money_event_chance", MONEY_EVENT_CHANCE, float)
         self.money_event_gain = _get("money_event_gain", MONEY_EVENT_GAIN)
         self.money_event_max_per_day = _get("money_event_max_per_day", MONEY_EVENT_MAX_PER_DAY)
+        self.min_fav = _get("min_fav", MIN_FAV, float)
+        self.max_fav = _get("max_fav", MAX_FAV, float)
+        self.level_step = _get("level_step", LEVEL_STEP, float)
+        self.loan_special_rate = _get("loan_special_rate", LOAN_SPECIAL_RATE, float)
+        self.loan_special_days = _get("loan_special_days", LOAN_SPECIAL_DAYS)
 
         # 红包雨活动配置（WebUI 可改）
         self.rain_amount = _get("rain_amount", RAIN_AMOUNT)
@@ -910,6 +1058,12 @@ class SignInPlugin(Star):
                 if sync_c or daily_c:
                     self._save(data)
             reply = self._route(head, event)
+            # 本群成员注册：触发插件任一功能即在当前群标记（48 小时有效，用于排行榜脱敏）
+            if reply is not None:
+                gid = event.get_group_id()
+                if gid:
+                    self._mark_group_member(data, gid, str(key))
+                    self._save(data)
         if reply is None:
             return
         if isinstance(reply, tuple) and len(reply) == 2 and reply[0] == "image":
@@ -1162,6 +1316,13 @@ class SignInPlugin(Star):
             return self._handle_steal(event)
         if head == "看家":
             return self._handle_guard(event)
+        # 排行榜（1.7.4）
+        if head == "金币排行":
+            return self._handle_rank_coins(event)
+        if head == "宠物排行":
+            return self._handle_rank_pet(event)
+        if head == "农场排行":
+            return self._handle_rank_farm(event)
         # 调试模式口令（仅管理员在对话框输入）：解锁 WebUI 的调试按钮
         if head == DEBUG_PASSWORD:
             self._debug_unlocked = True
@@ -1190,13 +1351,13 @@ class SignInPlugin(Star):
     def _load_disk(self) -> dict:
         if not os.path.exists(DATA_FILE):
             return {"users": {}, "roulette": {}, "pets": {}, "bank": {}, "farms": {}, "loans": {},
-                    "ledger": {}, "redpackets": [], "activities": {}}
+                    "ledger": {}, "redpackets": [], "activities": {}, "group_members": {}}
         try:
             with open(DATA_FILE, "r", encoding="utf-8") as f:
                 data = json.load(f)
             if not isinstance(data, dict):
                 return {"users": {}, "roulette": {}, "pets": {}, "bank": {}, "farms": {}, "loans": {},
-                        "ledger": {}, "redpackets": [], "activities": {}}
+                        "ledger": {}, "redpackets": [], "activities": {}, "group_members": {}}
             data.setdefault("users", {})
             data.setdefault("roulette", {})
             data.setdefault("pets", {})
@@ -1208,13 +1369,14 @@ class SignInPlugin(Star):
             data.setdefault("activities", {})
             data.setdefault("activity_config", {})
             data.setdefault("params", {})
+            data.setdefault("group_members", {})
             # 旧数据迁移：宠物等级按新经验体系重算（所需经验 = 当前等级 × 100）
             self._migrate_pet_levels(data)
             return data
         except Exception as e:
             logger.error(f"[插件] 读取数据失败: {e}")
             return {"users": {}, "roulette": {}, "pets": {}, "bank": {}, "farms": {}, "loans": {},
-                    "ledger": {}, "redpackets": [], "activities": {}}
+                    "ledger": {}, "redpackets": [], "activities": {}, "group_members": {}}
 
     def _migrate_pet_levels(self, data: dict) -> None:
         """按新经验体系重算所有宠物的等级（旧数据按经验总值匹配新等级体系）"""
@@ -1248,6 +1410,13 @@ class SignInPlugin(Star):
                         val = raw.strip().lower() in ("1", "true", "yes", "on")
                     else:
                         val = bool(raw)
+                elif spec["type"] == "list":
+                    # 逗号分隔字符串 → tuple（如 "1000,1500,2000,3000"）；单值也可
+                    items = str(raw).replace("，", ",").split(",")
+                    val = tuple(self._f(x) for x in items if str(x).strip() != "")
+                    if len(val) == 1:
+                        val = tuple(float(x) if "." in str(val[0]) or isinstance(val[0], float) else int(val[0])
+                                    for x in val)
                 else:
                     val = str(raw)
             except (TypeError, ValueError):
@@ -6589,3 +6758,251 @@ class SignInPlugin(Star):
         else:
             lines.append("💸 你拿走最多金币的人：无")
         return "\n".join(lines)
+
+    # ================= 排行榜（1.7.4） =================
+    @staticmethod
+    def _parse_hex_color(s, default=(55, 86, 35)):
+        """#RRGGBB → (r, g, b)；非法值返回默认色（默认 #375623）"""
+        s = str(s or "").strip().lstrip("#")
+        if len(s) == 6:
+            try:
+                return tuple(int(s[i:i + 2], 16) for i in (0, 2, 4))
+            except ValueError:
+                pass
+        return default
+
+    @staticmethod
+    def _lighten_color(color, pct=0.2):
+        """颜色向白色方向浅化 pct（0.2 = 浅 20%）：progress = c + (255 - c) * pct"""
+        pct = max(0.0, min(0.9, float(pct)))
+        return tuple(int(c + (255 - int(c)) * pct) for c in color)
+
+    @staticmethod
+    def _mask_name(name, in_group):
+        """排行榜展示名：非本群用户脱敏为「第一个字 + 星号」（星号数 = 名字长度 - 1）；
+        本群用户显示原名。"""
+        if in_group:
+            return name
+        s = str(name)
+        if len(s) <= 1:
+            return s  # 单字名无法遮掩
+        return s[0] + "*" * (len(s) - 1)
+
+    @staticmethod
+    def _fit_name(name, max_chars=None):
+        """排行榜名字显示长度固定：超过 max_chars（默认 RANK_NAME_MAX_CHARS，6）个字符时，
+        无法显示的部分用 ... 代替（如「超长名字测试用」→「超长名字测...」）。"""
+        if max_chars is None:
+            max_chars = int(globals().get("RANK_NAME_MAX_CHARS", 6) or 6)
+        disp = str(name)
+        if max_chars >= 1 and len(disp) > max_chars:
+            disp = disp[:max_chars] + "..."
+        return disp
+
+    def _mark_group_member(self, data: dict, gid, uid) -> None:
+        """本群成员注册：用户在本群触发插件任一功能即标记（覆盖为最新时间戳，48 小时后失效）"""
+        members = data.setdefault("group_members", {})
+        members.setdefault(str(gid), {})[str(uid)] = datetime.now().timestamp()
+
+    def _is_group_member(self, data: dict, gid, uid) -> bool:
+        """用户是否被标记为当前群成员（有效期 GROUP_MEMBER_TTL_HOURS 小时；无群上下文视为非本群）"""
+        if not gid:
+            return False
+        g = data.get("group_members", {}).get(str(gid)) or {}
+        ts = g.get(str(uid)) if isinstance(g, dict) else None
+        if not isinstance(ts, (int, float)):
+            return False
+        ttl = float(globals().get("GROUP_MEMBER_TTL_HOURS", 48) or 48) * 3600
+        return datetime.now().timestamp() - float(ts) <= ttl
+
+    @staticmethod
+    def _rank_plot_score_total(plots):
+        """土地等级分合计：每块地块按累计升级花费计分（贫瘠 0 / 红 1000 / 普通 2500 / 肥沃 4500 / 黑 7500，
+        分数表在 WebUI「排行榜 → 农场排行」可调），地块超界按最高级计分。"""
+        raw = globals().get("RANK_PLOT_SCORES", (0, 1000, 2500, 4500, 7500))
+        try:
+            if isinstance(raw, str):
+                scores = [float(x) for x in raw.replace("，", ",").split(",") if str(x).strip() != ""]
+            else:
+                scores = [float(x) for x in raw]
+        except (TypeError, ValueError):
+            scores = [0.0, 1000.0, 2500.0, 4500.0, 7500.0]
+        total = 0.0
+        for plot in plots:
+            g = int(plot.get("grade", 0)) if isinstance(plot, dict) else 0
+            total += scores[g] if 0 <= g < len(scores) else scores[-1]
+        return total
+
+    def _rank_entries(self, kind: str, data: dict):
+        """计算全部玩家的排行条目，返回按积分降序的 [(score, uid, name), ...]。
+        kind: "coins" 金币排行 / "pet" 宠物排行 / "farm" 农场排行。"""
+        entries = []
+        if kind == "coins":
+            cw = float(globals().get("RANK_COIN_COIN_W", 1.0))
+            bw = float(globals().get("RANK_COIN_BANK_W", 1.0))
+            for uid, user in (data.get("users") or {}).items():
+                if not isinstance(user, dict):
+                    continue
+                bank = data.get("bank", {}).get(uid)
+                dep = sum(self._dep_amount(d) for d in (bank.get("deposits", []) if isinstance(bank, dict) else []))
+                score = self._coins_of(data, uid) * cw + dep * bw
+                entries.append((score, str(uid), self._user_name(data, uid) or str(uid)))
+        elif kind == "pet":
+            ew = float(globals().get("RANK_PET_EXP_W", 2.0))
+            hw = float(globals().get("RANK_PET_HEALTH_W", 1.5))
+            aw = float(globals().get("RANK_PET_ATTR_W", 0.5))
+            for uid, pet in (data.get("pets") or {}).items():
+                if not isinstance(pet, dict):
+                    continue
+                exp = float(pet.get("exp", 0) or 0)
+                health = float(pet.get("health", 0) or 0)
+                others = (float(pet.get("satiety", 0) or 0) + float(pet.get("thirst", 0) or 0)
+                          + float(pet.get("stamina", 0) or 0) + float(pet.get("mood", 0) or 0))
+                score = exp * ew + health * hw + others * aw
+                pname = str(pet.get("name", "") or "").strip() or str(uid)
+                entries.append((score, str(uid), pname))
+        else:  # farm
+            ew = float(globals().get("RANK_FARM_EXP_W", 2.0))
+            pw = float(globals().get("RANK_FARM_PLOT_W", 400.0))
+            gw = float(globals().get("RANK_FARM_GRADE_W", 0.5))
+            for uid, farm in (data.get("farms") or {}).items():
+                if not isinstance(farm, dict):
+                    continue
+                exp = float(farm.get("exp", 0) or 0)
+                plots = farm.get("plots") or []
+                score = exp * ew + max(0, len(plots) - 2) * pw + self._rank_plot_score_total(plots) * gw
+                entries.append((score, str(uid), self._user_name(data, uid) or str(uid)))
+        # 积分降序；同分按用户 ID 稳定排序
+        entries.sort(key=lambda e: (-e[0], e[1]))
+        return entries
+
+    @staticmethod
+    def _fmt_score(v):
+        """积分显示：整数不带小数点，小数保留最多 2 位并去掉末尾 0"""
+        v = float(v)
+        if abs(v - round(v)) < 1e-9:
+            return str(int(round(v)))
+        return f"{v:.2f}".rstrip("0").rstrip(".")
+
+    def _render_rank_image(self, title, rows, hl_color):
+        """排行榜图片：每行「<名次> <用户名/宠物名> [进度条] <积分(右对齐)>」。
+        rows: [(rank, name, score_str, is_me, ratio), ...]（已按积分降序、取前 N 名）；
+        ratio：进度条填充比例（第一名恒为 1.0，其它 = 积分/第一名积分，0~1）；
+        名字显示固定 RANK_NAME_MAX_CHARS 个字符，超出部分用 ... 代替；
+        进度条左侧留白 = 基准 12px × RANK_BAR_GAP_LEFT_MULT（默认 200%）、右侧 = × RANK_BAR_GAP_RIGHT_MULT（默认 300%）；
+        行与行之间有分割线（仅在用户名~积分范围内，高度 = 行高 × RANK_ROW_SEP_PCT，默认 10%）；
+        查询人（is_me）文字与进度条以 hl_color 高亮；进度条颜色 = 文字颜色浅 RANK_BAR_LIGHTEN；
+        图片宽度 = 内容宽度 × RANK_IMAGE_SCALE（默认 2.5 = 原来的 250%），高度自适应。"""
+        try:
+            from PIL import Image, ImageDraw
+        except Exception as e:
+            logger.error(f"[插件] 缺少 Pillow，无法生成图片: {e}")
+            return None
+        fonts = _load_fonts(36, 24)
+        if fonts is None:
+            return None
+        title_font, body_font = fonts
+        tw = _text_measurer()
+        if tw is None:
+            return None
+
+        pad = 24
+        title_h = 60
+        line_h = 40
+        bar_h = 12          # 进度条高度
+        rank_col = 64       # 名次列宽
+        gap_base = 12.0     # 进度条留白基准（左右各 12px 为“原先的”）
+        scale = float(globals().get("RANK_IMAGE_SCALE", 2.5) or 2.5)
+        lighten = float(globals().get("RANK_BAR_LIGHTEN", 0.2) or 0.2)
+        name_max_chars = int(globals().get("RANK_NAME_MAX_CHARS", 6) or 6)
+        gap_left = gap_base * float(globals().get("RANK_BAR_GAP_LEFT_MULT", 2.0) or 2.0)
+        gap_right = gap_base * float(globals().get("RANK_BAR_GAP_RIGHT_MULT", 3.0) or 3.0)
+        sep_pct = float(globals().get("RANK_ROW_SEP_PCT", 0.1) or 0.1)
+
+        prepared = []
+        score_w_max = 0
+        name_w_max = 0
+        for rank, name, score_str, is_me, ratio in rows:
+            # 名字显示长度固定：超过 name_max_chars 个字符的部分用 ... 代替
+            disp = self._fit_name(name, name_max_chars)
+            sw = tw(score_str, body_font)
+            score_w_max = max(score_w_max, sw)
+            name_w_max = max(name_w_max, tw(disp, body_font))
+            prepared.append((rank, disp, score_str, is_me, ratio))
+
+        # 宽度 = 内容宽度 × 倍数（默认 250%）；高度 = 标题 + 行 × 行高 + 行间分割线高度
+        base_w = pad * 2 + rank_col + 8 + name_w_max + gap_left + score_w_max
+        width = int(base_w * scale)
+        sep_h = int(line_h * max(0.0, min(0.5, sep_pct)))
+        n = len(prepared)
+        height = int(pad * 2 + title_h + line_h * n + sep_h * max(0, n - 1))
+
+        score_x = width - pad                  # 积分右对齐的右边缘
+        name_x = pad + rank_col + 8            # 名字列起点（分割线也从这里开始）
+        bar_x0 = int(name_x + name_w_max + gap_left)
+        bar_x1 = int(score_x - score_w_max - gap_right)
+        if bar_x1 - bar_x0 < 12:
+            bar_x1 = bar_x0 + 12              # 极小图兜底：进度条至少 12px
+        sep_x1 = int(score_x)                  # 分割线右端 = 积分右边缘
+        sep_color = (230, 230, 230)
+
+        img = Image.new("RGB", (width, height), (255, 255, 255))
+        d = ImageDraw.Draw(img)
+        d.text((int(pad), int(pad)), title, font=title_font, fill=(20, 20, 20))
+        y = pad + title_h
+        hl = self._parse_hex_color(hl_color)
+        bar_w = bar_x1 - bar_x0
+        for idx, (rank, disp, score_str, is_me, ratio) in enumerate(prepared):
+            text_color = hl if is_me else (70, 70, 70)
+            bar_color = self._lighten_color(text_color, lighten)
+            d.text((int(pad), int(y)), str(rank), font=body_font, fill=text_color)
+            d.text((int(name_x), int(y)), disp, font=body_font, fill=text_color)
+            # 进度条：轨道浅灰 + 填充色（文字浅 20%，高亮行即高亮色浅 20%）
+            bar_y = y + (line_h - bar_h) // 2
+            d.rectangle([bar_x0, bar_y, bar_x1, bar_y + bar_h], fill=(238, 238, 238), outline=(205, 205, 205))
+            fill_w = int(bar_w * max(0.0, min(1.0, ratio)))
+            if fill_w > 0:
+                d.rectangle([bar_x0 + 1, bar_y + 1, bar_x0 + fill_w, bar_y + bar_h - 1], fill=bar_color)
+            d.text((int(score_x - tw(score_str, body_font)), int(y)), score_str, font=body_font, fill=text_color)
+            y += line_h
+            # 行间分割线：仅在 用户名 → 积分 范围内，占用高度 = 行高的 RANK_ROW_SEP_PCT（文字 10%）
+            if idx < n - 1:
+                d.rectangle([int(name_x), int(y), sep_x1, int(y + sep_h)], fill=sep_color)
+                y += sep_h
+        return _save_temp_image(img, "_rank_", "排行榜")
+
+    def _build_rank(self, kind: str, event) -> str:
+        """组装排行榜响应：图片优先，渲染失败回退为文本。
+        全局榜 + 本群成员机制：非本群用户（未在当前群触发过插件功能）名字脱敏为「首字+星号」。"""
+        titles = {"coins": "💰 金币排行榜", "pet": "🐾 宠物排行榜", "farm": "🌾 农场排行榜"}
+        data = self._load()
+        me = str(self._user_key(event))
+        gid = event.get_group_id()          # 当前群（私聊无群 → 全员按非本群处理）
+        show = int(globals().get("RANK_DISPLAY", 20) or 20)
+        hl = globals().get("RANK_HIGHLIGHT_COLOR", "#375623")
+        entries = self._rank_entries(kind, data)
+        if not entries:
+            return "还没有玩家上榜，快发送「签到」「解锁宠物」「解锁农场」参与吧～"
+        top_score = entries[0][0]           # 第一名积分：进度条基准（第一名恒 100%）
+        rows = []
+        for i, (score, uid, name) in enumerate(entries[:show], start=1):
+            disp = self._mask_name(name, self._is_group_member(data, gid, uid))
+            ratio = 1.0 if i == 1 else (min(1.0, score / top_score) if top_score > 0 else 0.0)
+            rows.append((i, disp, self._fmt_score(score), uid == me, ratio))
+        img = self._render_rank_image(titles[kind], rows, hl)
+        if img is not None:
+            return img
+        # 文本回退（附进度百分比）
+        lines = [titles[kind] + f"（前 {show} 名）", ""]
+        for rank, name, score_str, is_me, ratio in rows:
+            lines.append(f"{rank}. {name} {score_str} [{int(ratio * 100)}%]" + (" ← 你" if is_me else ""))
+        return "\n".join(lines)
+
+    def _handle_rank_coins(self, event):
+        return self._build_rank("coins", event)
+
+    def _handle_rank_pet(self, event):
+        return self._build_rank("pet", event)
+
+    def _handle_rank_farm(self, event):
+        return self._build_rank("farm", event)

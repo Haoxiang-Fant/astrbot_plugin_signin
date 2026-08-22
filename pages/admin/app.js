@@ -415,16 +415,20 @@ async function loadParams() {
 function renderParamItem(p) {
   const min = p.min != null ? `min="${p.min}" ` : "";
   const max = p.max != null ? `max="${p.max}" ` : "";
+  let displayVal = p.value;
+  if (p.type === "list" && Array.isArray(p.value)) {
+    displayVal = p.value.join(",");
+  }
   const input =
     p.type === "int" || p.type === "float"
       ? `<input type="number" data-key="${p.key}" data-type="${p.type}" data-label="${p.label}" ${min}${max}value="${p.value}" />`
       : p.type === "bool"
         ? `<input type="checkbox" data-key="${p.key}" data-type="bool" data-label="${p.label}" ${p.value ? "checked" : ""} />`
-        : `<input type="text" data-key="${p.key}" data-type="str" data-label="${p.label}" value="${p.value}" />`;
+        : `<input type="text" data-key="${p.key}" data-type="str" data-label="${p.label}" value="${displayVal}" />`;
   return `<label class="param-item">
     <span class="param-label">${p.label}</span>
     <span class="param-input">${input}</span>
-    <small>${p.desc || ""}${p.min != null ? `（范围 ${p.min}~${p.max ?? "∞"}）` : ""}</small>
+    <small>${p.desc || ""}${p.min != null ? `（范围 ${p.min}~${p.max ?? "∞"}）` : ""}${p.type === "list" ? "（逗号分隔多个数值）" : ""}</small>
   </label>`;
 }
 
