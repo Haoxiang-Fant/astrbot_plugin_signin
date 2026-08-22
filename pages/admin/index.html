@@ -3,12 +3,12 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>插件后台管理</title>
+    <title>签到娱乐系统后台管理</title>
     <link rel="stylesheet" href="./style.css" />
   </head>
   <body>
     <div class="container">
-      <h1>🐾 签到插件后台管理</h1>
+      <h1>🐾 签到娱乐系统后台管理</h1>
 
       <div id="debug-bar" class="debug-bar hidden"></div>
 
@@ -19,6 +19,8 @@
         <button class="tab" data-tab="features">功能开关</button>
         <button class="tab" data-tab="params">运行参数</button>
         <button class="tab" data-tab="activities">活动中心</button>
+        <button class="tab" data-tab="aliases">同义口令</button>
+        <button class="tab" data-tab="names">群昵称同步</button>
         <button class="tab" data-tab="data">数据导入导出</button>
       </div>
 
@@ -123,6 +125,26 @@
           <p class="hint">点击「加载」读取已注册的活动模块...</p>
         </div>
         <p class="hint">勾选启用活动，并可修改每个活动的起止时间 / 简介 / 参与要求 / 自定义参数，保存后立即生效（重启后保留）。活动的编写方式见 ACTIVITY.md。</p>
+      </section>
+
+      <section id="panel-aliases" class="panel hidden">
+        <div class="toolbar">
+          <button id="btn-load-aliases">加载</button>
+          <button id="btn-save-aliases" class="primary">保存并立即生效</button>
+          <span id="status-aliases" class="status"></span>
+        </div>
+        <div id="aliases-list" class="param-list">
+          <p class="hint">点击「加载」读取同义口令...</p>
+        </div>
+        <p class="hint">同义口令 = 词义相近的口令别名，发送别名与发送对应指令效果完全相同（降低记忆指令的难度）。例如默认预置 <code>打卡 → 签到</code>、<code>我的宠物 → 宠物</code>、<code>存金币 → 存款</code>、<code>治疗 → 治疗宠物</code>、<code>财富榜 → 金币排行</code> 等。目标指令从下拉列表选择，同义词不能与标准指令同名；保存后立即生效（重启后保留）。</p>
+      </section>
+
+      <section id="panel-names" class="panel hidden">
+        <div class="toolbar">
+          <button id="btn-sync-group-names" class="primary">同步全部群聊的成员昵称</button>
+          <span id="status-names" class="status"></span>
+        </div>
+        <p class="hint">点击按钮后，插件通过机器人 API（aiocqhttp / OneBot）拉取<b>所有群聊</b>的成员昵称，存为<b>排行榜用户默认昵称</b>（data.json → group_names）。同步后：排行榜优先显示「用户触发功能时记录的最新昵称」，其次显示本同步数据，最后才是存档昵称 / 掩码。成员较多的群可能需要一点时间，请勿频繁点击。</p>
       </section>
 
       <section id="panel-data" class="panel hidden">

@@ -251,6 +251,20 @@ async function importData() {
   }
 }
 
+async function syncGroupNames() {
+  setStatus("status-names", "同步中，请稍候...");
+  try {
+    const r = await bridge.apiPost("group/names/sync", {});
+    if (r && r.ok) {
+      setStatus("status-names", `✅ ${r.msg}`);
+    } else {
+      setStatus("status-names", "❌ " + ((r && r.msg) || "同步失败"));
+    }
+  } catch (e) {
+    setStatus("status-names", "❌ 同步失败：" + e.message);
+  }
+}
+
 async function loadActivities() {
   setStatus("status-activities", "加载中...");
   try {
@@ -542,6 +556,8 @@ function switchTab(name) {
   $("panel-features").classList.toggle("hidden", name !== "features");
   $("panel-params").classList.toggle("hidden", name !== "params");
   $("panel-activities").classList.toggle("hidden", name !== "activities");
+  $("panel-aliases").classList.toggle("hidden", name !== "aliases");
+  $("panel-names").classList.toggle("hidden", name !== "names");
   $("panel-data").classList.toggle("hidden", name !== "data");
   if (name === "shopedit") {
     loadPetShop();
@@ -551,6 +567,7 @@ function switchTab(name) {
   if (name === "features") loadFeatures();
   if (name === "params") loadParams();
   if (name === "activities") loadActivities();
+  if (name === "aliases") loadAliases();
 }
 
 document.querySelectorAll(".tab").forEach((b) =>
@@ -572,8 +589,11 @@ $("btn-load-activities").addEventListener("click", loadActivities);
 $("btn-save-activities").addEventListener("click", saveActivities);
 $("btn-load-params").addEventListener("click", loadParams);
 $("btn-save-params").addEventListener("click", saveParams);
+$("btn-load-aliases").addEventListener("click", loadAliases);
+$("btn-save-aliases").addEventListener("click", saveAliases);
 $("btn-export-data").addEventListener("click", exportData);
 $("btn-import-data").addEventListener("click", importData);
+$("btn-sync-group-names").addEventListener("click", syncGroupNames);
 
 // ================= 调试模式 =================
 async function loadDebugStatus() {
@@ -605,6 +625,95 @@ async function toggleDebug() {
     await loadDebugStatus();
   } catch (e) {
     alert("操作失败：" + e.message);
+  }
+}
+
+// ================= 同义口令 =================
+let aliasHeads = []; // 标准指令列表（后端返回）
+
+function aliasOptions(selected) {
+  return aliasHeads
+    .map((h) => `<option value="${h}"${h === selected ? " selected" : ""}>${h}</option>`)
+    .join("");
+}
+
+function aliasRow(key, val) {
+  return `<div class="alias-row">
+    <input class="alias-key" value="${key}" placeholder="同义词，如：打卡" />
+    <select class="alias-val">${aliasOptions(val)}</select>
+    <button data-alias-del class="danger">删除</button>
+  </div>`;
+}
+
+function renderAliasRows(aliases) {
+  const box = $("aliases-list");
+  const entries = Object.entries(aliases || {});
+  const rows = entries.map(([k, v]) => aliasRow(k, v)).join("");
+  box.innerHTML =
+    `<div class="alias-row alias-head"><span>同义词（发送它效果相同）</span><span>目标指令</span><span></span></div>` +
+    rows +
+    `<div class="alias-row">
+      <input id="alias-new-key" placeholder="输入新同义词，如：打卡" />
+      <select id="alias-new-val">${aliasOptions("")}</select>
+      <button id="btn-alias-add" class="primary">添加</button>
+    </div>`;
+  box.querySelectorAll("button[data-alias-del]").forEach((b) =>
+    b.addEventListener("click", () => b.closest(".alias-row").remove()),
+  );
+  $("btn-alias-add").addEventListener("click", addAliasRow);
+}
+
+function addAliasRow() {
+  const key = $("alias-new-key").value.trim();
+  const val = $("alias-new-val").value;
+  if (!key) {
+    alert("请输入同义词");
+    return;
+  }
+  const box = $("aliases-list");
+  const row = document.createElement("div");
+  row.className = "alias-row";
+  row.innerHTML = aliasRow(key, val);
+  row.querySelector("button[data-alias-del]").addEventListener("click", () => row.remove());
+  box.insertBefore(row, $("alias-new-key").parentElement);
+  $("alias-new-key").value = "";
+}
+
+async function loadAliases() {
+  setStatus("status-aliases", "加载中...");
+  try {
+    const data = await bridge.apiGet("alias/list");
+    aliasHeads = (data && data.heads) || [];
+    renderAliasRows((data && data.aliases) || {});
+    setStatus("status-aliases", "✅ 已加载");
+  } catch (e) {
+    setStatus("status-aliases", "❌ 加载失败：" + e.message);
+  }
+}
+
+async function saveAliases() {
+  const rows = Array.from(document.querySelectorAll("#aliases-list .alias-row"));
+  // 保护：从未成功加载过表格就点保存 → 阻止（避免误清空全部同义词）
+  if (!rows.length || !document.querySelector("#aliases-list .alias-head")) {
+    setStatus("status-aliases", "❌ 请先点击「加载」读取同义口令（若一直加载失败请重载插件）");
+    return;
+  }
+  const aliases = {};
+  for (const row of rows) {
+    const keyEl = row.querySelector(".alias-key");
+    if (!keyEl) continue; // 表头 / 添加行 不含 .alias-key，跳过
+    const key = keyEl.value.trim();
+    const val = row.querySelector(".alias-val").value;
+    if (!key) continue; // 空行跳过
+    aliases[key] = val;
+  }
+  setStatus("status-aliases", "保存中...");
+  try {
+    await bridge.apiPost("alias/save", { aliases });
+    setStatus("status-aliases", "✅ 已保存并立即生效");
+    loadAliases();
+  } catch (e) {
+    setStatus("status-aliases", "❌ 保存失败：" + e.message);
   }
 }
 
