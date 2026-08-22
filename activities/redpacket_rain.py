@@ -1,9 +1,9 @@
 # -*- coding: utf-8 -*-
-"""定时红包雨活动：每天 8:00 / 12:00 / 16:00 / 20:00 开启一轮红包雨，
-有效期 1 小时（至开启时间一小时后），单轮 1000 金币分 10 个红包。
+"""定时红包雨活动：每天整点时段（默认 8:00 / 12:00 / 16:00 / 20:00）开启一轮红包雨，
+有效期（默认 1 小时），单轮默认 1000 金币分 10 个红包。
 
-总金额（amount）/ 红包个数（count）可在 WebUI「活动中心」修改；
-开启时间（rain_times）/ 有效期（rain_hours）在 WebUI 插件配置页修改。
+所有运行参数（单轮总金额 / 红包个数 / 开启时间 / 有效期）均在 WebUI「活动中心」调整，
+不再使用插件「运行参数」面板（该组已移除）。
 """
 from datetime import date, datetime, timedelta
 
@@ -16,13 +16,15 @@ class RedpacketRainActivity(BaseActivity):
     name = "定时红包雨"
     start = ""
     end = ""
-    desc = "每天 8:00 / 12:00 / 16:00 / 20:00 开启红包雨，1 小时内可抢！金额与个数可在活动中心调整。"
+    desc = "每天整点时段开启红包雨（默认 8/12/16/20 点），1 小时内可抢！金额、个数、开启时间、有效期均可在活动中心调整。"
     requirement = "无（所有玩家均可参与）"
     commands = {}
-    # 自定义可调参数（WebUI 活动中心可改）
+    # 自定义可调参数（WebUI「活动中心」可改，保存后立即生效）
     params = {
         "amount": {"label": "单轮总金额（金币）", "type": "int", "desc": "每轮红包雨的总金币数", "default": 1000, "min": 10, "max": 1000000},
         "count": {"label": "红包个数", "type": "int", "desc": "每轮红包雨拆分的红包个数", "default": 10, "min": 1, "max": 100},
+        "times": {"label": "开启时间（整点小时）", "type": "str", "desc": "每天开启红包雨的整点小时，逗号分隔，如 8,12,16,20（留空 = 不开启）", "default": "8,12,16,20"},
+        "hours": {"label": "有效期（小时）", "type": "float", "desc": "每轮红包雨的有效期小时数", "default": 1, "min": 0.5, "max": 24},
     }
 
     plugin = None
@@ -33,11 +35,17 @@ class RedpacketRainActivity(BaseActivity):
     def on_redpacket_open(self, event, data, key, gid, now_ts):
         """开红包前懒生成当轮红包雨（每个时段每天只生成一次），返回提示或空字符串"""
         p = self.plugin
-        # 归一化为 int 小时（防御配置为 float，如 8.0 / "8.5"）
+        # 开启时间：活动参数优先（留空 = 不开启）；未覆盖时回退主插件旧配置，再回退默认
+        self_times = getattr(self, "times", None)
+        if self_times is None:
+            times_src = getattr(p, "rain_times", None) or "8,12,16,20"
+        else:
+            times_src = self_times
         times = []
-        for x in (getattr(p, "rain_times", None) or []):
+        for x in str(times_src).replace("，", ",").split(","):
+            x = x.strip()
             try:
-                t = int(x)
+                t = int(float(x))
             except (TypeError, ValueError):
                 continue
             if 0 <= t < 24:
@@ -45,10 +53,10 @@ class RedpacketRainActivity(BaseActivity):
         times = sorted(set(times))
         if not times:
             return ""
-        # 总金额 / 个数：活动中心参数（amount / count），未设置时回退主插件配置
+        # 总金额 / 个数 / 有效期：活动中心参数优先，未设置回退主插件旧配置
         amount = max(1, int(getattr(self, "amount", 0) or 0) or int(getattr(p, "rain_amount", 1000)))
         count = max(1, int(getattr(self, "count", 0) or 0) or int(getattr(p, "rain_count", 10)))
-        hours = max(0.5, float(getattr(p, "rain_hours", 1) or 1))
+        hours = max(0.5, float(getattr(self, "hours", 0) or 0) or float(getattr(p, "rain_hours", 1) or 1))
         base = datetime.fromtimestamp(now_ts)
 
         # 找当前时间所属的开启时段：开启点 <= now < 开启点 + hours 小时

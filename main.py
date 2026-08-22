@@ -193,6 +193,44 @@ FARM_SHOP_COLS = 4
 MONEY_EVENT_CHANCE = 0.01   # 玩耍捡到钱概率（1%）
 MONEY_EVENT_GAIN = 100      # 捡到钱的金币
 MONEY_EVENT_MAX_PER_DAY = 2  # 每个周期最多触发次数
+WEAK_HEAL_COST = 500        # 治疗虚弱宠物的金币消耗（连续两天结算健康为 0 会进入虚弱）
+# 虚弱状态下被锁定的宠物功能指令（重新激活 = 发送「治疗宠物」花 WEAK_HEAL_COST 金币）
+_PET_WEAK_LOCKED_HEADS = frozenset(("打工", "玩耍", "购买", "使用", "看家"))
+
+# ============ 同义口令（WebUI「同义口令」可编辑，别名效果与标准指令相同） ============
+# 全部标准指令口令（供 WebUI 下拉与保存校验；别名必须指向其中之一）
+CMD_HEADS = frozenset((
+    "签到", "我的签到", "签到帮助", "游戏帮助", "帮助", "宠物帮助", "农场帮助", "左轮手枪帮助",
+    "装弹", "加入", "开始", "开枪", "我的战绩",
+    "解锁宠物", "宠物", "更改宠物名字", "治疗宠物", "打工", "玩耍",
+    "商店", "购买", "使用", "背包", "看家",
+    "农场", "解锁农场", "购买土地", "土地升级", "种子商店", "农场商店", "购买种子",
+    "肥料商店", "购买肥料", "种植", "施肥", "收割", "取消种植", "土地状态", "我的农场", "农场仓库",
+    "售卖", "农场帮助", "农场经验球",
+    "存款", "取款", "银行统计", "借款", "还款", "我的贷款", "我的征信",
+    "查询流水", "流水查询", "消费记录", "金币红包", "开红包", "抢红包", "开",
+    "金币排行", "宠物排行", "农场排行", "活动", "活动中心",
+    "查看后台配置", "保存后台配置", "导出数据", "导入数据", "重置数据",
+))
+# 默认同义词（首次加载或 WebUI 删除全部后重置为空）；用户可随时增删改
+DEFAULT_ALIAS_CMDS = {
+    "打卡": "签到",
+    "我的宠物": "宠物",
+    "宠物状态": "宠物",
+    "工作": "打工",
+    "钱袋": "背包",
+    "我的背包": "背包",
+    "存金币": "存款",
+    "取金币": "取款",
+    "今日流水": "查询流水",
+    "发红包": "金币红包",
+    "财富榜": "金币排行",
+    "宠物榜": "宠物排行",
+    "农场榜": "农场排行",
+    "治疗": "治疗宠物",
+    "赌博": "装弹",
+    "查看帮助": "游戏帮助",
+}
 
 # ============ 农场 ============
 FARM_UNLOCK_COST = 1500     # 解锁农场所需金币
@@ -277,16 +315,20 @@ RAIN_COUNT = 10
 RAIN_TIMES = "8,12,16,20"
 RAIN_HOURS = 1
 
-# ============ 排行榜（1.7.4） ============
+# ============ 排行榜（1.7.5） ============
 RANK_DISPLAY = 20                        # 每个排行榜最多展示的名次数（前 N 名）
-RANK_HIGHLIGHT_COLOR = "#375623"         # 查询人自己在榜上的高亮颜色（十六进制）
+RANK_HIGHLIGHT_COLOR = "#92D050"         # 查询人自己在榜上的高亮颜色（绿色）
+RANK_TEXT_COLOR = "#000000"              # 普通行（本群非自己）文字颜色
+RANK_MASKED_COLOR = "#7F7F7F"            # 脱敏行（非本群用户）文字颜色
+RANK_SEP_COLOR = "#D9D9D9"               # 行间分割线颜色
 RANK_IMAGE_SCALE = 2.5                   # 排行榜图片宽度倍数（2.5 = 内容宽度的 250%）
 RANK_BAR_LIGHTEN = 0.2                   # 进度条颜色比文字颜色浅的比例（0.2 = 浅 20%）
 RANK_NAME_MAX_CHARS = 6                  # 排行榜名字显示最大字符数（超出部分用 ... 代替）
 RANK_BAR_GAP_LEFT_MULT = 2.0             # 进度条左侧留白倍数（基准 12px，2 = 200%）
 RANK_BAR_GAP_RIGHT_MULT = 3.0            # 进度条右侧留白倍数（基准 12px，3 = 300%）
-RANK_ROW_SEP_PCT = 0.1                   # 行间分割线高度 = 文字行高的比例（0.1 = 10%）
+RANK_ROW_SEP_PCT = 0.03                  # 行间分割线高度 = 文字行高的比例（0.03 = 原先 10% 的 30%）
 GROUP_MEMBER_TTL_HOURS = 48              # 本群成员标记有效期（小时）：触发插件功能后维持
+RANK_KINDS = {"金币排行": "coins", "宠物排行": "pet", "农场排行": "farm"}  # 排行榜指令 → 榜单类型
 # 金币排行：积分 = 持有金币 × 金币权重 + 银行存款 × 存款权重
 RANK_COIN_COIN_W = 1.0
 RANK_COIN_BANK_W = 1.0
@@ -491,15 +533,7 @@ RUNTIME_PARAMS = [
      "desc": "逾期超过该天数后农场回退至初始状态", "default": 30, "min": 1, "max": 365},
     {"key": "LOAN_AUTO_TIME", "label": "每日自动处理时间（时,分）", "type": "list", "group": "贷款", "subgroup": "规则",
      "desc": "每日自动卖仓库/自动签到还款的时间（逗号分隔，如 23,0）", "default": "23,0"},
-    # ---- 红包雨 ----
-    {"key": "RAIN_AMOUNT", "label": "红包雨单轮总金额", "type": "int", "group": "金币红包", "subgroup": "红包雨",
-     "desc": "每轮红包雨的总金币数", "default": 1000, "min": 10, "max": 1000000, "attr": "rain_amount"},
-    {"key": "RAIN_COUNT", "label": "红包雨红包个数", "type": "int", "group": "金币红包", "subgroup": "红包雨",
-     "desc": "每轮红包雨拆分的红包个数", "default": 10, "min": 1, "max": 100, "attr": "rain_count"},
-    {"key": "RAIN_TIMES", "label": "红包雨开启时间（小时）", "type": "string", "group": "金币红包", "subgroup": "红包雨",
-     "desc": "每天开启红包雨的整点小时，逗号分隔（如 8,12,16,20）", "default": "8,12,16,20", "attr": "rain_times"},
-    {"key": "RAIN_HOURS", "label": "红包雨有效期（小时）", "type": "float", "group": "金币红包", "subgroup": "红包雨",
-     "desc": "每轮红包雨的有效期小时数", "default": 1, "min": 0.5, "max": 24, "attr": "rain_hours"},
+    # ---- 红包雨（1.7.5 起迁移至 WebUI「活动中心」配置，运行参数面板不再展示） ----
     # ---- 调试 / 通用 ----
     {"key": "DEBUG_PASSWORD", "label": "调试模式口令", "type": "string", "group": "调试", "subgroup": "口令",
      "desc": "管理员在对话框输入此口令解锁 WebUI 调试按钮（重启后失效）", "default": "88224646"},
@@ -509,7 +543,13 @@ RUNTIME_PARAMS = [
     {"key": "RANK_DISPLAY", "label": "排行榜展示名次", "type": "int", "group": "排行榜", "subgroup": "通用",
      "desc": "每个排行榜最多展示的名次数（前 N 名）", "default": 20, "min": 5, "max": 100},
     {"key": "RANK_HIGHLIGHT_COLOR", "label": "我的名次高亮颜色", "type": "string", "group": "排行榜", "subgroup": "通用",
-     "desc": "查询人自己在榜上的高亮颜色（十六进制，如 #375623）", "default": "#375623"},
+     "desc": "查询人自己在榜上的高亮颜色（十六进制，如 #92D050）", "default": "#92D050"},
+    {"key": "RANK_TEXT_COLOR", "label": "普通行文字颜色", "type": "string", "group": "排行榜", "subgroup": "通用",
+     "desc": "本群（非自己）用户的文字颜色（十六进制，如 #000000）", "default": "#000000"},
+    {"key": "RANK_MASKED_COLOR", "label": "脱敏行文字颜色", "type": "string", "group": "排行榜", "subgroup": "通用",
+     "desc": "非本群（脱敏 ** 显示）用户的文字颜色（十六进制，如 #7F7F7F）", "default": "#7F7F7F"},
+    {"key": "RANK_SEP_COLOR", "label": "分割线颜色", "type": "string", "group": "排行榜", "subgroup": "通用",
+     "desc": "行间分割线颜色（十六进制，如 #D9D9D9）", "default": "#D9D9D9"},
     {"key": "RANK_IMAGE_SCALE", "label": "图片宽度倍数", "type": "float", "group": "排行榜", "subgroup": "通用",
      "desc": "排行榜图片宽度 = 内容宽度 × 该倍数（默认 2.5 = 原来的 250%）", "default": 2.5, "min": 1.0, "max": 10.0},
     {"key": "RANK_BAR_LIGHTEN", "label": "进度条颜色浅化比例", "type": "float", "group": "排行榜", "subgroup": "通用",
@@ -521,7 +561,7 @@ RUNTIME_PARAMS = [
     {"key": "RANK_BAR_GAP_RIGHT_MULT", "label": "进度条右侧留白倍数", "type": "float", "group": "排行榜", "subgroup": "通用",
      "desc": "进度条右侧留白 = 基准 12px × 该倍数（3 = 原先的 300%）", "default": 3.0, "min": 0.5, "max": 10.0},
     {"key": "RANK_ROW_SEP_PCT", "label": "行分割线高度占比", "type": "float", "group": "排行榜", "subgroup": "通用",
-     "desc": "行间分割线高度 = 文字行高 × 该比例（默认 0.1 = 文字的 10%）", "default": 0.1, "min": 0.0, "max": 0.5},
+     "desc": "行间分割线高度 = 文字行高 × 该比例（默认 0.03 = 原先 10% 的 30%）", "default": 0.03, "min": 0.0, "max": 0.5},
     {"key": "GROUP_MEMBER_TTL_HOURS", "label": "群成员标记有效期（小时）", "type": "float", "group": "排行榜", "subgroup": "通用",
      "desc": "用户在本群触发插件功能后被标记为本群成员的时长，超时后按非本群用户脱敏显示", "default": 48, "min": 1, "max": 720},
     {"key": "RANK_COIN_COIN_W", "label": "金币权重（持有金币）", "type": "float", "group": "排行榜", "subgroup": "金币排行",
@@ -899,7 +939,7 @@ class RouletteGame:
         return "、".join(p["name"] for p in self.players)
 
 
-@register("astrbot_plugin_signin", "sishijiu", "群签到 + 左轮手枪 + 宠物养成 + 金币银行 + 农场", "1.7.4")
+@register("astrbot_plugin_signin", "sishijiu", "群签到 + 左轮手枪 + 宠物养成 + 金币银行 + 农场", "1.7.5")
 class SignInPlugin(Star):
     def __init__(self, context: Context, config: dict = None):
         super().__init__(context)
@@ -1040,6 +1080,16 @@ class SignInPlugin(Star):
         context.register_web_api(
             f"/{PLUGIN_NAME}/debug/toggle", self.web_debug_toggle, ["POST"], "开关调试模式"
         )
+        context.register_web_api(
+            f"/{PLUGIN_NAME}/group/names/sync", self.web_sync_group_names, ["POST"],
+            "同步全部群聊的成员昵称（排行榜默认昵称）"
+        )
+        context.register_web_api(
+            f"/{PLUGIN_NAME}/alias/list", self.web_get_aliases, ["GET"], "读取同义口令"
+        )
+        context.register_web_api(
+            f"/{PLUGIN_NAME}/alias/save", self.web_save_aliases, ["POST"], "保存同义口令"
+        )
 
     # ================= 消息路由（无需前缀 / @） =================
     @filter.event_message_type(EventMessageType.ALL)
@@ -1052,18 +1102,28 @@ class SignInPlugin(Star):
             # 贷款逾期懒处理（标记逾期 + 每日好感度降低 / 23 点自动卖仓库签到还款）
             data = self._load()
             key = event.get_sender_id()
+            # 同义口令展开：别名 → 标准指令（一步展开，不递归；别名可被 WebUI 编辑）
+            head = self._expand_alias(data, head)
+            dirty = False
             if data.get("loans", {}).get(key):
                 sync_c = self._loan_sync(data, key)
                 daily_c = self._loan_daily_process(data, key)
                 if sync_c or daily_c:
-                    self._save(data)
+                    dirty = True
+            # 本群成员注册：响应前标记（含本群昵称），确保首次查询排行榜时已能作为本群成员显示真名
+            gid = event.get_group_id()
+            if gid:
+                self._mark_group_member(data, gid, str(key), event.get_sender_name())
+                dirty = True
+            # 排行榜：每次查询时通过平台 API 刷新在榜用户的本群昵称（仅已标记用户，不改 48h 时间戳）
+            if gid and head in RANK_KINDS:
+                _show = int(globals().get("RANK_DISPLAY", 20) or 20)
+                _entries = self._rank_entries(RANK_KINDS[head], data)
+                await self._refresh_rank_names(event, data, gid, [e[1] for e in _entries[:_show]])
+                dirty = True
+            if dirty:
+                self._save(data)
             reply = self._route(head, event)
-            # 本群成员注册：触发插件任一功能即在当前群标记（48 小时有效，用于排行榜脱敏）
-            if reply is not None:
-                gid = event.get_group_id()
-                if gid:
-                    self._mark_group_member(data, gid, str(key))
-                    self._save(data)
         if reply is None:
             return
         if isinstance(reply, tuple) and len(reply) == 2 and reply[0] == "image":
@@ -1198,6 +1258,13 @@ class SignInPlugin(Star):
         title = IMAGE_COMMANDS.get(head, head)
         return self._render_text_image(title, reply.splitlines())
 
+    @staticmethod
+    def _expand_alias(data: dict, head: str) -> str:
+        """同义口令展开：返回标准指令；未配置别名时原样返回（一步展开，不递归）"""
+        aliases = data.get("alias_cmds") or {}
+        target = aliases.get(head)
+        return target if isinstance(target, str) and target else head
+
     def _route(self, head: str, event: AstrMessageEvent):
         # 功能开关拦截：对应模块关闭时返回提示（帮助类指令不受影响）
         mod = self.FEATURE_CMD_MAP.get(head)
@@ -1206,6 +1273,14 @@ class SignInPlugin(Star):
             if not self._feature_enabled(data, mod):
                 label = next((m["label"] for m in self.FEATURE_MODULES if m["key"] == mod), mod)
                 return f"⚠️ 「{label}」功能已被管理员关闭，暂时无法使用。"
+        # 虚弱宠物守卫：宠物虚弱期间宠物功能被锁定（查看/改名/治疗不受影响），
+        # 发送「治疗宠物」花 WEAK_HEAL_COST 金币即可重新激活
+        if head in _PET_WEAK_LOCKED_HEADS:
+            _d = self._load()
+            _pet = _d.get("pets", {}).get(self._user_key(event))
+            if _pet and _pet.get("weak"):
+                return (f"😷 {event.get_sender_name()} 的宠物处于虚弱状态，宠物功能已锁定！\n"
+                        f"发送「治疗宠物」（{WEAK_HEAL_COST} 金币）即可重新激活宠物。")
         if head == "签到":
             return self._handle_sign_in(event)
         if head == "我的签到":
@@ -1230,6 +1305,8 @@ class SignInPlugin(Star):
             return self._handle_pet_status(event)
         if head == "更改宠物名字":
             return self._handle_rename_pet(event)
+        if head == "治疗宠物":
+            return self._handle_weak_heal(event)
         if head == "打工":
             return self._handle_work(event)
         if head == "玩耍":
@@ -1316,7 +1393,7 @@ class SignInPlugin(Star):
             return self._handle_steal(event)
         if head == "看家":
             return self._handle_guard(event)
-        # 排行榜（1.7.4）
+        # 排行榜（1.7.5）
         if head == "金币排行":
             return self._handle_rank_coins(event)
         if head == "宠物排行":
@@ -1351,13 +1428,15 @@ class SignInPlugin(Star):
     def _load_disk(self) -> dict:
         if not os.path.exists(DATA_FILE):
             return {"users": {}, "roulette": {}, "pets": {}, "bank": {}, "farms": {}, "loans": {},
-                    "ledger": {}, "redpackets": [], "activities": {}, "group_members": {}}
+                    "ledger": {}, "redpackets": [], "activities": {}, "group_members": {}, "group_names": {},
+                    "alias_cmds": {**DEFAULT_ALIAS_CMDS}}
         try:
             with open(DATA_FILE, "r", encoding="utf-8") as f:
                 data = json.load(f)
             if not isinstance(data, dict):
                 return {"users": {}, "roulette": {}, "pets": {}, "bank": {}, "farms": {}, "loans": {},
-                        "ledger": {}, "redpackets": [], "activities": {}, "group_members": {}}
+                        "ledger": {}, "redpackets": [], "activities": {}, "group_members": {}, "group_names": {},
+                        "alias_cmds": {**DEFAULT_ALIAS_CMDS}}
             data.setdefault("users", {})
             data.setdefault("roulette", {})
             data.setdefault("pets", {})
@@ -1370,13 +1449,18 @@ class SignInPlugin(Star):
             data.setdefault("activity_config", {})
             data.setdefault("params", {})
             data.setdefault("group_members", {})
+            data.setdefault("group_names", {})
+            # 同义口令：没有该键时写入默认同义词（用户可在 WebUI 编辑）
+            if not isinstance(data.get("alias_cmds"), dict):
+                data["alias_cmds"] = {**DEFAULT_ALIAS_CMDS}
             # 旧数据迁移：宠物等级按新经验体系重算（所需经验 = 当前等级 × 100）
             self._migrate_pet_levels(data)
             return data
         except Exception as e:
             logger.error(f"[插件] 读取数据失败: {e}")
             return {"users": {}, "roulette": {}, "pets": {}, "bank": {}, "farms": {}, "loans": {},
-                    "ledger": {}, "redpackets": [], "activities": {}, "group_members": {}}
+                    "ledger": {}, "redpackets": [], "activities": {}, "group_members": {}, "group_names": {},
+                    "alias_cmds": {**DEFAULT_ALIAS_CMDS}}
 
     def _migrate_pet_levels(self, data: dict) -> None:
         """按新经验体系重算所有宠物的等级（旧数据按经验总值匹配新等级体系）"""
@@ -1499,6 +1583,46 @@ class SignInPlugin(Star):
             data["params"] = saved
             self._save(data)
             return json_response({"saved": True, "applied": applied, "errors": errors})
+
+    async def web_get_aliases(self):
+        """读取同义口令与全部标准指令（供下拉选择）"""
+        async with self._lock:
+            data = self._load()
+            return json_response({
+                "aliases": dict(data.get("alias_cmds") or {}),
+                "heads": sorted(CMD_HEADS),
+            })
+
+    async def web_save_aliases(self):
+        """保存同义口令：POST {aliases: {同义词: 标准指令}}，校验后立即生效并持久化"""
+        async with self._lock:
+            payload = await request.json(default={})
+            incoming = payload.get("aliases")
+            if not isinstance(incoming, dict):
+                return error_response("aliases 必须是对象", status_code=400)
+            cleaned, errors = {}, {}
+            for k, v in incoming.items():
+                alias = str(k).strip()
+                target = str(v).strip()
+                if not alias or not target:
+                    errors[alias or "(空)"] = "同义词与目标指令不能为空"
+                    continue
+                if alias in CMD_HEADS:
+                    errors[alias] = f"「{alias}」已是标准指令，不能作为同义词"
+                    continue
+                if target not in CMD_HEADS:
+                    errors[alias] = f"「{target}」不是可用的标准指令"
+                    continue
+                if alias in cleaned:
+                    errors[alias] = "同义词重复"
+                    continue
+                cleaned[alias] = target
+            if errors:
+                return error_response(f"保存失败：{errors}", status_code=400)
+            data = self._load()
+            data["alias_cmds"] = cleaned
+            self._save(data)
+            return json_response({"saved": True, "aliases": cleaned})
 
     async def web_debug_status(self):
         """调试模式状态：{unlocked: 是否已输入口令, enabled: 是否已开启}"""
@@ -1648,9 +1772,10 @@ class SignInPlugin(Star):
     def _pet_state_snippet(self, pet: dict) -> str:
         """宠物当前状态摘要（打工/玩耍/使用道具反馈末尾附加）"""
         sat_max, thr_max, sta_max, mood_max = self._attr_max(pet["health"])
+        weak = "，😷 虚弱（发送「治疗宠物」）" if pet.get("weak") else ""
         return (f"🐾 {pet.get('name', '宠物')}：饱食 {pet['satiety']:.0f}/{sat_max:.0f}，"
                 f"口渴 {pet['thirst']:.0f}/{thr_max:.0f}，体力 {pet['stamina']:.0f}/{sta_max:.0f}，"
-                f"心情 {pet['mood']:.0f}/{mood_max:.0f}，健康 {pet['health']:.0f}/{PET_MAX_HEALTH:.0f}")
+                f"心情 {pet['mood']:.0f}/{mood_max:.0f}，健康 {pet['health']:.0f}/{PET_MAX_HEALTH:.0f}{weak}")
 
     @staticmethod
     def _pet_busy_until(pet: dict) -> float:
@@ -1912,6 +2037,14 @@ class SignInPlugin(Star):
             "tier3": tier == 3,
         }
 
+        # 虚弱判定：连续两天结算健康均为 0 → 宠物进入「虚弱」状态（治疗宠物 可解除）
+        if pet["health"] <= 0.5:
+            pet["weak_streak"] = int(pet.get("weak_streak", 0)) + 1
+            if pet["weak_streak"] >= 2:
+                pet["weak"] = True
+        else:
+            pet["weak_streak"] = 0
+
     def _bring_pet_up_to_date(self, pet: dict, today: str) -> None:
         """把宠物结算到今日（缺几天结算几天）"""
         last = pet.get("last_settle_date", "")
@@ -2056,6 +2189,8 @@ class SignInPlugin(Star):
                 "time": self._f(d.get("需要时间", 0)),
                 "exp": self._f(d.get("经验", 0)),
                 "mood": self._f(d.get("心情值", 0)),
+                "stamina": self._f(d.get("体力", 0)),      # 玩耍收益体力（菜单红字显示）
+                "health": self._f(d.get("健康度", 0)),     # 玩耍收益健康（可为负；红字显示净变化）
             })
 
         shop = []
@@ -2488,6 +2623,8 @@ class SignInPlugin(Star):
         ]
         if pet["health"] <= 39:
             lines.append("🤒 宠物生病了，快给它吃药吧！")
+        if pet.get("weak"):
+            lines.append(f"😷 宠物处于虚弱状态，发送「治疗宠物」（{WEAK_HEAL_COST} 金币）治疗！")
 
         # 末尾显示宠物当前活动：打工 / 玩耍（共用冷却计时器）或发呆
         now_ts = datetime.now().timestamp()
@@ -2502,6 +2639,29 @@ class SignInPlugin(Star):
             lines.append("😴 宠物正在发呆，快带它去打工或玩耍吧～")
 
         return "\n".join(lines)
+
+    def _handle_weak_heal(self, event: AstrMessageEvent) -> str:
+        """治疗虚弱宠物：消耗 WEAK_HEAL_COST 金币，所有数值恢复为 40 并解除虚弱。
+        只有处于虚弱状态的宠物才能被治疗。"""
+        name = event.get_sender_name()
+        key = self._user_key(event)
+        data = self._load()
+        pet = data.get("pets", {}).get(key)
+        if not pet:
+            return f"{name} 还没有宠物，发送「解锁宠物」领养一只吧。"
+        if not pet.get("weak"):
+            return f"{name} 的宠物没有处于虚弱状态，无需治疗。"
+        if self._coins_of(data, key) < WEAK_HEAL_COST:
+            return (f"{name} 治疗虚弱宠物需要 {WEAK_HEAL_COST} 金币"
+                    f"（当前 {self._coins_of(data, key)}），发送「签到」获取金币。")
+        self._add_coins(data, key, -WEAK_HEAL_COST, "治疗虚弱宠物")
+        pet["satiety"] = pet["thirst"] = pet["stamina"] = pet["mood"] = pet["health"] = 40.0
+        pet["weak"] = False
+        pet["weak_streak"] = 0
+        self._clamp_attrs(pet)
+        self._save(data)
+        return (f"💊 {name} 花费 {WEAK_HEAL_COST} 金币治疗了宠物「{pet.get('name', '宠物')}」，"
+                f"虚弱状态已解除！所有数值恢复至 40。\n{self._pet_state_snippet(pet)}")
 
     def _handle_rename_pet(self, event: AstrMessageEvent) -> str:
         parts = event.message_str.split(maxsplit=1)
@@ -2639,10 +2799,17 @@ class SignInPlugin(Star):
                 return f"{ATTR_LABELS[attr]}不足，无法玩耍（需要 {cost:.0f}，当前 {pet[attr]:.1f}）。"
 
         for attr, cost in play["cost"].items():
+            if attr == "health":
+                continue  # 健康消耗并入下方净变化计算（避免双扣）
             pet[attr] = round(max(0.0, pet[attr] - cost), 2)
 
         pet["exp"] = round(float(pet.get("exp", 0.0)) + play["exp"], 2)
         pet["mood"] = round(pet["mood"] + play["mood"], 2)
+        if play.get("stamina", 0) > 0:
+            pet["stamina"] = round(pet["stamina"] + play["stamina"], 2)
+        # 健康净变化：收益《健康度》(可负) − 消耗《消耗健康度》
+        pet["health"] = round(
+            pet["health"] + play.get("health", 0) - play["cost"].get("health", 0), 2)
         lvl_msg = self._apply_exp(pet)
         self._clamp_attrs(pet)
 
@@ -2658,8 +2825,15 @@ class SignInPlugin(Star):
         pet["busy_activity"] = "玩耍"
         self._save(data)
         cd = f"（冷却 {int(play['time'])} 分钟）" if play["time"] > 0 else ""
+        gain = f"经验 +{play['exp']:.1f}，😊 心情 +{play['mood']:.1f}"
+        net_stamina = play.get("stamina", 0) - play["cost"].get("stamina", 0)
+        if net_stamina != 0:
+            gain += f"，💪 体力 {net_stamina:+.1f}"
+        net_health = play.get("health", 0) - play["cost"].get("health", 0)
+        if net_health != 0:
+            gain += f"，❤️ 健康 {net_health:+.1f}"
         return (f"🎾 {name} 的宠物去「{play['name']}」玩耍完成！{cd}\n"
-                f"🐾 经验 +{play['exp']:.1f}，😊 心情 +{play['mood']:.1f}{lvl_msg}{bonus}\n"
+                f"🐾 {gain}{lvl_msg}{bonus}\n"
                 f"{self._pet_state_snippet(pet)}")
 
     def _play_list(self, event=None):
@@ -2896,7 +3070,7 @@ class SignInPlugin(Star):
         if has_pet:
             # 宠物忙碌状态：打工/玩耍共用冷却计时器，任一忙碌即忙碌（与灰卡判定一致）
             busy = now_ts < self._pet_busy_until(pet)
-            status = "忙碌中" if busy else "空闲中"
+            status = "虚弱中" if pet.get("weak") else ("忙碌中" if busy else "空闲中")
             sat_max, thr_max, sta_max, mood_max = self._attr_max(pet["health"])
             # 属性展示（过低红色高亮，与「宠物」指令属性条阈值一致）：饱食<50 / 口渴<70 / 体力<20 / 心情<50 / 健康<40
             attrs = [
@@ -2988,6 +3162,15 @@ class SignInPlugin(Star):
                     parts.append(f"{ATTR_SHORT[attr]}-{cost:.0f}")
             return "消耗：" + " ".join(parts) if parts else "消耗：无"
 
+        def need_text(item):
+            # 玩耍卡「需要」行：条件下一行显示需要的 饱食度/口渴值/体力（固定顺序中文全称）
+            parts = []
+            for attr in ("satiety", "thirst", "stamina", "health"):
+                cost = item["cost"].get(attr, 0)
+                if cost > 0:
+                    parts.append(f"{ATTR_LABELS[attr]} {cost:.0f}")
+            return "需要：" + " ".join(parts) if parts else "需要：无"
+
         def reward_text(item):
             if kind == "打工":
                 s = f"金币 +{int(item['coins'])}"
@@ -2998,6 +3181,10 @@ class SignInPlugin(Star):
                 s = f"经验 +{item['exp']:.0f}"
                 if item["mood"] > 0:
                     s += f" · 心情 +{item['mood']:.0f}"
+                # 红字不含体力（体力需求在「需要」行体现）；健康按净变化显示（可负）
+                net_health = item.get("health", 0) - item["cost"].get("health", 0)
+                if net_health != 0:
+                    s += f" · 健康 {net_health:+.0f}"
                 return s
 
         plans = []  # (item, ok, [行], 高度)
@@ -3014,6 +3201,10 @@ class SignInPlugin(Star):
                     rows.append(("plain", wl, ""))
             if kind == "打工":
                 for wl in wrap(cost_text(it), body_font, content_w):
+                    rows.append(("plain", wl, ""))
+            else:
+                # 玩耍：要求（条件）下一行显示需要的 饱食度/口渴值/体力（中文全称）
+                for wl in wrap(need_text(it), body_font, content_w):
                     rows.append(("plain", wl, ""))
             rows.append(("rule", "", ""))
             rows.append(("price", reward_text(it), ""))
@@ -3557,6 +3748,7 @@ class SignInPlugin(Star):
                 ("购买 <道具名> [数量]", "购买道具（不填数量 = 1 个）"),
                 ("使用 <道具名> [数量]", "使用道具（不填数量 = 1 个）"),
                 ("背包", "查看背包"),
+                ("治疗宠物", "治疗虚弱宠物（花 500 金币，所有数值恢复 40；仅虚弱状态可用）"),
             ]),
         ]
         return self._build_help("宠物帮助", sections)
@@ -3581,7 +3773,7 @@ class SignInPlugin(Star):
                 ("土地升级 <编号>", "升级土地等级"),
                 ("农场商店 [展开] [页]", "查看种子+化肥（展开=全部种子翻页）"),
                 ("购买 <种子名>种子 [数量]", "购买种子（必须带「种子」后缀，也可用「购买种子」）；「购买 <化肥名> [数量]」购买化肥"),
-                ("种植 <作物> [起] [止/数量]", "种植（不填=种满空闲地）"),
+                ("种植 <作物> [起] [止/数量]", "种植（不填=种子够则种满空闲地，不够则全部种完）"),
                 ("施肥 <肥料> [起] [止] [次数]", "施肥（快捷；也可「使用 <化肥> <数量>」）"),
                 ("收割 [编号]", "收割成熟作物（不填=全部）"),
                 ("取消种植 <编号>", "取消种植"),
@@ -3615,6 +3807,7 @@ class SignInPlugin(Star):
                 ("商店", "查看宠物商店"),
                 ("购买 / 使用 <道具名> [数量]", "购买 / 使用道具（不填数量 = 1 个）"),
                 ("背包", "查看背包"),
+                ("治疗宠物", "治疗虚弱宠物（花 500 金币，所有数值恢复 40；仅虚弱状态可用）"),
             ]),
             ("金币银行", [
                 ("存款 <金额>", "存钱生息（不填=存最大可存金额）"),
@@ -3971,40 +4164,77 @@ class SignInPlugin(Star):
         return "\n".join(lines)
 
     # ================= 金币红包 =================
+    @staticmethod
+    def _redpacket_draw_amount(remain_total: int, n: int) -> int:
+        """动态期望平衡算法（单位：分；本插件货币为整数金币，1 分 = 1 金币）。
+
+        铁律：
+        - 全部变量为整数（分），严禁浮点金额；
+        - 全量发放后实得之和严格等于初始总额（误差 0）；
+        - 任意时刻期望恒等于 剩余总额 / 剩余个数（顺序无偏）；
+        - n > 25 直接报错，不做计算。
+
+        算法：A 区（高暴击 [1.5, upper_limit]）+ B 区（普通 [0.5, 1.3]，E_B=0.9）；
+        动态反推进入 A 区的概率 P_A 使期望恒为 1（P_A_raw = 0.1/(E_A-0.9)，截断至 0.6）。
+        并发说明：本插件为单进程，调用方在全局 asyncio.Lock 内完成
+        「读取余额 → 计算 → 扣减 → 写回」，天然满足『严禁先查询再修改』。
+        分布式场景需改用 Redis DECRBY / 数据库版本号乐观锁（WHERE 余额>=amount AND 个数>0）。
+        """
+        n = int(n)
+        remain_total = int(remain_total)
+        if n > 25:
+            raise ValueError("红包个数不能超过 25。")
+        if n <= 0 or remain_total <= 0:
+            return 0
+        # 第一步：边界与基准
+        if n == 1:
+            return remain_total  # 全部归最后一人
+        safe_max = remain_total - (n - 1)  # 必须 -(n-1)，为剩余每人预留至少 1 分
+        base = remain_total // n  # 基准奖金（向下取整，整数）
+
+        # 第二步：加成区倍率
+        upper_limit = min(3.0, safe_max / base) if base > 0 else 1.0
+        if upper_limit < 1.5:
+            upper_limit = 1.0  # 有效区间收缩 → 无效暴击
+        e_b = 0.9
+        e_a = (1.5 + upper_limit) / 2  # A 区实际期望（仅 upper_limit>=1.5 时有意义）
+
+        # 第三步：动态概率反推（期望恒定 = 1）
+        if upper_limit >= 1.5 and e_a > e_b:
+            p_a_raw = (1.0 - e_b) / (e_a - e_b)  # = 0.1 / (E_A - 0.9)
+            if p_a_raw <= 0:
+                p_a = 0.0  # 纯普通模式
+            elif p_a_raw > 0.6:
+                p_a = 0.6  # 暴击概率上限，防失衡
+            else:
+                p_a = p_a_raw
+        else:
+            p_a = 0.0
+
+        # 第四步：随机倍率 → 理论金额
+        rand = random.random()
+        if rand < p_a:
+            multiplier = random.uniform(1.5, upper_limit)  # A 区
+        else:
+            multiplier = random.uniform(0.5, 1.3)  # B 区
+        raw_amount = int(base * multiplier)  # 去尾截断
+
+        # 第五步：截断与安全兜底
+        if raw_amount < 1:
+            raw_amount = 1
+        if raw_amount > safe_max:
+            raw_amount = safe_max
+        return int(raw_amount)
+
     def _redpacket_draw(self, rp: dict, uid: str) -> int:
         """按规则计算并登记当前用户抢到的红包金额，返回发放金额（调用方负责入账）。
         抢完（left 变 0）时记录 finished_ts，供「来晚一步」60 秒倒计时提示使用。
-        金额逻辑（1.7.1）：总奖金=剩余金额，红包个数=剩余个数；
-        个数=1 → 直接发放剩余；否则 基准奖金=总奖金/个数，
-        40% 进入加成区甲（基准乘区 100% ~ (n×100−20)%）、60% 进入加成区乙（20% ~ 100%），
-        理论奖金=基准奖金×基准乘区，去尾取整、下限 1、上限 总奖金−个数−1。"""
+        金额逻辑（1.7.5）：动态期望平衡算法（整数/分制），废弃旧甲/乙区与旧截断公式。"""
         left = int(rp.get("left", 0))
         remain = int(rp.get("remain", 0))
-        if left <= 1:
-            # 规则：红包个数 = 1，直接发放红包剩余金币
-            amount = remain
-        else:
-            # 基准奖金 = 总奖金 / 红包个数
-            base = remain / left
-            # 判定奖金加成区：40% 加成区甲 / 60% 加成区乙
-            if random.random() < 0.4:
-                # 加成区甲：随机加成数值范围 100% ~ (n×100−20)%（n = 红包个数）
-                mult = random.uniform(1.0, left * 1.0 - 0.2)
-            else:
-                # 加成区乙：20% ~ 100%
-                mult = random.uniform(0.2, 1.0)
-            # 理论奖金 = 基准奖金 × 基准乘区
-            theoretical = base * mult
-            # 去尾法去掉小数（向下取整）
-            amount = int(theoretical)
-            # 下限：理论奖金 < 1 → 1
-            if amount < 1:
-                amount = 1
-            # 上限：理论奖金 + 红包个数 − 1 > 总奖金 → 理论奖金 = 总奖金 − 红包个数 − 1
-            if amount + left - 1 > remain:
-                amount = remain - left - 1
-            if amount < 1:
-                amount = 1
+        amount = self._redpacket_draw_amount(remain, left)
+        if amount < 1:
+            amount = remain  # 兜底（理论不可达：n>=1 且 remain>=n 时 amount 至少 1）
         rp.setdefault("claimed", {})[uid] = amount
         rp["remain"] = int(rp.get("remain", 0)) - amount
         rp["left"] = left - 1
@@ -4032,8 +4262,8 @@ class SignInPlugin(Star):
             return "红包个数和总金额必须是整数。"
         if count < 1:
             return "红包个数至少为 1。"
-        if count > 50:
-            return "红包个数最多 50 个。"
+        if count > 25:
+            return "红包个数最多 25 个。"
         if total < count:
             return f"总金额至少 {count} 金币（每个红包至少 1 金币）。"
 
@@ -4153,7 +4383,12 @@ class SignInPlugin(Star):
 
         results = []
         for rp in openable:
-            amount = self._redpacket_draw(rp, key)
+            try:
+                amount = self._redpacket_draw(rp, key)
+            except ValueError as e:
+                # 动态期望平衡算法上限 25：异常的旧数据红包跳过不发放（余额保留）
+                logger.error(f"[插件] 红包金额计算失败，跳过: {e}")
+                continue
             self._add_coins(data, key, amount, f"抢红包（{rp.get('owner_name', '')}）")
             results.append((rp, amount))
         self._save(data)
@@ -5732,10 +5967,17 @@ class SignInPlugin(Star):
         if not plots:
             return "还没有土地，发送「购买土地」开垦。"
 
+        wh = farm["warehouse"].setdefault("seeds", {})
+        have = int(wh.get(crop_name, 0))
+
         if len(args) == 1:
-            targets = [i for i, p in enumerate(plots) if self._plot_free(p)]
-            if not targets:
+            # 种下最大数量：种子足够则种满所有空闲耕地；种子不足则把持有的种子全部种完
+            free = [i for i, p in enumerate(plots) if self._plot_free(p)]
+            if not free:
                 return "没有空闲的土地可以种植。"
+            if have <= 0:
+                return f"{crop_name} 种子不足，发送「购买种子」购买。"
+            targets = free[:min(len(free), have)]
         elif len(args) == 2:
             try:
                 count = int(args[1])
@@ -5747,6 +5989,8 @@ class SignInPlugin(Star):
             if count > len(free):
                 return f"空闲土地只有 {len(free)} 块，无法种植 {count} 块。"
             targets = free[:count]
+            if have < len(targets):
+                return f"{crop_name} 种子不足（需要 {len(targets)}，当前 {have}），发送「购买种子」购买。"
         else:
             try:
                 start, end = int(args[1]), int(args[2])
@@ -5758,11 +6002,8 @@ class SignInPlugin(Star):
             for i in targets:
                 if not self._plot_free(plots[i]):
                     return f"{i + 1} 号土地不是空闲状态，无法种植。"
-
-        wh = farm["warehouse"].setdefault("seeds", {})
-        have = int(wh.get(crop_name, 0))
-        if have < len(targets):
-            return f"{crop_name} 种子不足（需要 {len(targets)}，当前 {have}），发送「购买种子」购买。"
+            if have < len(targets):
+                return f"{crop_name} 种子不足（需要 {len(targets)}，当前 {have}），发送「购买种子」购买。"
 
         now = datetime.now().timestamp()
         for i in targets:
@@ -6759,7 +7000,7 @@ class SignInPlugin(Star):
             lines.append("💸 你拿走最多金币的人：无")
         return "\n".join(lines)
 
-    # ================= 排行榜（1.7.4） =================
+    # ================= 排行榜（1.7.5） =================
     @staticmethod
     def _parse_hex_color(s, default=(55, 86, 35)):
         """#RRGGBB → (r, g, b)；非法值返回默认色（默认 #375623）"""
@@ -6779,14 +7020,14 @@ class SignInPlugin(Star):
 
     @staticmethod
     def _mask_name(name, in_group):
-        """排行榜展示名：非本群用户脱敏为「第一个字 + 星号」（星号数 = 名字长度 - 1）；
-        本群用户显示原名。"""
+        """排行榜展示名：非本群用户脱敏为「第一个字 * 最后一个字」（≥2 字时，如 李四明 → 李*明），
+        获得到昵称信息后即用首尾字，不整行打星；本群用户显示原名。"""
         if in_group:
             return name
         s = str(name)
         if len(s) <= 1:
             return s  # 单字名无法遮掩
-        return s[0] + "*" * (len(s) - 1)
+        return s[0] + "*" + s[-1]
 
     @staticmethod
     def _fit_name(name, max_chars=None):
@@ -6799,21 +7040,164 @@ class SignInPlugin(Star):
             disp = disp[:max_chars] + "..."
         return disp
 
-    def _mark_group_member(self, data: dict, gid, uid) -> None:
-        """本群成员注册：用户在本群触发插件任一功能即标记（覆盖为最新时间戳，48 小时后失效）"""
+    def _mark_group_member(self, data: dict, gid, uid, name="") -> None:
+        """本群成员注册：用户在本群触发插件功能即标记（带本群昵称，覆盖为最新时间戳）。
+        存储结构：group_members[gid][uid] = {"ts": 时间戳, "name": 本群昵称}；48 小时后失效。"""
         members = data.setdefault("group_members", {})
-        members.setdefault(str(gid), {})[str(uid)] = datetime.now().timestamp()
+        members.setdefault(str(gid), {})[str(uid)] = {
+            "ts": datetime.now().timestamp(),
+            "name": str(name or "").strip(),
+        }
 
     def _is_group_member(self, data: dict, gid, uid) -> bool:
-        """用户是否被标记为当前群成员（有效期 GROUP_MEMBER_TTL_HOURS 小时；无群上下文视为非本群）"""
+        """用户是否被标记为当前群成员（有效期 GROUP_MEMBER_TTL_HOURS 小时；无群上下文视为非本群）。
+        兼容旧数据：标记可能是裸时间戳（float），也可能是 {"ts": ..., "name": ...}。"""
         if not gid:
             return False
         g = data.get("group_members", {}).get(str(gid)) or {}
         ts = g.get(str(uid)) if isinstance(g, dict) else None
+        if isinstance(ts, dict):
+            ts = ts.get("ts")
         if not isinstance(ts, (int, float)):
             return False
         ttl = float(globals().get("GROUP_MEMBER_TTL_HOURS", 48) or 48) * 3600
         return datetime.now().timestamp() - float(ts) <= ttl
+
+    def _group_member_name(self, data: dict, gid, uid) -> str:
+        """取用户在本群的昵称（标记时记录）；旧数据（裸时间戳）或未标记时返回空串。"""
+        if not gid:
+            return ""
+        g = data.get("group_members", {}).get(str(gid)) or {}
+        info = g.get(str(uid)) if isinstance(g, dict) else None
+        if isinstance(info, dict):
+            return str(info.get("name", "") or "").strip()
+        return ""
+
+    def _update_group_member_name(self, data: dict, gid, uid, name) -> None:
+        """只更新【已标记】群成员的昵称字段：
+        - 不改 48h 时间戳（活跃以本人触发功能为准，刷新昵称不等同于本人活跃）；
+        - 旧裸时间戳数据补齐为 {"ts","name"}；未标记用户不创建（非本群身份不变）。"""
+        members = data.setdefault("group_members", {})
+        g = members.setdefault(str(gid), {})
+        old = g.get(str(uid))
+        if isinstance(old, dict):
+            old["name"] = str(name or "").strip()
+        elif isinstance(old, (int, float)):
+            g[str(uid)] = {"ts": float(old), "name": str(name or "").strip()}
+
+    def _group_default_name(self, data: dict, gid, uid) -> str:
+        """排行榜默认昵称：WebUI「同步全部群聊昵称」得到的数据（group_names[gid][uid]）。
+        实时标记昵称（group_members）优先于它；未同步到该群/用户时返回空串。"""
+        if not gid:
+            return ""
+        g = data.get("group_names", {}).get(str(gid)) or {}
+        return str(g.get(str(uid), "") or "").strip()
+
+    async def _refresh_rank_names(self, event, data: dict, gid, uids) -> int:
+        """每次查询排行榜时，通过平台 API（aiocqhttp get_group_member_info）刷新在榜用户的本群昵称。
+        仅更新已标记（group_members[gid][uid]）用户的昵称；未标记用户不会被创建；
+        平台不支持（无 api.call_action）时返回 0；单个用户失败静默跳过。返回成功刷新人数。"""
+        call_action = getattr(getattr(getattr(event, "bot", None), "api", None), "call_action", None)
+        if call_action is None:
+            return 0
+        _gid = int(gid) if str(gid).isdigit() else gid
+        updated = 0
+
+        async def _one(uid):
+            nonlocal updated
+            try:
+                _uid = int(uid) if str(uid).isdigit() else uid
+                info = await call_action("get_group_member_info", group_id=_gid, user_id=_uid)
+                if isinstance(info, dict):
+                    nick = str(info.get("card") or info.get("nickname") or "").strip()
+                    if nick:
+                        self._update_group_member_name(data, gid, uid, nick)
+                        updated += 1
+            except Exception as e:
+                logger.debug(f"[插件] 刷新群成员昵称失败 uid={uid}: {e}")
+
+        await asyncio.gather(*[_one(u) for u in uids])
+        return updated
+
+    def _collect_bots(self):
+        """收集支持 OneBot call_action 的平台机器人（aiocqhttp 等），供 WebUI 同步群昵称使用"""
+        bots = []
+        pm = getattr(self.context, "platform_manager", None)
+        if pm is None:
+            return bots
+        insts = getattr(pm, "get_insts", lambda: [])()
+        if not insts:
+            insts = getattr(pm, "platform_insts", []) or []
+        for inst in insts:
+            bot = getattr(inst, "bot", None)
+            if bot is not None and callable(getattr(bot, "call_action", None)):
+                bots.append(bot)
+        return bots
+
+    async def web_sync_group_names(self):
+        """WebUI 按钮：拉取所有群聊的成员昵称（get_group_list → get_group_member_list），
+        存入 data.group_names 作为排行榜用户默认昵称；返回统计结果。"""
+        async with self._lock:
+            bots = self._collect_bots()
+            if not bots:
+                return error_response(
+                    "未找到支持群成员接口的平台机器人（需要 aiocqhttp / OneBot 适配器，且机器人已连接）",
+                    status_code=400,
+                )
+            data = self._load()
+            names = {}
+            groups, members = 0, 0
+
+            async def _sync_bot(bot):
+                nonlocal groups, members
+                call_action = getattr(bot, "call_action", None)
+                if call_action is None:
+                    call_action = getattr(getattr(bot, "api", None), "call_action", None)
+                if call_action is None:
+                    return
+                try:
+                    ret = await call_action("get_group_list")
+                except Exception as e:
+                    logger.error(f"[插件] 同步群昵称 get_group_list 失败: {e}")
+                    return
+                gl = ret if isinstance(ret, list) else (ret.get("data") if isinstance(ret, dict) else [])
+                if not isinstance(gl, list):
+                    gl = []
+                for g in gl:
+                    if not isinstance(g, dict):
+                        continue
+                    gid = g.get("group_id")
+                    if not gid:
+                        continue
+                    try:
+                        mret = await call_action("get_group_member_list", group_id=gid)
+                        ml = mret if isinstance(mret, list) else (mret.get("data") if isinstance(mret, dict) else [])
+                        if not isinstance(ml, list):
+                            ml = []
+                        g_map = names.setdefault(str(gid), {})
+                        for m in ml:
+                            if not isinstance(m, dict):
+                                continue
+                            uid = m.get("user_id")
+                            if not uid:
+                                continue
+                            nick = str(m.get("card") or m.get("nickname") or "").strip()
+                            if nick:
+                                g_map[str(uid)] = nick
+                                members += 1
+                        groups += 1
+                    except Exception as e:
+                        logger.debug(f"[插件] 同步群昵称失败 gid={gid}: {e}")
+
+            await asyncio.gather(*[_sync_bot(b) for b in bots])
+            if not groups:
+                return error_response("同步完成但未获取到任何群聊（机器人可能未加入群聊）", status_code=400)
+            if names:
+                data["group_names"] = names
+                self._save(data)
+            msg = f"已同步 {groups} 个群、共 {members} 名成员昵称（作为排行榜默认昵称）"
+            logger.info(f"[插件] WebUI 同步群昵称：{msg}")
+            return json_response({"ok": True, "groups": groups, "members": members, "msg": msg})
 
     @staticmethod
     def _rank_plot_score_total(plots):
@@ -6886,12 +7270,14 @@ class SignInPlugin(Star):
 
     def _render_rank_image(self, title, rows, hl_color):
         """排行榜图片：每行「<名次> <用户名/宠物名> [进度条] <积分(右对齐)>」。
-        rows: [(rank, name, score_str, is_me, ratio), ...]（已按积分降序、取前 N 名）；
+        rows: [(rank, name, score_str, is_me, ratio, masked), ...]（已按积分降序、取前 N 名）；
         ratio：进度条填充比例（第一名恒为 1.0，其它 = 积分/第一名积分，0~1）；
+        masked：该行是否为非本群（脱敏）用户。
+        文字颜色三态：高亮自己 RANK_HIGHLIGHT_COLOR / 脱敏行 RANK_MASKED_COLOR / 普通行 RANK_TEXT_COLOR；
+        进度条颜色 = 文字颜色浅 RANK_BAR_LIGHTEN；分割线颜色 RANK_SEP_COLOR，高度 = 行高 × RANK_ROW_SEP_PCT（默认 3%）。
         名字显示固定 RANK_NAME_MAX_CHARS 个字符，超出部分用 ... 代替；
         进度条左侧留白 = 基准 12px × RANK_BAR_GAP_LEFT_MULT（默认 200%）、右侧 = × RANK_BAR_GAP_RIGHT_MULT（默认 300%）；
-        行与行之间有分割线（仅在用户名~积分范围内，高度 = 行高 × RANK_ROW_SEP_PCT，默认 10%）；
-        查询人（is_me）文字与进度条以 hl_color 高亮；进度条颜色 = 文字颜色浅 RANK_BAR_LIGHTEN；
+        每行文字行高固定 line_h、分割线紧跟行底，文字与分割线间距一致；
         图片宽度 = 内容宽度 × RANK_IMAGE_SCALE（默认 2.5 = 原来的 250%），高度自适应。"""
         try:
             from PIL import Image, ImageDraw
@@ -6917,20 +7303,23 @@ class SignInPlugin(Star):
         name_max_chars = int(globals().get("RANK_NAME_MAX_CHARS", 6) or 6)
         gap_left = gap_base * float(globals().get("RANK_BAR_GAP_LEFT_MULT", 2.0) or 2.0)
         gap_right = gap_base * float(globals().get("RANK_BAR_GAP_RIGHT_MULT", 3.0) or 3.0)
-        sep_pct = float(globals().get("RANK_ROW_SEP_PCT", 0.1) or 0.1)
+        sep_pct = float(globals().get("RANK_ROW_SEP_PCT", 0.03) or 0.03)
+        text_color_s = self._parse_hex_color(globals().get("RANK_TEXT_COLOR", "#000000"), (0, 0, 0))
+        masked_color_s = self._parse_hex_color(globals().get("RANK_MASKED_COLOR", "#7F7F7F"), (127, 127, 127))
+        sep_color = self._parse_hex_color(globals().get("RANK_SEP_COLOR", "#D9D9D9"), (217, 217, 217))
 
         prepared = []
         score_w_max = 0
         name_w_max = 0
-        for rank, name, score_str, is_me, ratio in rows:
+        for rank, name, score_str, is_me, ratio, masked in rows:
             # 名字显示长度固定：超过 name_max_chars 个字符的部分用 ... 代替
             disp = self._fit_name(name, name_max_chars)
             sw = tw(score_str, body_font)
             score_w_max = max(score_w_max, sw)
             name_w_max = max(name_w_max, tw(disp, body_font))
-            prepared.append((rank, disp, score_str, is_me, ratio))
+            prepared.append((rank, disp, score_str, is_me, ratio, masked))
 
-        # 宽度 = 内容宽度 × 倍数（默认 250%）；高度 = 标题 + 行 × 行高 + 行间分割线高度
+        # 宽度 = 内容宽度 × 倍数（默认 250%）；高度 = 标题 + 行 × 行高 + 行间分割线高度（间距恒定）
         base_w = pad * 2 + rank_col + 8 + name_w_max + gap_left + score_w_max
         width = int(base_w * scale)
         sep_h = int(line_h * max(0.0, min(0.5, sep_pct)))
@@ -6944,7 +7333,6 @@ class SignInPlugin(Star):
         if bar_x1 - bar_x0 < 12:
             bar_x1 = bar_x0 + 12              # 极小图兜底：进度条至少 12px
         sep_x1 = int(score_x)                  # 分割线右端 = 积分右边缘
-        sep_color = (230, 230, 230)
 
         img = Image.new("RGB", (width, height), (255, 255, 255))
         d = ImageDraw.Draw(img)
@@ -6952,8 +7340,14 @@ class SignInPlugin(Star):
         y = pad + title_h
         hl = self._parse_hex_color(hl_color)
         bar_w = bar_x1 - bar_x0
-        for idx, (rank, disp, score_str, is_me, ratio) in enumerate(prepared):
-            text_color = hl if is_me else (70, 70, 70)
+        for idx, (rank, disp, score_str, is_me, ratio, masked) in enumerate(prepared):
+            # 文字颜色三态：高亮自己 / 脱敏行 / 普通行
+            if is_me:
+                text_color = hl
+            elif masked:
+                text_color = masked_color_s
+            else:
+                text_color = text_color_s
             bar_color = self._lighten_color(text_color, lighten)
             d.text((int(pad), int(y)), str(rank), font=body_font, fill=text_color)
             d.text((int(name_x), int(y)), disp, font=body_font, fill=text_color)
@@ -6965,37 +7359,80 @@ class SignInPlugin(Star):
                 d.rectangle([bar_x0 + 1, bar_y + 1, bar_x0 + fill_w, bar_y + bar_h - 1], fill=bar_color)
             d.text((int(score_x - tw(score_str, body_font)), int(y)), score_str, font=body_font, fill=text_color)
             y += line_h
-            # 行间分割线：仅在 用户名 → 积分 范围内，占用高度 = 行高的 RANK_ROW_SEP_PCT（文字 10%）
-            if idx < n - 1:
-                d.rectangle([int(name_x), int(y), sep_x1, int(y + sep_h)], fill=sep_color)
+            # 行间分割线（仅 用户名 → 积分 范围）：高度 = 行高 × RANK_ROW_SEP_PCT（默认 3%），
+            # 紧跟文字行底，文字与分割线间距对所有行一致
+            # 注意 Pillow rectangle 坐标含端点，绘制 [y, y+sep_h-1] 使实际高度精确 = sep_h
+            if idx < n - 1 and sep_h > 0:
+                d.rectangle([int(name_x), int(y), sep_x1, int(y + sep_h - 1)], fill=sep_color)
                 y += sep_h
         return _save_temp_image(img, "_rank_", "排行榜")
 
+    def _is_in_group(self, data: dict, gid, uid) -> bool:
+        """本群判定：以 WebUI 同步的全群名单（group_names[gid]）为准，
+        并兼容 48h 活跃标记（group_members[gid]，未同步/刚加入时也能识别）；无群上下文视为非本群。"""
+        if not gid:
+            return False
+        g = data.get("group_names", {}).get(str(gid)) or {}
+        if isinstance(g, dict) and str(uid) in g:
+            return True
+        return self._is_group_member(data, gid, uid)
+
+    def _pick_any_group_name(self, data: dict, uid) -> str:
+        """取用户在【任意群】的一个昵称（用于非本群用户的脱敏显示）：
+        若其在多个群的昵称不一致，随机选择一个；全部一致则直接使用；任何群都没有则返回空串。"""
+        names = {}
+        for g in (data.get("group_names") or {}).values():
+            if not isinstance(g, dict):
+                continue
+            n = str(g.get(str(uid), "") or "").strip()
+            if n:
+                names[n] = True
+        if not names:
+            return ""
+        if len(names) > 1:
+            return random.choice(sorted(names))
+        return next(iter(names))
+
     def _build_rank(self, kind: str, event) -> str:
         """组装排行榜响应：图片优先，渲染失败回退为文本。
-        全局榜 + 本群成员机制：非本群用户（未在当前群触发过插件功能）名字脱敏为「首字+星号」。"""
+        全局榜 + 本群判定（WebUI 同步名单 group_names，兼容 48h 活跃标记）：
+        非本群用户脱敏为「首字*尾字」（绝不用 ***，多群昵称不一致时随机取一个群的昵称）。"""
         titles = {"coins": "💰 金币排行榜", "pet": "🐾 宠物排行榜", "farm": "🌾 农场排行榜"}
         data = self._load()
         me = str(self._user_key(event))
         gid = event.get_group_id()          # 当前群（私聊无群 → 全员按非本群处理）
         show = int(globals().get("RANK_DISPLAY", 20) or 20)
-        hl = globals().get("RANK_HIGHLIGHT_COLOR", "#375623")
+        hl = globals().get("RANK_HIGHLIGHT_COLOR", "#92D050")
         entries = self._rank_entries(kind, data)
         if not entries:
             return "还没有玩家上榜，快发送「签到」「解锁宠物」「解锁农场」参与吧～"
         top_score = entries[0][0]           # 第一名积分：进度条基准（第一名恒 100%）
         rows = []
         for i, (score, uid, name) in enumerate(entries[:show], start=1):
-            disp = self._mask_name(name, self._is_group_member(data, gid, uid))
+            # 本群判定：WebUI 同步名单（group_names）为主，兼容 48h 活跃标记
+            in_group = self._is_in_group(data, gid, uid)
+            # 名字来源（优先级）：
+            #   本群 → 实时记录昵称 / 同步本群昵称 / 存档昵称（宠物名）
+            #   非本群 → 任意群昵称（多群不一致随机）/ 存档昵称（宠物名）/ uid 兜底
+            #           → 一律脱敏「首字*尾字」，绝不用 ***
+            if in_group:
+                gname = self._group_member_name(data, gid, uid)
+                gdef = self._group_default_name(data, gid, uid)
+                base = gname or gdef or name
+            else:
+                base = self._pick_any_group_name(data, uid) or name
+            # 没有任何昵称（兜底就是用户 ID）时按用户 ID 做「首字*尾字」脱敏，同样不使用 ***
+            disp = self._mask_name(base, in_group)
             ratio = 1.0 if i == 1 else (min(1.0, score / top_score) if top_score > 0 else 0.0)
-            rows.append((i, disp, self._fmt_score(score), uid == me, ratio))
+            rows.append((i, disp, self._fmt_score(score), uid == me, ratio, not in_group))
         img = self._render_rank_image(titles[kind], rows, hl)
         if img is not None:
             return img
         # 文本回退（附进度百分比）
         lines = [titles[kind] + f"（前 {show} 名）", ""]
-        for rank, name, score_str, is_me, ratio in rows:
-            lines.append(f"{rank}. {name} {score_str} [{int(ratio * 100)}%]" + (" ← 你" if is_me else ""))
+        for rank, name, score_str, is_me, ratio, masked in rows:
+            tag = "（本群之外）" if masked else ""
+            lines.append(f"{rank}. {name}{tag} {score_str} [{int(ratio * 100)}%]" + (" ← 你" if is_me else ""))
         return "\n".join(lines)
 
     def _handle_rank_coins(self, event):

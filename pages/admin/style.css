@@ -250,6 +250,31 @@ input[type="file"] {
   margin-bottom: 10px;
 }
 
+/* 同义口令表格行 */
+.alias-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr auto;
+  gap: 8px;
+  align-items: center;
+}
+.alias-row.alias-head {
+  font-size: 12px;
+  color: var(--muted);
+  font-weight: 600;
+}
+.alias-row input,
+.alias-row select {
+  width: 100%;
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--text);
+}
+.alias-row .danger {
+  white-space: nowrap;
+}
+
 .param-group {
   border: 1px solid var(--border);
   border-radius: 8px;
