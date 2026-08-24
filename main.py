@@ -176,6 +176,8 @@ FARM_PLOT_COLS = 4
 # 宠物商店：每行卡片数 / 价格与分割线-底边的距离 N（WebUI 可改）
 SHOP_CARD_COLS = 3
 SHOP_PRICE_PAD = 4
+# 背包：每行卡片数（WebUI 可改，范围 3-7）
+BAG_CARD_COLS = 5
 # 农场商店：每行卡片数（WebUI 可改）
 FARM_SHOP_COLS = 4
 MONEY_EVENT_CHANCE = 0.01   # 玩耍捡到钱概率（1%）
@@ -408,6 +410,9 @@ RUNTIME_PARAMS = [
      "desc": "农场商店一行展示的卡片数量", "default": 4, "min": 2, "max": 6},
     {"key": "SHOP_PRICE_PAD", "label": "商店价格底边距（像素）", "type": "int", "group": "商店", "subgroup": "通用",
      "desc": "商店卡片价格与卡片底部/分割线的距离 N", "default": 4, "min": 0, "max": 30},
+    # ---- 背包（独立折叠分组） ----
+    {"key": "BAG_CARD_COLS", "label": "背包每行卡片数", "type": "int", "group": "背包", "subgroup": "卡片显示",
+     "desc": "「背包」图片一行展示的卡片数量", "default": 5, "min": 3, "max": 7},
     # ---- 金币红包 ----
     {"key": "REDPACKET_DAILY_LIMIT", "label": "红包每日发送上限", "type": "int", "group": "金币红包", "subgroup": "发送",
      "desc": "每位玩家每天最多发送金币红包的次数", "default": 4, "min": 1, "max": 50},
@@ -612,6 +617,8 @@ PET_SHOP_FILE = os.path.join(_DATA_DIR, "宠物商店.txt")
 CROP_FILE = os.path.join(_DATA_DIR, "作物.txt")
 FERT_FILE = os.path.join(_DATA_DIR, "肥料.txt")
 LOAN_FILE = os.path.join(_DATA_DIR, "贷款套餐.txt")
+# 1.7.7：商店/打工/玩耍数值的 JSON 存储（WebUI 表格编辑；首次启动从旧版 txt 自动迁移）
+ITEMS_JSON_FILE = os.path.join(_DATA_DIR, "game_items.json")
 FONT_FILE = os.path.join(_PLUGIN_DIR, "OPPOSans-M.ttf")
 
 # 宠物商店按类型拆分的文件（1.7.3）
@@ -798,6 +805,164 @@ def _parse_kv_text(raw_lines, types=None):
 _migrate_old_data_files()
 _migrate_split_shop_config()
 
+# ============ 1.7.7 迁移：为旧版 txt 配置补充「描述」字段 ============
+# 首次启动新版插件时，把运行环境的旧版 作物/肥料/后台/宠物商店-*.txt
+# 中缺失的 描述= 行按插件包内置默认模板（Benchmark data）按段名补齐；
+# 仅插入缺失项（已有描述 / 用户自定义不动），保留注释与原有内容，原文件备份为 .v176bak。
+# ============ 1.7.7：Benchmark data 默认数值（新格式 game_items.json） ============
+BENCH_ITEMS_FILE = os.path.join(_PLUGIN_DIR, "Benchmark data", "game_items.json")
+_ITEMS_KEYS = ("jobs", "plays", "shop", "crops", "ferts", "loans")
+
+
+def _load_benchmark_items():
+    """读取 Benchmark data/game_items.json（默认数值模板）；不存在/损坏返回 None"""
+    try:
+        if not os.path.exists(BENCH_ITEMS_FILE):
+            return None
+        with open(BENCH_ITEMS_FILE, encoding="utf-8") as f:
+            raw = json.load(f)
+        if not isinstance(raw, dict):
+            return None
+        return {k: raw.get(k) if isinstance(raw.get(k), list) else [] for k in _ITEMS_KEYS}
+    except Exception as e:
+        logger.warning(f"[插件] 读取 Benchmark data/game_items.json 失败: {e}")
+        return None
+
+
+def _benchmark_desc_map(cat_keys):
+    """从 Benchmark data/game_items.json 构建 {名称: [描述,...]}（同名多条按出现顺序）。
+    cat_keys 为要合并的类别（如 ("作物",)；后台.txt 用 ("打工", "玩耍")）"""
+    key_map = {"作物": "crops", "肥料": "ferts", "商店": "shop", "打工": "jobs", "玩耍": "plays"}
+    m = {}
+    flat = _load_benchmark_items() or {}
+    for cat in cat_keys:
+        for it in flat.get(key_map.get(cat, ""), []):
+            if not isinstance(it, dict):
+                continue
+            name = str(it.get("name", "")).strip()
+            desc = str(it.get("desc", "") or "").strip()
+            if name and desc:
+                m.setdefault(name, []).append(desc)
+    return m
+
+
+def _migrate_desc_file(path, tpl_map):
+    """为单个旧版 txt 文件补充缺失的 描述= 行（行级插入，保留注释/空行/原有键值）。
+    tpl_map: {段名: [描述,...]}（来自 Benchmark data/game_items.json）"""
+    import re
+    try:
+        if not os.path.exists(path):
+            return
+        if not tpl_map:
+            return
+        with open(path, encoding="utf-8") as f:
+            lines = f.read().splitlines()
+        out = []
+        used = {}
+        changed = False
+        i = 0
+        n = len(lines)
+        while i < n:
+            ln = lines[i]
+            s = ln.strip()
+            ms = re.match(r"^\[[^:\]]+:(.+)\]$", s)
+            out.append(ln)
+            if ms:
+                name = ms.group(1).strip()
+                # 向后查找本段是否已有 描述= 行（到下一个段头为止）
+                j = i + 1
+                has_desc = False
+                while j < n:
+                    sj = lines[j].strip()
+                    if sj.startswith("[") and sj.endswith("]"):
+                        break
+                    if sj.startswith("描述="):
+                        has_desc = True
+                        break
+                    j += 1
+                if not has_desc:
+                    pool = tpl_map.get(name)
+                    if pool:
+                        idx = used.get(name, 0)
+                        if idx < len(pool):
+                            out.append("描述=" + pool[idx])
+                            used[name] = idx + 1
+                            changed = True
+            i += 1
+        if changed:
+            bak = path + ".v176bak"
+            if not os.path.exists(bak):
+                try:
+                    shutil.copy2(path, bak)
+                except Exception:
+                    pass
+            with open(path, "w", encoding="utf-8") as f:
+                f.write("\n".join(out) + "\n")
+            logger.info(f"[插件] 已为 {os.path.basename(path)} 补充商品描述（原文件备份为 {os.path.basename(bak)}）")
+    except Exception as e:
+        logger.warning(f"[插件] 描述迁移失败 {os.path.basename(path)}: {e}")
+
+
+def _migrate_txt_migrated_flag():
+    """读取/写入 data.json 的 migrations.txt_desc_v176 标记（只迁一次）"""
+    try:
+        if os.path.exists(DATA_FILE):
+            with open(DATA_FILE, encoding="utf-8") as f:
+                d = json.load(f)
+        else:
+            d = {}
+        mig = d.setdefault("migrations", {})
+        return d, mig
+    except Exception:
+        return {}, {}
+
+
+def _migrate_add_descriptions():
+    """为全部旧版 txt 配置补充描述（首次启动新版插件执行一次；描述模板来自 Benchmark data/game_items.json）"""
+    try:
+        if not _should_migrate_txt_descriptions():
+            return  # 已迁移过（标记存在）→ 不再补全，尊重用户后续编辑
+        crop_map = _benchmark_desc_map(("作物",))
+        fert_map = _benchmark_desc_map(("肥料",))
+        shop_map = _benchmark_desc_map(("商店",))
+        backend_map = _benchmark_desc_map(("打工", "玩耍"))
+        pairs = [
+            (CROP_FILE, crop_map),
+            (FERT_FILE, fert_map),
+            (PET_SHOP_FILE, shop_map),
+            (CONFIG_FILE, backend_map),
+        ]
+        for typ, f in PET_SHOP_TYPE_FILES.items():
+            pairs.append((f, shop_map))
+        for path, tpl_map in pairs:
+            _migrate_desc_file(path, tpl_map)
+        # 记录标记（data.json 尚不存在时跳过，下次启动幂等兜底）
+        d, mig = _migrate_txt_migrated_flag()
+        if not mig.get("txt_desc_v176"):
+            mig["txt_desc_v176"] = True
+            try:
+                with open(DATA_FILE, "w", encoding="utf-8") as f:
+                    json.dump(d, f, ensure_ascii=False, indent=2)
+            except Exception:
+                pass
+    except Exception as e:
+        logger.warning(f"[插件] 配置描述迁移失败: {e}")
+
+
+def _should_migrate_txt_descriptions():
+    try:
+        if os.path.exists(DATA_FILE):
+            with open(DATA_FILE, encoding="utf-8") as f:
+                d = json.load(f)
+            return not (d.get("migrations") or {}).get("txt_desc_v176")
+    except Exception:
+        pass
+    return True  # data.json 不存在 → 首次启动 → 执行迁移（幂等）
+
+
+if _should_migrate_txt_descriptions():
+    _migrate_add_descriptions()
+
 
 _FONT_CACHE = {}
 
@@ -853,13 +1018,46 @@ def _ensure_pillow():
         return None, None
 
 
-def _make_wrapper(tw, default_width):
+def _make_wrapper(tw, default_width, mode="fill"):
     """生成按像素宽度换行的函数：自适应填满最大可用宽度后才换行。
 
-    策略：优先在空格处断行（保持单词完整）；若空格断点会让当前行留下大片空白
-    （还能再装入尾部词的一段），则把尾部词按「段」并入当前行直至满宽——
-    段 = 连续数字/英文字母（永不拆分，如 100000）、单个中文字符。
-    无空格时按字符硬切（同样满宽）。"""
+    策略（mode="fill"，默认）：优先在空格处断行（保持单词完整）；若空格断点会让
+    当前行留下大片空白（还能再装入尾部词的一段），则把尾部词按「段」并入当前行
+    直至满宽——段 = 连续数字/英文字母（永不拆分，如 100000）、单个中文字符。
+    无空格时按字符硬切（同样满宽）。
+
+    mode="word"：只在空格处换行，保持每个词（空格分隔的单元）完整整体换行，
+    不填充、不拆分单元内部（用于商店卡片的效果描述，如「饱食+10 体力+5」）。"""
+
+    if mode == "word":
+        def wrap(text, font, max_w=None):
+            limit = default_width if max_w is None else max_w
+            lines = []
+            for word in text.split(" "):
+                if not word:
+                    continue
+                if not lines:
+                    lines.append(word)
+                elif tw(lines[-1] + " " + word, font) <= limit:
+                    lines[-1] += " " + word
+                else:
+                    # 当前行放不下该单元 → 换行放置（正常场景单元很短，不会超宽）
+                    if tw(word, font) > limit and lines:
+                        # 极端：单个单元超过一行宽 → 按字符硬切
+                        cur = ""
+                        for ch in word:
+                            if tw(cur + ch, font) > limit and cur:
+                                lines.append(cur)
+                                cur = ch
+                            else:
+                                cur += ch
+                        if cur:
+                            lines.append(cur)
+                    else:
+                        lines.append(word)
+            return lines or [""]
+
+        return wrap
 
     def wrap(text, font, max_w=None):
         limit = default_width if max_w is None else max_w
@@ -972,7 +1170,7 @@ class RouletteGame:
         return "、".join(p["name"] for p in self.players)
 
 
-@register("astrbot_plugin_signin", "sishijiu", "群签到 + 左轮手枪 + 宠物养成 + 金币银行 + 农场", "1.7.6")
+@register("astrbot_plugin_signin", "sishijiu", "群签到 + 左轮手枪 + 宠物养成 + 金币银行 + 农场", "1.7.7")
 class SignInPlugin(Star):
     def __init__(self, context: Context, config: dict = None):
         super().__init__(context)
@@ -1054,25 +1252,29 @@ class SignInPlugin(Star):
         # 一次性迁移旧数据：按群（gid:uid）→ 跨群（uid）
         self._migrate_legacy_data()
 
+        # 1.7.7：商店/打工/玩耍数值从旧版 txt 迁移为 game_items.json（只迁一次）
+        self._migrate_items_to_json()
+
         # 应用 WebUI 保存过的运行参数（覆盖默认常量，无需重启）
         self._load_runtime_params()
 
         # 注册 WebUI Pages 的后端 API（数据驱动批量注册）
         _web_apis = [
-            ("backend/config", "GET", self.web_get_backend_config, "读取后台.txt（打工/玩耍）"),
-            ("backend/config", "POST", self.web_save_backend_config, "保存后台.txt（打工/玩耍）"),
-            ("petshop", "GET", self.web_get_petshop, "读取宠物商店.txt"),
-            ("petshop", "POST", self.web_save_petshop, "保存宠物商店.txt"),
+            ("backend/config", "GET", self.web_get_backend_config, "读取打工/玩耍数值（game_items.json）"),
+            ("backend/config", "POST", self.web_save_backend_config, "保存打工/玩耍数值（game_items.json）"),
+            ("petshop", "GET", self.web_get_petshop, "读取宠物商店商品（game_items.json）"),
+            ("petshop", "POST", self.web_save_petshop, "保存宠物商店商品（game_items.json）"),
             ("feature/status", "GET", self.web_get_feature_status, "读取功能开关"),
             ("feature/status", "POST", self.web_save_feature_status, "保存功能开关"),
             ("data/export", "GET", self.web_export_data, "导出全部数据（存档+自定义配置）"),
             ("data/import", "POST", self.web_import_data, "导入全部数据（存档+自定义配置）"),
-            ("farm/crops", "GET", self.web_get_crops, "读取作物.txt"),
-            ("farm/crops", "POST", self.web_save_crops, "保存作物.txt"),
-            ("farm/ferts", "GET", self.web_get_ferts, "读取肥料.txt"),
-            ("farm/ferts", "POST", self.web_save_ferts, "保存肥料.txt"),
-            ("loan/packages", "GET", self.web_get_loan_pkgs, "读取贷款套餐.txt"),
-            ("loan/packages", "POST", self.web_save_loan_pkgs, "保存贷款套餐.txt"),
+            ("farm/crops", "GET", self.web_get_crops, "读取作物配置（game_items.json）"),
+            ("farm/crops", "POST", self.web_save_crops, "保存作物配置（game_items.json）"),
+            ("farm/ferts", "GET", self.web_get_ferts, "读取肥料配置（game_items.json）"),
+            ("farm/ferts", "POST", self.web_save_ferts, "保存肥料配置（game_items.json）"),
+            ("items/apply_benchmark", "POST", self.web_apply_benchmark_items, "农场与宠物道具恢复为 Benchmark 默认数据"),
+            ("loan/packages", "GET", self.web_get_loan_pkgs, "读取贷款套餐（game_items.json）"),
+            ("loan/packages", "POST", self.web_save_loan_pkgs, "保存贷款套餐（game_items.json）"),
             ("activities", "GET", self.web_get_activities, "读取活动模块启用状态"),
             ("activities", "POST", self.web_save_activities, "保存活动模块启用状态"),
             ("params", "GET", self.web_get_params, "读取运行参数"),
@@ -2109,9 +2311,437 @@ class SignInPlugin(Star):
         return 1.2, 0.8
 
     # ================= 后台配置解析 =================
+    # ================= 商店/打工/玩耍数值 JSON 存储（1.7.7） =================
+    # game_items.json 扁平结构：
+    #   jobs:  [{name, desc, min_level, min_health, min_mood,
+    #            cost_stamina, cost_satiety, cost_thirst, cost_health, cost_mood,
+    #            time, coins, exp}]
+    #   plays: [{name, desc, min_level, min_health, min_mood,
+    #            cost_stamina, cost_satiety, cost_thirst, cost_health, cost_mood,
+    #            time, exp, mood, stamina, health}]   （mood/stamina/health 为收益，可负）
+    #   shop:  [{name, type, desc, price, satiety, thirst, stamina, mood, health}]
+    _JOB_NUM_FIELDS = ("min_level", "min_health", "min_mood",
+                       "cost_stamina", "cost_satiety", "cost_thirst", "cost_health", "cost_mood",
+                       "time", "coins", "exp")
+    _PLAY_NUM_FIELDS = ("min_level", "min_health", "min_mood",
+                        "cost_stamina", "cost_satiety", "cost_thirst", "cost_health", "cost_mood",
+                        "time", "exp", "mood", "stamina", "health")
+    _SHOP_NUM_FIELDS = ("price", "satiety", "thirst", "stamina", "mood", "health")
+    _CROP_NUM_FIELDS = ("seed_price", "seed_sell_price", "yield", "crop_price",
+                        "exp", "min_level", "grow_minutes")
+    _FERT_NUM_FIELDS = ("price", "time_reduce", "yield_add", "max_uses")
+    _LOAN_NUM_FIELDS = ("max_amount", "fav_req", "pet_req", "farm_req", "rate")
+    _ITEMS_JSON_VERSION = 3
+
+    def _read_items_json(self):
+        """读取 game_items.json（扁平结构 dict）；不存在/损坏返回 None"""
+        try:
+            if not os.path.exists(ITEMS_JSON_FILE):
+                return None
+            with open(ITEMS_JSON_FILE, "r", encoding="utf-8") as f:
+                raw = json.load(f)
+            if not isinstance(raw, dict):
+                return None
+            out = {}
+            for k in ("jobs", "plays", "shop", "crops", "ferts", "loans"):
+                out[k] = raw.get(k) if isinstance(raw.get(k), list) else []
+            out["version"] = raw.get("version", 1)
+            return out
+        except Exception as e:
+            logger.warning(f"[插件] 读取 game_items.json 失败（回退 txt）: {e}")
+            return None
+
+    def _write_items_json(self, flat: dict):
+        """原子写入 game_items.json，返回 (ok, msg)"""
+        try:
+            payload = {"version": self._ITEMS_JSON_VERSION,
+                       "jobs": flat.get("jobs", []),
+                       "plays": flat.get("plays", []),
+                       "shop": flat.get("shop", []),
+                       "crops": flat.get("crops", []),
+                       "ferts": flat.get("ferts", []),
+                       "loans": flat.get("loans", [])}
+            tmp = ITEMS_JSON_FILE + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump(payload, f, ensure_ascii=False, indent=2)
+            os.replace(tmp, ITEMS_JSON_FILE)
+            return True, "保存成功"
+        except Exception as e:
+            return False, f"保存失败: {e}"
+
+    def _items_flat_to_normalized(self, flat: dict) -> dict:
+        """扁平 JSON 结构 → 内部规范化结构（与 _normalize_config 输出一致）"""
+        jobs = []
+        for j in flat.get("jobs") or []:
+            if not isinstance(j, dict):
+                continue
+            name = str(j.get("name", "")).strip()
+            if not name:
+                continue
+            jobs.append({
+                "name": name, "desc": str(j.get("desc", "") or ""),
+                "min_level": self._f(j.get("min_level", 0)),
+                "min_health": self._f(j.get("min_health", 0)),
+                "min_mood": self._f(j.get("min_mood", 0)),
+                "cost": {
+                    "stamina": self._f(j.get("cost_stamina", 0)),
+                    "satiety": self._f(j.get("cost_satiety", 0)),
+                    "thirst": self._f(j.get("cost_thirst", 0)),
+                    "health": self._f(j.get("cost_health", 0)),
+                    "mood": self._f(j.get("cost_mood", 0)),
+                },
+                "time": self._f(j.get("time", 0)),
+                "coins": self._f(j.get("coins", 0)),
+                "exp": self._f(j.get("exp", 0)),
+            })
+        plays = []
+        for p in flat.get("plays") or []:
+            if not isinstance(p, dict):
+                continue
+            name = str(p.get("name", "")).strip()
+            if not name:
+                continue
+            plays.append({
+                "name": name, "desc": str(p.get("desc", "") or ""),
+                "min_level": self._f(p.get("min_level", 0)),
+                "min_health": self._f(p.get("min_health", 0)),
+                "min_mood": self._f(p.get("min_mood", 0)),
+                "cost": {
+                    "stamina": self._f(p.get("cost_stamina", 0)),
+                    "satiety": self._f(p.get("cost_satiety", 0)),
+                    "thirst": self._f(p.get("cost_thirst", 0)),
+                    "health": self._f(p.get("cost_health", 0)),
+                    "mood": self._f(p.get("cost_mood", 0)),
+                },
+                "time": self._f(p.get("time", 0)),
+                "exp": self._f(p.get("exp", 0)),
+                "mood": self._f(p.get("mood", 0)),
+                "stamina": self._f(p.get("stamina", 0)),
+                "health": self._f(p.get("health", 0)),
+            })
+        shop = []
+        for s in flat.get("shop") or []:
+            if not isinstance(s, dict):
+                continue
+            name = str(s.get("name", "")).strip()
+            if not name:
+                continue
+            typ = str(s.get("type", "") or "").strip()
+            if typ == "食品":  # 旧类型兼容
+                typ = "食物"
+            shop.append({
+                "name": name, "type": typ, "desc": str(s.get("desc", "") or ""),
+                "price": self._f(s.get("price", 0)),
+                "effects": {
+                    "satiety": self._f(s.get("satiety", 0)),
+                    "thirst": self._f(s.get("thirst", 0)),
+                    "stamina": self._f(s.get("stamina", 0)),
+                    "mood": self._f(s.get("mood", 0)),
+                    "health": self._f(s.get("health", 0)),
+                },
+            })
+        return {"jobs": jobs, "plays": plays, "shop": shop}
+
+    @staticmethod
+    def _items_normalized_to_flat(norm: dict) -> dict:
+        """内部规范化结构 → 扁平 JSON 结构（迁移用）"""
+        jobs = []
+        for j in norm.get("jobs") or []:
+            c = j.get("cost", {})
+            jobs.append({
+                "name": j.get("name", ""), "desc": j.get("desc", ""),
+                "min_level": j.get("min_level", 0), "min_health": j.get("min_health", 0),
+                "min_mood": j.get("min_mood", 0),
+                "cost_stamina": c.get("stamina", 0), "cost_satiety": c.get("satiety", 0),
+                "cost_thirst": c.get("thirst", 0), "cost_health": c.get("health", 0),
+                "cost_mood": c.get("mood", 0),
+                "time": j.get("time", 0), "coins": j.get("coins", 0), "exp": j.get("exp", 0),
+            })
+        plays = []
+        for p in norm.get("plays") or []:
+            c = p.get("cost", {})
+            plays.append({
+                "name": p.get("name", ""), "desc": p.get("desc", ""),
+                "min_level": p.get("min_level", 0), "min_health": p.get("min_health", 0),
+                "min_mood": p.get("min_mood", 0),
+                "cost_stamina": c.get("stamina", 0), "cost_satiety": c.get("satiety", 0),
+                "cost_thirst": c.get("thirst", 0), "cost_health": c.get("health", 0),
+                "cost_mood": c.get("mood", 0),
+                "time": p.get("time", 0), "exp": p.get("exp", 0),
+                "mood": p.get("mood", 0), "stamina": p.get("stamina", 0),
+                "health": p.get("health", 0),
+            })
+        shop = []
+        for s in norm.get("shop") or []:
+            e = s.get("effects", {})
+            shop.append({
+                "name": s.get("name", ""), "type": s.get("type", ""), "desc": s.get("desc", ""),
+                "price": s.get("price", 0),
+                "satiety": e.get("satiety", 0), "thirst": e.get("thirst", 0),
+                "stamina": e.get("stamina", 0), "mood": e.get("mood", 0),
+                "health": e.get("health", 0),
+            })
+        return {"jobs": jobs, "plays": plays, "shop": shop}
+
+    def _validate_flat_items(self, entries, num_fields, kind_label, check_type=False, code_mode=False):
+        """校验并规范化扁平条目列表。code_mode=True 时以 code（3~10 整数）代替名称（贷款套餐）。
+        返回 (clean_list, errors_dict)"""
+        clean = []
+        errors = {}
+        seen = set()
+        for i, e in enumerate(entries or []):
+            row = f"第{i + 1}行"
+            if not isinstance(e, dict):
+                errors[row] = "条目格式错误"
+                continue
+            if code_mode:
+                try:
+                    code = int(str(e.get("code", "")).strip())
+                except (TypeError, ValueError):
+                    errors[row] = "套餐代码必须是 3~10 的整数"
+                    continue
+                if not 3 <= code <= 10:
+                    errors[row] = f"套餐代码 {code} 超出范围（3~10）"
+                    continue
+                if code in seen:
+                    errors[f"套餐{code}（{row}）"] = "代码重复"
+                    continue
+                seen.add(code)
+                item = {"code": code, "desc": str(e.get("desc", "") or "")}
+                row = f"套餐{code}（{row}）"
+            else:
+                name = str(e.get("name", "")).strip()
+                if not name:
+                    errors[row] = "名称不能为空"
+                    continue
+                if name in seen:
+                    errors[f"{name}（{row}）"] = "名称重复"
+                    continue
+                seen.add(name)
+                item = {"name": name, "desc": str(e.get("desc", "") or "")}
+                row = f"{name}（{row}）"
+            bad = False
+            for f_ in num_fields:
+                v = e.get(f_, 0)
+                if isinstance(v, str):
+                    v = v.strip()
+                try:
+                    fv = float(v) if str(v) != "" else 0.0
+                except (TypeError, ValueError):
+                    errors[row] = f"数值字段 {f_} 不是数字"
+                    bad = True
+                    break
+                item[f_] = int(fv) if fv == int(fv) else fv
+            if bad:
+                continue
+            if check_type:
+                typ = str(e.get("type", "") or "").strip()
+                if typ == "食品":
+                    typ = "食物"
+                if typ not in PET_SHOP_TYPES:
+                    errors[row] = f"类型必须是 {'/'.join(PET_SHOP_TYPES)}"
+                    continue
+                item["type"] = typ
+            clean.append(item)
+        return clean, errors
+
+    def _crop_fert_from_txt(self):
+        """从 作物.txt / 肥料.txt 解析作物与肥料（txt 不存在时返回空列表）"""
+        crops = self._parse_crop_fert(CROP_FILE, "作物") if os.path.exists(CROP_FILE) else []
+        ferts = self._parse_crop_fert(FERT_FILE, "肥料") if os.path.exists(FERT_FILE) else []
+        return crops, ferts
+
+    def _loans_from_txt(self):
+        """从 贷款套餐.txt 解析贷款套餐（txt 不存在时返回空列表）"""
+        if not os.path.exists(LOAN_FILE):
+            return []
+        out = []
+        for it in _parse_kv_sections(LOAN_FILE, "贷款套餐"):
+            d = it["data"]
+            try:
+                out.append({"code": int(it["name"]), "desc": d.get("描述", ""),
+                            "max_amount": int(self._f(d.get("最大金额", 0))),
+                            "fav_req": int(self._f(d.get("好感度等级要求", 0))),
+                            "pet_req": int(self._f(d.get("宠物等级要求", 0))),
+                            "farm_req": int(self._f(d.get("农场等级要求", 0))),
+                            "rate": self._f(d.get("利息", 0))})
+            except Exception:
+                continue
+        return out
+
+    def _loans_from_benchmark(self):
+        """从 Benchmark data/game_items.json 读取默认贷款套餐"""
+        bench_flat = _load_benchmark_items()
+        if bench_flat is not None:
+            return [l for l in (self._norm_loan_entry(d) for d in bench_flat["loans"]) if l]
+        return []
+
+    def _crop_fert_from_benchmark(self):
+        """从 Benchmark data 默认模板解析作物与肥料（优先 game_items.json，旧版 txt 兜底）"""
+        bench_flat = _load_benchmark_items()
+        if bench_flat is not None:
+            crops = [c for c in (self._norm_crop_entry(d) for d in bench_flat["crops"]) if c]
+            ferts = [f_ for f_ in (self._norm_fert_entry(d) for d in bench_flat["ferts"]) if f_]
+            return crops, ferts
+        bench = os.path.join(_PLUGIN_DIR, "Benchmark data")
+        crops = ferts = []
+        bp = os.path.join(bench, "作物.txt")
+        if os.path.exists(bp):
+            crops = self._parse_crop_fert(bp, "作物")
+        bp = os.path.join(bench, "肥料.txt")
+        if os.path.exists(bp):
+            ferts = self._parse_crop_fert(bp, "肥料")
+        return crops, ferts
+
+    def _migrate_items_to_json(self):
+        """1.7.7：商店/打工/玩耍/作物/肥料数值从旧版 txt 迁移为 game_items.json。
+        - JSON 不存在 → 全量迁移（v2）；txt 全部缺失时从 Benchmark data 默认模板生成
+        - JSON 已存在但为 v1（无 crops/ferts）→ 补迁作物/肥料（v1→v2）
+        txt 文件保留作备份不再读取。只迁一次。"""
+        try:
+            if not os.path.exists(ITEMS_JSON_FILE):
+                # ---- 全量迁移（v2）----
+                cfg = {"jobs": [], "plays": [], "shop": []}
+                self._parse_work_play(CONFIG_FILE, cfg)
+                type_files = [p for p in PET_SHOP_TYPE_FILES.values() if os.path.exists(p)]
+                if type_files:
+                    for pth in type_files:
+                        self._parse_shop(pth, cfg)
+                elif os.path.exists(PET_SHOP_FILE):
+                    self._parse_shop(PET_SHOP_FILE, cfg)
+                else:
+                    self._parse_shop(CONFIG_FILE, cfg)
+                norm = self._normalize_config(cfg)
+                crops, ferts = self._crop_fert_from_txt()
+                loans = self._loans_from_txt()
+                if not (norm["jobs"] or norm["plays"] or norm["shop"] or crops or ferts or loans):
+                    # 全新部署：优先 Benchmark data/game_items.json（新格式默认模板）
+                    bench_flat = _load_benchmark_items()
+                    if bench_flat and any(bench_flat[k] for k in _ITEMS_KEYS):
+                        flat = {k: bench_flat[k] for k in _ITEMS_KEYS}
+                        ok, msg = self._write_items_json(flat)
+                        if ok:
+                            logger.info(f"[插件] 全新部署：已从 Benchmark data/game_items.json 生成默认数值"
+                                        f"（打工 {len(flat['jobs'])} / 玩耍 {len(flat['plays'])} / 商品 {len(flat['shop'])}"
+                                        f" / 作物 {len(flat['crops'])} / 肥料 {len(flat['ferts'])} 条）")
+                        else:
+                            logger.warning(f"[插件] game_items.json 写入失败: {msg}")
+                        return
+                    # 旧版 txt 模板兜底
+                    bench = os.path.join(_PLUGIN_DIR, "Benchmark data")
+                    cfg2 = {"jobs": [], "plays": [], "shop": []}
+                    bp = os.path.join(bench, "后台.txt")
+                    if os.path.exists(bp):
+                        self._parse_work_play(bp, cfg2)
+                    for typ in PET_SHOP_TYPES:
+                        btp = os.path.join(bench, f"宠物商店-{typ}.txt")
+                        if os.path.exists(btp):
+                            self._parse_shop(btp, cfg2)
+                    if cfg2["jobs"] or cfg2["plays"] or cfg2["shop"]:
+                        norm = self._normalize_config(cfg2)
+                    crops, ferts = self._crop_fert_from_benchmark()
+                    loans = self._loans_from_benchmark()
+                flat = self._items_normalized_to_flat(norm)
+                flat["crops"] = crops
+                flat["ferts"] = ferts
+                flat["loans"] = loans
+                ok, msg = self._write_items_json(flat)
+                if ok:
+                    logger.info(f"[插件] 已将 商店/打工/玩耍/作物/肥料/贷款套餐 数值迁移为 game_items.json"
+                                f"（打工 {len(flat['jobs'])} / 玩耍 {len(flat['plays'])} / 商品 {len(flat['shop'])}"
+                                f" / 作物 {len(crops)} / 肥料 {len(ferts)} / 贷款 {len(loans)} 条）")
+                else:
+                    logger.warning(f"[插件] game_items.json 写入失败: {msg}")
+                return
+            # ---- 版本升级补迁（v1→v2 作物/肥料；v2→v3 贷款套餐） ----
+            try:
+                with open(ITEMS_JSON_FILE, "r", encoding="utf-8") as f:
+                    raw = json.load(f)
+            except Exception:
+                return
+            if not isinstance(raw, dict):
+                return
+            changed = False
+            if raw.get("version", 1) < 2 or "crops" not in raw or "ferts" not in raw:
+                crops, ferts = self._crop_fert_from_txt()
+                if not (crops or ferts):
+                    crops, ferts = self._crop_fert_from_benchmark()
+                raw["crops"] = crops
+                raw["ferts"] = ferts
+                changed = True
+                logger.info(f"[插件] game_items.json 升级：补迁 作物 {len(crops)} / 肥料 {len(ferts)} 条")
+            if raw.get("version", 1) < 3 or "loans" not in raw:
+                loans = self._loans_from_txt()
+                if not loans:
+                    loans = self._loans_from_benchmark()
+                raw["loans"] = loans
+                changed = True
+                logger.info(f"[插件] game_items.json 升级：补迁 贷款套餐 {len(loans)} 条")
+            if not changed:
+                return
+            raw["version"] = self._ITEMS_JSON_VERSION
+            tmp = ITEMS_JSON_FILE + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump(raw, f, ensure_ascii=False, indent=2)
+            os.replace(tmp, ITEMS_JSON_FILE)
+        except Exception as e:
+            logger.warning(f"[插件] 数值配置迁移为 JSON 失败: {e}")
+
+    def _cfg_to_backend_text(self) -> str:
+        """把当前打工/玩耍数值渲染为旧版 后台.txt 格式文本（「查看后台配置」指令用）"""
+        cfg = self._load_config()
+
+        def _n(v):
+            return self._fmt_price(v)
+
+        out = []
+        for j in cfg["jobs"]:
+            c = j["cost"]
+            out += [
+                f"[打工:{j['name']}]",
+                f"描述={j.get('desc', '')}",
+                f"最低等级={_n(j['min_level'])}",
+                f"最低健康度={_n(j['min_health'])}",
+                f"最低心情值={_n(j['min_mood'])}",
+                f"消耗体力={_n(c['stamina'])}",
+                f"消耗饱食度={_n(c['satiety'])}",
+                f"消耗口渴值={_n(c['thirst'])}",
+                f"消耗健康值={_n(c['health'])}",
+                f"消耗心情值={_n(c['mood'])}",
+                f"需要时间={_n(j['time'])}",
+                f"金币={_n(j['coins'])}",
+                f"经验={_n(j['exp'])}",
+                "",
+            ]
+        for p in cfg["plays"]:
+            c = p["cost"]
+            out += [
+                f"[玩耍:{p['name']}]",
+                f"描述={p.get('desc', '')}",
+                f"最低等级={_n(p['min_level'])}",
+                f"最低健康度={_n(p['min_health'])}",
+                f"最低心情值={_n(p['min_mood'])}",
+                f"消耗体力={_n(c['stamina'])}",
+                f"消耗饱食度={_n(c['satiety'])}",
+                f"消耗口渴值={_n(c['thirst'])}",
+                f"消耗健康值={_n(c['health'])}",
+                f"消耗心情值={_n(c['mood'])}",
+                f"需要时间={_n(p['time'])}",
+                f"经验={_n(p['exp'])}",
+                f"心情值={_n(p['mood'])}",
+                f"体力={_n(p['stamina'])}",
+                f"健康度={_n(p['health'])}",
+                "",
+            ]
+        return "\n".join(out)
+
     def _load_config(self) -> dict:
-        """打工/玩耍来自 后台.txt；宠物商店商品来自 宠物商店-食物/饮料/药物/玩具.txt（1.7.3 按类型拆分）。
-        兼容旧数据：后台.txt 中仍含 [商店:] 段落、或宠物商店.txt 未拆分时也读取。"""
+        """1.7.7：优先读 game_items.json（WebUI 表格编辑的存储）；
+        不存在/损坏时回退解析旧版 txt（后台.txt + 宠物商店-*.txt，兼容未拆分的 宠物商店.txt）。"""
+        flat = self._read_items_json()
+        if flat is not None:
+            return self._items_flat_to_normalized(flat)
+        # 旧版 txt 回退（未迁移时）
         cfg = {"jobs": [], "plays": [], "shop": []}
         self._parse_work_play(CONFIG_FILE, cfg)
         # 商店：优先 4 个类型文件；若类型文件不存在回退读 宠物商店.txt；再回退 后台.txt
@@ -2188,9 +2818,13 @@ class SignInPlugin(Star):
         shop = []
         for s in cfg["shop"]:
             d = s["data"]
+            _typ = d.get("类型", "")
+            if _typ == "食品":  # 旧类型统一归一为「食物」
+                _typ = "食物"
             shop.append({
                 "name": s["name"],
-                "type": d.get("类型", ""),
+                "type": _typ,
+                "desc": d.get("描述", ""),
                 "price": self._f(d.get("价格", 0)),
                 "effects": {
                     "satiety": self._f(d.get("饱食度", 0)),
@@ -2252,68 +2886,60 @@ class SignInPlugin(Star):
 
     # ================= WebUI Pages 后端 API =================
     async def web_get_backend_config(self):
-        """读取 后台.txt 内容（打工/玩耍）"""
+        """读取打工/玩耍数值（结构化，供 WebUI 表格编辑）"""
         async with self._lock:
-            return json_response({"content": self._read_config_text()})
+            flat = self._read_items_json()
+            if flat is None:
+                flat = self._items_normalized_to_flat(self._load_config())
+            return json_response({"jobs": flat["jobs"], "plays": flat["plays"]})
 
     async def web_save_backend_config(self):
-        """保存 后台.txt 内容（打工/玩耍）"""
+        """保存打工/玩耍数值：{jobs: [...], plays: [...]}，校验后写入 game_items.json（立即生效）"""
         async with self._lock:
             payload = await request.json(default={})
-            content = payload.get("content")
-            if not isinstance(content, str):
-                return error_response("content 必须是字符串", status_code=400)
-            ok, msg = self._write_config_text(content)
+            jobs_in = payload.get("jobs")
+            plays_in = payload.get("plays")
+            if not isinstance(jobs_in, list) or not isinstance(plays_in, list):
+                return error_response("jobs 和 plays 必须是数组", status_code=400)
+            jobs, errs1 = self._validate_flat_items(jobs_in, self._JOB_NUM_FIELDS, "打工")
+            plays, errs2 = self._validate_flat_items(plays_in, self._PLAY_NUM_FIELDS, "玩耍")
+            errors = {**{f"打工·{k}": v for k, v in errs1.items()},
+                      **{f"玩耍·{k}": v for k, v in errs2.items()}}
+            if errors:
+                return json_response({"saved": False, "errors": errors})
+            flat = self._read_items_json() or {"jobs": [], "plays": [], "shop": [], "crops": [], "ferts": [], "loans": []}
+            flat["jobs"] = jobs
+            flat["plays"] = plays
+            ok, msg = self._write_items_json(flat)
             if not ok:
                 return error_response(msg, status_code=400)
-            return json_response({"saved": True})
+            return json_response({"saved": True, "jobs": len(jobs), "plays": len(plays)})
 
     async def web_get_petshop(self):
-        """读取宠物商店各类型文件内容：{types: [{key, label, content}], content: 合并内容}
-        content 字段供旧版前端（单 textarea）兼容显示；types 供新版前端按类型编辑。"""
+        """读取宠物商店商品（结构化，供 WebUI 表格编辑）。
+        保留旧字段 content/types（空字符串）仅为不破坏旧前端加载，新版前端使用 items。"""
         async with self._lock:
-            items = []
-            merged = []
-            for typ in PET_SHOP_TYPES:
-                content = self._read_file(PET_SHOP_TYPE_FILES[typ])
-                items.append({"key": typ, "label": typ, "content": content})
-                if content.strip():
-                    merged.append(content)
-            return json_response({"types": items, "content": "\n".join(merged)})
+            flat = self._read_items_json()
+            if flat is None:
+                flat = self._items_normalized_to_flat(self._load_config())
+            return json_response({"items": flat["shop"], "types": [], "content": ""})
 
     async def web_save_petshop(self):
-        """保存宠物商店：新版前端 {key: 类型, content} 写入对应类型文件；
-        旧版前端 {content} 按 [商店:xxx] 段落类型拆分写入各类型文件（兼容）。"""
+        """保存宠物商店商品：{items: [...]}，校验后写入 game_items.json（立即生效）"""
         async with self._lock:
             payload = await request.json(default={})
-            content = payload.get("content")
-            if not isinstance(content, str):
-                return error_response("content 必须是字符串", status_code=400)
-            typ = payload.get("key")
-            if typ in PET_SHOP_TYPE_FILES:
-                # 新版前端：按类型保存
-                ok, msg = self._write_file(PET_SHOP_TYPE_FILES[typ], content)
-                if not ok:
-                    return error_response(msg, status_code=400)
-                return json_response({"saved": True})
-            # 旧版前端：合并内容按类型拆分写入各文件
-            sections = _parse_kv_sections_text(content, "宠物商店", types=("商店",))
-            by_type = {t: [] for t in PET_SHOP_TYPES}
-            for sec in sections:
-                st = sec["data"].get("类型", "").strip() or "其他"
-                if st == "食品":
-                    st = "食物"
-                lines = [f"[商店:{sec['name']}]\n"]
-                for k, v in sec["data"].items():
-                    lines.append(f"{k}={v}\n")
-                lines.append("\n")
-                (by_type[st] if st in by_type else by_type.setdefault(st, [])).append("".join(lines))
-            for st, lines in by_type.items():
-                if lines:
-                    ok, msg = self._write_file(PET_SHOP_TYPE_FILES.get(st, os.path.join(_DATA_DIR, f"宠物商店-{st}.txt")), "".join(lines))
-                    if not ok:
-                        return error_response(msg, status_code=400)
-            return json_response({"saved": True})
+            items_in = payload.get("items")
+            if not isinstance(items_in, list):
+                return error_response("items 必须是数组", status_code=400)
+            shop, errors = self._validate_flat_items(items_in, self._SHOP_NUM_FIELDS, "商店", check_type=True)
+            if errors:
+                return json_response({"saved": False, "errors": errors})
+            flat = self._read_items_json() or {"jobs": [], "plays": [], "shop": [], "crops": [], "ferts": [], "loans": []}
+            flat["shop"] = shop
+            ok, msg = self._write_items_json(flat)
+            if not ok:
+                return error_response(msg, status_code=400)
+            return json_response({"saved": True, "items": len(shop)})
 
     # ================= 功能开关 =================
     FEATURE_MODULES = [
@@ -2381,7 +3007,7 @@ class SignInPlugin(Star):
             return json_response({"saved": True})
 
     async def web_export_data(self):
-        """导出全部数据：data.json + 自定义 .txt（后台/宠物商店/作物/肥料/贷款套餐）。
+        """导出全部数据：data.json + game_items.json（商店/打工/玩耍/作物/肥料/贷款套餐数值）。
         打包为单个 JSON 文件（files: {文件名: 内容}），由前端下载。"""
         async with self._lock:
             files = {}
@@ -2390,39 +3016,71 @@ class SignInPlugin(Star):
             return json_response({"files": files})
 
     def _exportable_files(self):
-        """可导出的文件列表：存档 data.json + 自定义配置 txt"""
-        files = [
+        """可导出的文件列表：存档 data.json + 数值配置 game_items.json"""
+        return [
             ("data.json", DATA_FILE),
-            ("后台.txt", CONFIG_FILE),
-            ("宠物商店.txt", PET_SHOP_FILE),
-            ("作物.txt", CROP_FILE),
-            ("肥料.txt", FERT_FILE),
-            ("贷款套餐.txt", LOAN_FILE),
+            ("game_items.json", ITEMS_JSON_FILE),
         ]
-        for typ in PET_SHOP_TYPES:
-            files.append((f"宠物商店-{typ}.txt", PET_SHOP_TYPE_FILES[typ]))
-        return files
+
+    # 旧版备份里的 txt 数值配置文件名 → 对应路径（导入旧备份时还原并重新迁移）
+    _LEGACY_TXT_FILES = {
+        "后台.txt": CONFIG_FILE,
+        "宠物商店.txt": PET_SHOP_FILE,
+        "宠物商店-食物.txt": PET_SHOP_TYPE_FILES["食物"],
+        "宠物商店-饮料.txt": PET_SHOP_TYPE_FILES["饮料"],
+        "宠物商店-药物.txt": PET_SHOP_TYPE_FILES["药物"],
+        "宠物商店-玩具.txt": PET_SHOP_TYPE_FILES["玩具"],
+        "作物.txt": CROP_FILE,
+        "肥料.txt": FERT_FILE,
+        "贷款套餐.txt": LOAN_FILE,
+    }
+
+    def _import_files(self, files: dict):
+        """导入文件包：写入新格式文件；兼容旧版 txt 备份（还原后重新迁移为 game_items.json）。
+        返回 (ok, msg_or_written_list)"""
+        written = []
+        for fn, path in self._exportable_files():
+            if fn in files and isinstance(files[fn], str):
+                if fn == "data.json":
+                    ok, msg = self._write_data_text(files[fn])
+                else:
+                    ok, msg = self._write_file(path, files[fn])
+                if ok:
+                    written.append(fn)
+                else:
+                    return False, f"{fn} 导入失败: {msg}"
+        legacy_hit = False
+        for fn, path in self._LEGACY_TXT_FILES.items():
+            if fn in files and isinstance(files[fn], str):
+                ok, msg = self._write_file(path, files[fn])
+                if ok:
+                    written.append(fn)
+                    legacy_hit = True
+                else:
+                    return False, f"{fn} 导入失败: {msg}"
+        if legacy_hit and "game_items.json" not in files:
+            # 旧版备份（txt）：删除现有 JSON 并按 txt 重新迁移
+            try:
+                if os.path.exists(ITEMS_JSON_FILE):
+                    os.remove(ITEMS_JSON_FILE)
+                _migrate_split_shop_config()
+                self._migrate_items_to_json()
+            except Exception as e:
+                logger.warning(f"[插件] 导入旧版 txt 备份后重迁移失败: {e}")
+        return True, written
 
     async def web_import_data(self):
         """导入全部数据：JSON 请求体携带 files（{文件名: 内容}），覆盖写入对应文件。
-        兼容旧格式：若只有 content（旧版 data.json 导出），则只还原 data.json。"""
+        兼容旧格式：旧版 txt 备份（后台/宠物商店*.txt）还原后自动重新迁移为 game_items.json；
+        更旧格式：仅 data.json 的 content 字段。"""
         async with self._lock:
             payload = await request.json(default={})
             files = payload.get("files")
             if isinstance(files, dict):
-                written = []
-                for fn, path in self._exportable_files():
-                    if fn in files and isinstance(files[fn], str):
-                        if fn == "data.json":
-                            ok, msg = self._write_data_text(files[fn])
-                        else:
-                            ok, msg = self._write_file(path, files[fn])
-                        if ok:
-                            written.append(fn)
-                        else:
-                            return error_response(f"{fn} 导入失败: {msg}", status_code=400)
-                _migrate_split_shop_config()
-                return json_response({"imported": True, "files": written})
+                ok, result = self._import_files(files)
+                if not ok:
+                    return error_response(result, status_code=400)
+                return json_response({"imported": True, "files": result})
             # 旧版格式：仅 data.json
             content = payload.get("content")
             if not isinstance(content, str):
@@ -2450,38 +3108,108 @@ class SignInPlugin(Star):
             return False, f"保存失败: {e}"
 
     async def web_get_crops(self):
+        """读取作物配置（结构化，供 WebUI 表格编辑）"""
         async with self._lock:
-            return json_response({"content": self._read_file(CROP_FILE)})
+            flat = self._read_items_json()
+            if flat is not None:
+                items = [c for c in (self._norm_crop_entry(d) for d in flat["crops"]) if c]
+            else:
+                items = self._parse_crop_fert(CROP_FILE, "作物")
+            return json_response({"items": items})
 
     async def web_save_crops(self):
+        """保存作物配置：{items: [...]}，校验后写入 game_items.json（立即生效）"""
         async with self._lock:
             payload = await request.json(default={})
-            content = payload.get("content")
-            if not isinstance(content, str):
-                return error_response("content 必须是字符串", status_code=400)
-            ok, msg = self._write_file(CROP_FILE, content)
+            items_in = payload.get("items")
+            if not isinstance(items_in, list):
+                return error_response("items 必须是数组", status_code=400)
+            crops, errors = self._validate_flat_items(items_in, self._CROP_NUM_FIELDS, "作物")
+            if errors:
+                return json_response({"saved": False, "errors": errors})
+            flat = self._read_items_json() or {"jobs": [], "plays": [], "shop": [], "crops": [], "ferts": [], "loans": []}
+            flat["crops"] = [self._norm_crop_entry(c) for c in crops]
+            ok, msg = self._write_items_json(flat)
             if not ok:
                 return error_response(msg, status_code=400)
-            return json_response({"saved": True})
+            return json_response({"saved": True, "items": len(crops)})
 
     async def web_get_ferts(self):
+        """读取肥料配置（结构化，供 WebUI 表格编辑）"""
         async with self._lock:
-            return json_response({"content": self._read_file(FERT_FILE)})
+            flat = self._read_items_json()
+            if flat is not None:
+                items = [f_ for f_ in (self._norm_fert_entry(d) for d in flat["ferts"]) if f_]
+            else:
+                items = self._parse_crop_fert(FERT_FILE, "肥料")
+            return json_response({"items": items})
 
     async def web_save_ferts(self):
+        """保存肥料配置：{items: [...]}，校验后写入 game_items.json（立即生效）"""
         async with self._lock:
             payload = await request.json(default={})
-            content = payload.get("content")
-            if not isinstance(content, str):
-                return error_response("content 必须是字符串", status_code=400)
-            ok, msg = self._write_file(FERT_FILE, content)
+            items_in = payload.get("items")
+            if not isinstance(items_in, list):
+                return error_response("items 必须是数组", status_code=400)
+            ferts, errors = self._validate_flat_items(items_in, self._FERT_NUM_FIELDS, "肥料")
+            if errors:
+                return json_response({"saved": False, "errors": errors})
+            flat = self._read_items_json() or {"jobs": [], "plays": [], "shop": [], "crops": [], "ferts": [], "loans": []}
+            flat["ferts"] = [self._norm_fert_entry(f_) for f_ in ferts]
+            ok, msg = self._write_items_json(flat)
             if not ok:
                 return error_response(msg, status_code=400)
-            return json_response({"saved": True})
+            return json_response({"saved": True, "items": len(ferts)})
+
+    async def web_apply_benchmark_items(self):
+        """一键恢复默认道具数据：农场（作物/肥料）与宠物（商店商品）使用
+        Benchmark data/game_items.json 的数值；打工/玩耍不受影响。"""
+        async with self._lock:
+            bench = _load_benchmark_items()
+            if bench is None or not (bench["shop"] or bench["crops"] or bench["ferts"]):
+                return error_response("Benchmark data/game_items.json 不存在或为空", status_code=400)
+            shop, errors = self._validate_flat_items(bench["shop"], self._SHOP_NUM_FIELDS, "商店", check_type=True)
+            if errors:
+                return json_response({"saved": False, "errors": errors})
+            crops = [c for c in (self._norm_crop_entry(d) for d in bench["crops"]) if c]
+            ferts = [f_ for f_ in (self._norm_fert_entry(d) for d in bench["ferts"]) if f_]
+            flat = self._read_items_json() or {"jobs": [], "plays": [], "shop": [], "crops": [], "ferts": [], "loans": []}
+            flat["shop"] = shop
+            flat["crops"] = crops
+            flat["ferts"] = ferts
+            ok, msg = self._write_items_json(flat)
+            if not ok:
+                return error_response(msg, status_code=400)
+            logger.info(f"[插件] 已应用 Benchmark 默认道具数据：商店 {len(shop)} / 作物 {len(crops)} / 肥料 {len(ferts)} 条")
+            return json_response({"saved": True, "shop": len(shop), "crops": len(crops), "ferts": len(ferts)})
 
     async def web_get_loan_pkgs(self):
+        """读取贷款套餐（结构化，供 WebUI 表格编辑）"""
         async with self._lock:
-            return json_response({"content": self._read_file(LOAN_FILE)})
+            flat = self._read_items_json()
+            if flat is not None:
+                items = [l for l in (self._norm_loan_entry(d) for d in flat["loans"]) if l]
+            else:
+                items = self._loans_from_txt()
+            return json_response({"items": items})
+
+    async def web_save_loan_pkgs(self):
+        """保存贷款套餐：{items: [{code, max_amount, fav_req, pet_req, farm_req, rate}]}，
+        校验（代码 3~10 整数且不重复）后写入 game_items.json（立即生效）"""
+        async with self._lock:
+            payload = await request.json(default={})
+            items_in = payload.get("items")
+            if not isinstance(items_in, list):
+                return error_response("items 必须是数组", status_code=400)
+            loans, errors = self._validate_flat_items(items_in, self._LOAN_NUM_FIELDS, "贷款套餐", code_mode=True)
+            if errors:
+                return json_response({"saved": False, "errors": errors})
+            flat = self._read_items_json() or {"jobs": [], "plays": [], "shop": [], "crops": [], "ferts": [], "loans": []}
+            flat["loans"] = loans
+            ok, msg = self._write_items_json(flat)
+            if not ok:
+                return error_response(msg, status_code=400)
+            return json_response({"saved": True, "items": len(loans)})
 
     async def web_get_activities(self):
         """返回所有已注册活动：启用状态 + 参数表单 schema + 当前值（含覆盖）"""
@@ -2548,15 +3276,22 @@ class SignInPlugin(Star):
             return json_response({"saved": True, "errors": errors})
 
     async def web_save_loan_pkgs(self):
+        """保存贷款套餐：{items: [{code, max_amount, fav_req, pet_req, farm_req, rate}]}，
+        校验（代码 3~10 整数且不重复）后写入 game_items.json（立即生效）"""
         async with self._lock:
             payload = await request.json(default={})
-            content = payload.get("content")
-            if not isinstance(content, str):
-                return error_response("content 必须是字符串", status_code=400)
-            ok, msg = self._write_file(LOAN_FILE, content)
+            items_in = payload.get("items")
+            if not isinstance(items_in, list):
+                return error_response("items 必须是数组", status_code=400)
+            loans, errors = self._validate_flat_items(items_in, self._LOAN_NUM_FIELDS, "贷款套餐", code_mode=True)
+            if errors:
+                return json_response({"saved": False, "errors": errors})
+            flat = self._read_items_json() or {"jobs": [], "plays": [], "shop": [], "crops": [], "ferts": [], "loans": []}
+            flat["loans"] = loans
+            ok, msg = self._write_items_json(flat)
             if not ok:
                 return error_response(msg, status_code=400)
-            return json_response({"saved": True})
+            return json_response({"saved": True, "items": len(loans)})
 
     # ================= 宠物：指令 =================
     def _handle_unlock_pet(self, event: AstrMessageEvent) -> str:
@@ -3340,7 +4075,11 @@ class SignInPlugin(Star):
             lines.append(f"【{typ}】")
             for it in items:
                 have = int(inventory.get(it["name"], 0))
-                lines.append(f"· {it['name']} ×{have}｜{int(it['price'])}金币：{self._effect_desc(it['effects'])}")
+                ln = f"· {it['name']} ×{have}｜{int(it['price'])}金币"
+                if it.get("desc"):
+                    ln += f"（{it['desc']}）"
+                ln += f"：{self._effect_desc(it['effects'])}"
+                lines.append(ln)
         lines.append(f"· {PILL_NAME}（特殊）：随机 2 个属性 +5~20（每日最多 {self.pill_daily_limit} 次，签到 30% 概率获得）")
         lines.append(f"· {EXP_BALL_NAME}（特殊）：获得升级经验 5%~20%（每日最多 {self.exp_ball_daily_limit} 次，签到 30% 概率获得）")
         return "\n".join(lines)
@@ -3379,6 +4118,7 @@ class SignInPlugin(Star):
         content_w = card_w - inner * 2
 
         wrap = _make_wrapper(tw, content_w)
+        word_wrap = _make_wrapper(tw, content_w, mode="word")  # 效果描述按单元整体换行
 
         def _card_plan(it):
             """返回 (行列表, 高度, 分割线前高度)。行 = (kind, text, extra)"""
@@ -3391,7 +4131,11 @@ class SignInPlugin(Star):
                 for ln in wrap(it["name"], name_font):
                     rows.append(("plain", ln, ""))
                 rows.append(("plain", cnt_text, ""))
-            for ln in wrap(f"效果：{self._effect_desc(it['effects'])}", body_font):
+            # 商品描述：名称下方、效果上方
+            if it.get("desc"):
+                for ln in wrap(it["desc"], body_font):
+                    rows.append(("plain", ln, ""))
+            for ln in word_wrap(f"效果：{self._effect_desc(it['effects'])}", body_font):
                 rows.append(("plain", ln, ""))
             h_before = inner * 2 + sum(name_h if (i == 0 and r[0] == "pair") else line_h for i, r in enumerate(rows))
             rows.append(("rule", "", ""))
@@ -3717,20 +4461,406 @@ class SignInPlugin(Star):
         return (f"✅ {name} 使用了「{item_name}」×{qty}：{desc}\n"
                 f"{self._pet_state_snippet(pet)}")
 
-    def _handle_bag(self, event: AstrMessageEvent) -> str:
+    def _handle_bag(self, event: AstrMessageEvent):
+        """背包（1.7.7 大改）：卡片式图片——标题区（用户名/好感等级/金币/负债/宠物/农场）
+        + 分类卡片（宠物道具/作物/种子/肥料）+ 页尾大卡（仓库总价值/今日净收益/三榜排名）。
+        渲染失败回退为文本列表。"""
         name = event.get_sender_name()
         key = self._user_key(event)
         data = self._load()
         pet = data.get("pets", {}).get(key)
-        if not pet:
-            return f"{name} 还没有宠物。"
-        inv = pet.get("inventory", {})
-        if not inv:
+        farm = data.get("farms", {}).get(key)
+        user = data.get("users", {}).get(key) or {}
+
+        cfg = self._load_config()
+        shop_items = cfg["shop"]
+        crops = self._load_crops()
+        ferts = self._load_fertilizers()
+
+        # ---- 物品卡片分类：两级（1.7.7）----
+        # 第一级：宠物道具 / 农场道具；
+        # 第二级（宠物）：食物/饮料/玩具/药物/特殊；（农场）：种子/收获物/化肥
+        # groups = [(一级名, [(二级名, [card])])]；card = {name,count,desc,effect,sell_unit}
+        groups = []
+        if pet:
+            by_type = {"食物": [], "饮料": [], "玩具": [], "药物": [], "特殊": []}
+            other = []
+            for nm, cnt in pet.get("inventory", {}).items():
+                cnt = int(cnt)
+                if cnt <= 0:
+                    continue
+                it = self._find_item(shop_items, nm)
+                if it:
+                    card = {"name": nm, "count": cnt, "desc": it.get("desc", ""),
+                            "effect": self._effect_desc(it["effects"]), "sell_unit": None}
+                    typ = (it.get("type") or "").strip()
+                    if typ == "食品":  # 旧类型兼容：食品 → 食物
+                        typ = "食物"
+                    if typ in by_type:
+                        by_type[typ].append(card)
+                    else:
+                        other.append(card)
+                elif nm == PILL_NAME:
+                    by_type["特殊"].append({"name": nm, "count": cnt, "desc": "随机提升宠物属性",
+                                            "effect": f"随机{int(self.pill_attr_count or 2)}属性 +{self.pill_boost_min:.0f}~{self.pill_boost_max:.0f}（每日{self.pill_daily_limit}次）",
+                                            "sell_unit": None})
+                elif nm == EXP_BALL_NAME:
+                    by_type["特殊"].append({"name": nm, "count": cnt, "desc": "提升农场经验",
+                                            "effect": f"获得升级经验 {EXP_BALL_MIN_PCT * 100:.0f}%~{EXP_BALL_MAX_PCT * 100:.0f}%（每日{self.exp_ball_daily_limit}次）",
+                                            "sell_unit": None})
+                else:
+                    other.append({"name": nm, "count": cnt, "desc": "", "effect": "", "sell_unit": None})
+            subs = [(t, by_type[t]) for t in ("食物", "饮料", "玩具", "药物", "特殊") if by_type[t]]
+            if other:
+                subs.append(("其它", other))
+            if subs:
+                groups.append(("宠物道具", subs))
+        if farm:
+            wh = farm.get("warehouse", {})
+            seed_cards, crop_cards, fert_cards = [], [], []
+            for nm, cnt in wh.get("seeds", {}).items():
+                c = self._find_item(crops, nm)
+                seed_cards.append({"name": nm, "count": int(cnt),
+                                   "desc": c.get("desc", "") if c else "",
+                                   "effect": "", "sell_unit": float(c["seed_sell_price"]) if c else 0.0})
+            for nm, cnt in wh.get("crops", {}).items():
+                c = self._find_item(crops, nm)
+                crop_cards.append({"name": nm, "count": int(cnt),
+                                   "desc": c.get("desc", "") if c else "",
+                                   "effect": "", "sell_unit": float(c["crop_price"]) if c else 0.0})
+            for nm, cnt in wh.get("fertilizers", {}).items():
+                f = self._find_item(ferts, nm)
+                fert_cards.append({"name": nm, "count": int(cnt),
+                                   "desc": f.get("desc", "") if f else "",
+                                   "effect": (f"减时{f['time_reduce']:.0f}% 增产{f['yield_add']:.0f}%" if f else ""),
+                                   "sell_unit": None})
+            subs = []
+            if seed_cards:
+                subs.append(("种子", seed_cards))
+            if crop_cards:
+                subs.append(("收获物", crop_cards))
+            if fert_cards:
+                subs.append(("化肥", fert_cards))
+            if subs:
+                groups.append(("农场道具", subs))
+        if not groups:
             return f"{name} 的背包是空的。"
-        lines = ["🎒 背包："]
-        for item, cnt in inv.items():
-            lines.append(f"· {item} ×{cnt}")
+
+        # ---- 页尾：仓库总价值 / 今日净收益 / 三榜排名 ----
+        wh_total = 0
+        if farm:
+            wh = farm.get("warehouse", {})
+            for nm, cnt in wh.get("crops", {}).items():
+                c = self._find_item(crops, nm)
+                wh_total += int(round(int(cnt) * (float(c["crop_price"]) if c else 0.0)))
+            for nm, cnt in wh.get("seeds", {}).items():
+                c = self._find_item(crops, nm)
+                wh_total += int(round(int(cnt) * (float(c["seed_sell_price"]) if c else 0.0)))
+        today = date.today().isoformat()
+        net = sum(int(r.get("delta", 0)) for r in data.get("ledger", {}).get(key, [])
+                  if str(r.get("ts", ""))[:10] == today)
+
+        def my_rank(kind):
+            for i, e in enumerate(self._rank_entries(kind, data)):
+                if e[1] == str(key):
+                    return i + 1
+            return None
+
+        footer = {
+            "wh_total": wh_total, "net": net,
+            "coins_rank": my_rank("coins"), "pet_rank": my_rank("pet"), "farm_rank": my_rank("farm"),
+        }
+
+        # ---- 标题区：好感等级 / 金币 / 负债 / 宠物 / 农场 ----
+        fav_lv = self._level_of(float(user.get("favorability", 0.0)))
+        debt = 0
+        rec = data.get("loans", {}).get(key)
+        if rec:
+            now_ts = datetime.now().timestamp()
+            debt = int(sum(self._loan_owed(l, now_ts) for l in rec.get("loans", []) if l.get("remaining", 0) > 0))
+        pet_line = None
+        if pet:
+            lv, _, _ = self._pet_exp_progress(float(pet.get("exp", 0.0)))
+            abnormal = bool(pet.get("weak")) or float(pet.get("health", 100)) <= 39
+            pet_line = {"name": pet.get("name", "宠物"), "level": lv, "abnormal": abnormal}
+        farm_line = None
+        if farm:
+            now_ts = datetime.now().timestamp()
+            plots = farm.get("plots", [])
+            idle = sum(1 for pl in plots if self._plot_free(pl))
+            mature = sum(1 for pl in plots
+                         if not self._plot_free(pl) and float(pl.get("mature_ts", 0)) <= now_ts)
+            occupied = len(plots) - idle - mature
+            farm_line = {"level": int(farm.get("level", 0)), "idle": idle,
+                         "occupied": occupied, "mature": mature}
+        header = {"fav_lv": fav_lv, "coins": self._coins_of(data, key), "debt": debt,
+                  "pet": pet_line, "farm": farm_line}
+
+        img = self._render_bag_image(name, header, groups, footer)
+        if img is not None:
+            return img
+        # ---- 文本回退 ----
+        lines = [f"🎒 {name} 的背包（好感 Lv.{fav_lv}）"]
+        coin_line = f"金币 {header['coins']}"
+        if debt > 0:
+            coin_line += f"｜负债 {debt}"
+        lines.append(coin_line)
+        if pet_line:
+            lines.append(f"宠物 {pet_line['name']} Lv.{pet_line['level']}"
+                         f"（{'异常' if pet_line['abnormal'] else '正常'}）")
+        else:
+            lines.append("未领养宠物")
+        if farm_line:
+            lines.append(f"农场 Lv.{farm_line['level']}：空闲 {farm_line['idle']} 块｜"
+                         f"占用 {farm_line['occupied']} 块｜成熟 {farm_line['mature']} 块")
+        else:
+            lines.append("未解锁农场")
+        for l1, subs in groups:
+            lines.append(f"【{l1}】")
+            for l2, cards in subs:
+                lines.append(f"　【{l2}】")
+                for c in cards:
+                    ln = f"　· {c['name']} ×{c['count']}"
+                    if c.get("desc"):
+                        ln += f"（{c['desc']}）"
+                    if c.get("effect"):
+                        ln += f"：{c['effect']}"
+                    if c.get("sell_unit") is not None:
+                        ln += f" 可售 {self._fmt_price(c['sell_unit'])} |{self._fmt_price(c['sell_unit'] * c['count'])}"
+                    lines.append(ln)
+        lines.append(f"仓库总价值 {wh_total}｜今日净收益 {'+' if net >= 0 else ''}{net}")
+
+        def _rk(r):
+            return f"第{r}名" if r else "未上榜"
+        lines.append(f"金币排行 {_rk(footer['coins_rank'])}｜宠物排行 {_rk(footer['pet_rank'])}｜农场排行 {_rk(footer['farm_rank'])}")
         return "\n".join(lines)
+
+    def _render_bag_image(self, name, header, groups, footer):
+        """背包图片（1.7.7）：
+        标题区：「<用户名>的背包」（居左大字号）+「好感 Lv.X」（居右）；金币行（负债 #FF6D6D）；
+        宠物行（名字+等级+状态：正常/异常）；农场行（等级+空闲/占用/成熟地块数）。
+        内容区（两级分类）：一级分类（宠物道具/农场道具，居中+居中分割线）→
+        二级分类（食物/饮料/玩具/药物/特殊 或 种子/收获物/化肥，居中+居中分割线）→ 卡片网格
+        （每行 BAG_CARD_COLS 个）。
+        卡片：物品名(左)+数量(右) → 描述 → 使用效果 → 卡片内分割线 → 可售卖金额(右，#C00000，
+        格式「单价 |总价」）；无数据的模块自动隐藏（无描述/无效果/不可售时对应模块不显示）。
+        页尾：通宽大卡片 = 内容区卡片总宽 + 行内间隙总和；第一行 仓库总价值(大字号)+今日净收益(小字号)，
+        第二行 金币/宠物/农场三榜排名。"""
+        Image, ImageDraw = _ensure_pillow()
+        if Image is None:
+            return None
+        # 字号语义：标题 32 / 信息 20 / 一级分类 26 / 名称 22 / 正文 18 / 页尾大字 26 / 二级分类 20
+        fonts = _load_fonts(32, 20, 26, 22, 18, 26)
+        if fonts is None:
+            return None
+        title_font, info_font, l1_font, name_font, body_font, big_font = fonts
+        l2_font = info_font
+
+        tw = _text_measurer()
+        if tw is None:
+            return None
+
+        pad = 20
+        title_h = 50
+        info_h = 30
+        head_gap = 12      # 标题区与内容区之间的距离
+        l1_h = 38
+        l1_rule_h = 18
+        l2_h = 28
+        l2_rule_h = 14
+        cols = max(3, min(7, int(globals().get("BAG_CARD_COLS", 5))))
+        card_w = 200
+        gap = 12
+        inner = 10
+        name_h = 30
+        line_h = 24
+        sell_h = 26
+        n_pad = 4          # 卡片内分割线距可售金额上方 N
+
+        content_w = card_w - inner * 2
+        wrap = _make_wrapper(tw, content_w)
+        word_wrap = _make_wrapper(tw, content_w, mode="word")
+
+        DEBT_COLOR = (255, 109, 109)   # #FF6D6D
+        SELL_COLOR = (192, 0, 0)       # #C00000
+
+        def _card_plan(card):
+            """返回 (行列表, 卡片高度)。行 = (kind, text, extra)"""
+            cnt_text = f"×{card['count']}"
+            rows = []
+            if tw(card["name"], name_font) + tw(cnt_text, body_font) + 8 <= content_w:
+                rows.append(("pair", card["name"], cnt_text))
+            else:
+                for ln in wrap(card["name"], name_font):
+                    rows.append(("plain_name", ln, ""))
+                rows.append(("plain_name", cnt_text, ""))
+            if card.get("desc"):
+                for ln in wrap(card["desc"], body_font):
+                    rows.append(("plain", ln, ""))
+            if card.get("effect"):
+                for ln in word_wrap(f"效果：{card['effect']}", body_font):
+                    rows.append(("plain", ln, ""))
+            sellable = card.get("sell_unit") is not None
+            if sellable:
+                rows.append(("rule", "", ""))
+                unit = self._fmt_price(card["sell_unit"])
+                total = self._fmt_price(card["sell_unit"] * card["count"])
+                sell_txt = f"{unit} |{total}"
+                if tw(sell_txt, info_font) <= content_w:
+                    rows.append(("sell", sell_txt, ""))
+                else:
+                    # 极端长金额 → 在「|」断行（单价一行、总价一行）
+                    rows.append(("sell", f"{unit} |", ""))
+                    rows.append(("sell", total, ""))
+            h = inner * 2
+            for r in rows:
+                if r[0] == "pair":
+                    h += name_h
+                elif r[0] == "plain_name":
+                    h += name_h - 4
+                elif r[0] == "rule":
+                    h += n_pad + 1
+                elif r[0] == "sell":
+                    h += sell_h
+                else:
+                    h += line_h
+            return rows, h
+
+        # 预计算排版：[(一级名, [(二级名, [(card, rows, h)])])]
+        group_plans = []
+        for l1, subs in groups:
+            sub_plans = [(l2, [(card, *_card_plan(card)) for card in cards]) for l2, cards in subs]
+            group_plans.append((l1, sub_plans))
+
+        width = pad * 2 + card_w * cols + gap * (cols - 1)
+        page_w = width - pad * 2  # 页尾大卡片宽 = 内容卡片总宽 + 间隙总和
+
+        # ---- 高度 ----
+        height = pad
+        height += title_h
+        height += info_h  # 金币/负债行
+        height += info_h  # 宠物行
+        height += info_h  # 农场行
+        height += head_gap
+        for l1, sub_plans in group_plans:
+            height += l1_h + l1_rule_h
+            for l2, plans in sub_plans:
+                height += l2_h + l2_rule_h
+                for g in range(0, len(plans), cols):
+                    height += max(p[2] for p in plans[g:g + cols]) + gap
+                height -= gap
+                height += gap  # 二级分类间距
+            height += gap      # 一级分类间距
+        # 页尾卡片：内边距 + 大字行 + 小字行 + 排名行；底部额外留白（页尾卡片不贴底边）
+        foot_h = inner * 2 + 36 + 6 + 26
+        height += gap + foot_h + pad + 12
+
+        img = Image.new("RGB", (width, height), (255, 255, 255))
+        d = ImageDraw.Draw(img)
+        y = pad
+
+        # ---- 标题区 ----
+        d.text((pad, y), f"{name} 的背包", font=title_font, fill=(20, 20, 20))
+        fav_txt = f"好感 Lv.{header['fav_lv']}"
+        d.text((int(width - pad - tw(fav_txt, info_font)), y + 10), fav_txt,
+               font=info_font, fill=(140, 90, 0))
+        y += title_h
+        # 金币 + 负债
+        x = pad
+        coin_txt = f"金币 {header['coins']}"
+        d.text((x, y), coin_txt, font=info_font, fill=(20, 20, 20))
+        x += int(tw(coin_txt, info_font))
+        if header["debt"] > 0:
+            debt_txt = f"｜负债 {header['debt']}"
+            d.text((x, y), debt_txt, font=info_font, fill=DEBT_COLOR)
+        y += info_h
+        # 宠物行
+        if header["pet"]:
+            p = header["pet"]
+            pet_txt = f"宠物 {p['name']} Lv.{p['level']}"
+            d.text((pad, y), pet_txt, font=info_font, fill=(20, 20, 20))
+            st_txt = "异常" if p["abnormal"] else "正常"
+            st_color = DEBT_COLOR if p["abnormal"] else (90, 160, 60)
+            d.text((pad + int(tw(pet_txt, info_font)) + 10, y), st_txt, font=info_font, fill=st_color)
+        else:
+            d.text((pad, y), "未领养宠物", font=info_font, fill=(120, 120, 120))
+        y += info_h
+        # 农场行
+        if header["farm"]:
+            f = header["farm"]
+            d.text((pad, y),
+                   f"农场 Lv.{f['level']}　空闲 {f['idle']} 块｜占用 {f['occupied']} 块｜成熟 {f['mature']} 块",
+                   font=info_font, fill=(20, 20, 20))
+        else:
+            d.text((pad, y), "未解锁农场", font=info_font, fill=(120, 120, 120))
+        y += info_h + head_gap
+
+        # ---- 内容区（两级分类） ----
+        for l1, sub_plans in group_plans:
+            # 一级分类名（居中）+ 分割线（居中）
+            cx = int(pad + (page_w - tw(l1, l1_font)) / 2)
+            d.text((cx, y), l1, font=l1_font, fill=(30, 30, 30))
+            y += l1_h
+            d.line([(pad, y), (width - pad, y)], fill=(120, 120, 120), width=2)
+            y += l1_rule_h
+            for l2, plans in sub_plans:
+                # 二级分类名（居中）+ 分割线（居中，更细更浅）
+                cx = int(pad + (page_w - tw(l2, l2_font)) / 2)
+                d.text((cx, y), l2, font=l2_font, fill=(90, 90, 90))
+                y += l2_h
+                d.line([(pad + 20, y), (width - pad - 20, y)], fill=(210, 210, 210), width=1)
+                y += l2_rule_h
+                for g in range(0, len(plans), cols):
+                    group = plans[g:g + cols]
+                    gh = max(p[2] for p in group)
+                    for j, (card, rows, _) in enumerate(group):
+                        x0 = pad + j * (card_w + gap)
+                        d.rectangle([x0, y, x0 + card_w, y + gh], outline=(200, 200, 200), width=1)
+                        yy = y + inner
+                        for row in rows:
+                            kind = row[0]
+                            if kind == "pair":
+                                d.text((int(x0 + inner), yy), row[1], font=name_font, fill=(20, 20, 20))
+                                d.text((int(x0 + card_w - inner - tw(row[2], body_font)), yy + 4),
+                                       row[2], font=body_font, fill=(140, 90, 0))
+                                yy += name_h
+                            elif kind == "plain_name":
+                                d.text((int(x0 + inner), yy), row[1], font=name_font, fill=(20, 20, 20))
+                                yy += name_h - 4
+                            elif kind == "plain":
+                                d.text((int(x0 + inner), yy), row[1], font=body_font, fill=(70, 70, 70))
+                                yy += line_h
+                            elif kind == "rule":
+                                yy += n_pad
+                                d.line([(x0 + 8, yy), (x0 + card_w - 8, yy)], fill=(200, 200, 200), width=1)
+                                yy += 1
+                            elif kind == "sell":
+                                d.text((int(x0 + card_w - inner - tw(row[1], info_font)), yy + 2),
+                                       row[1], font=info_font, fill=SELL_COLOR)
+                                yy += sell_h
+                    y += gh + gap
+                y += gap  # 二级分类间距
+            y += gap      # 一级分类间距
+
+        # ---- 页尾大卡片 ----
+        d.rectangle([pad, y, pad + page_w, y + foot_h], outline=(160, 160, 160), width=2)
+        yy = y + inner
+        total_txt = f"仓库总价值 {footer['wh_total']}"
+        d.text((pad + inner, yy), total_txt, font=big_font, fill=(20, 20, 20))
+        net = footer["net"]
+        net_txt = f"｜今日净收益 {'+' if net >= 0 else ''}{net}"
+        net_color = DEBT_COLOR if net < 0 else (70, 70, 70)
+        d.text((pad + inner + int(tw(total_txt, big_font)) + 8, yy + 6), net_txt,
+               font=body_font, fill=net_color)
+        yy += 36 + 6
+
+        def _rk(r):
+            return f"第{r}名" if r else "未上榜"
+        rank_txt = (f"金币排行 {_rk(footer['coins_rank'])}｜宠物排行 {_rk(footer['pet_rank'])}"
+                    f"｜农场排行 {_rk(footer['farm_rank'])}")
+        d.text((pad + inner, yy), rank_txt, font=info_font, fill=(70, 70, 70))
+
+        return _save_temp_image(img, "_bag_", "背包")
 
     def _handle_help_signin(self):
         sections = [
@@ -3847,17 +4977,30 @@ class SignInPlugin(Star):
 
     # ================= 数据管理（后台.txt 编辑 / 数据导入导出） =================
     def _handle_view_config(self) -> str:
-        text = self._read_config_text()
+        """查看后台配置（1.7.7：数值存于 game_items.json，这里渲染为旧版文本格式供查看）"""
+        text = self._cfg_to_backend_text()
         if not text.strip():
-            return "后台配置为空。"
-        return f"当前 后台.txt 内容：\n{text}"
+            return "当前没有打工/玩耍配置（可在 WebUI 后台管理页编辑）。"
+        return f"当前打工/玩耍配置（WebUI 表格编辑，存储于 game_items.json）：\n{text}"
 
     def _handle_save_backend_config(self, event: AstrMessageEvent) -> str:
+        """保存后台配置（兼容旧版 txt 文本：解析后写入 game_items.json，商店部分不受影响）"""
         parts = event.message_str.split(maxsplit=1)
         if len(parts) < 2 or not parts[1].strip():
             return "格式：保存后台配置 <内容>（先「查看后台配置」复制全文，改好后粘贴到指令后）"
-        ok, msg = self._write_config_text(parts[1].strip() + "\n")
-        return f"✅ {msg}" if ok else f"❌ {msg}"
+        sections = _parse_kv_sections_text(parts[1].strip(), "后台", types=("打工", "玩耍"))
+        if not sections:
+            return "❌ 没有解析到 [打工:xxx] / [玩耍:xxx] 段落，格式未变化。"
+        cfg = {"jobs": [], "plays": [], "shop": []}
+        for sec in sections:
+            cfg["jobs" if sec["type"] == "打工" else "plays"].append(sec)
+        norm = self._normalize_config(cfg)
+        flat_new = self._items_normalized_to_flat(norm)
+        flat = self._read_items_json() or {"jobs": [], "plays": [], "shop": [], "crops": [], "ferts": [], "loans": []}
+        flat["jobs"] = flat_new["jobs"]
+        flat["plays"] = flat_new["plays"]
+        ok, msg = self._write_items_json(flat)
+        return f"✅ {msg}（打工 {len(flat['jobs'])} / 玩耍 {len(flat['plays'])} 条）" if ok else f"❌ {msg}"
 
     def _handle_export_data(self) -> str:
         """导出全部数据（存档 + 自定义配置）到 plugin_data 备份文件，小数据直接返回内容"""
@@ -3894,16 +5037,10 @@ class SignInPlugin(Star):
             return f"❌ JSON 格式错误: {e}"
         files = parsed.get("files") if isinstance(parsed, dict) else None
         if isinstance(files, dict):
-            for fn, path in self._exportable_files():
-                if fn in files and isinstance(files[fn], str):
-                    if fn == "data.json":
-                        ok, msg = self._write_data_text(files[fn])
-                    else:
-                        ok, msg = self._write_file(path, files[fn])
-                    if not ok:
-                        return f"❌ {fn} 导入失败: {msg}"
-            _migrate_split_shop_config()
-            return "✅ 导入成功（存档 + 自定义配置已还原）！"
+            ok, result = self._import_files(files)
+            if not ok:
+                return f"❌ {result}"
+            return f"✅ 导入成功（{len(result)} 个文件已还原）！"
         ok, msg = self._write_data_text(raw)
         return "✅ 导入成功！" if ok else f"❌ {msg}"
 
@@ -4595,8 +5732,31 @@ class SignInPlugin(Star):
                     logger.error(f"[插件] 活动 {act.id} 签到钩子处理异常: {e}")
 
     # ================= 银行贷款 =================
+    def _norm_loan_entry(self, d: dict):
+        """规范化一条贷款套餐（扁平 dict：code + 5 个数值字段）"""
+        if not isinstance(d, dict):
+            return None
+        try:
+            code = int(str(d.get("code", "")).strip())
+        except (TypeError, ValueError):
+            return None
+        if not 3 <= code <= 10:
+            return None
+        return {
+            "code": code,
+            "desc": str(d.get("desc", "") or ""),
+            "max_amount": int(self._f(d.get("max_amount", 0))),
+            "fav_req": int(self._f(d.get("fav_req", 0))),
+            "pet_req": int(self._f(d.get("pet_req", 0))),
+            "farm_req": int(self._f(d.get("farm_req", 0))),
+            "rate": self._f(d.get("rate", 0)),
+        }
+
     def _load_loan_packages(self):
-        """自定义贷款套餐（代码 3~10）"""
+        """自定义贷款套餐（代码 3~10）。1.7.7：优先读 game_items.json，回退解析 贷款套餐.txt"""
+        flat = self._read_items_json()
+        if flat is not None:
+            return [l for l in (self._norm_loan_entry(d) for d in flat["loans"]) if l]
         result = []
         for it in _parse_kv_sections(LOAN_FILE, "贷款套餐"):
             d = it["data"]
@@ -5144,6 +6304,7 @@ class SignInPlugin(Star):
             if kind == "作物":
                 result.append({
                     "name": it["name"],
+                    "desc": d.get("描述", ""),
                     "seed_price": self._f(d.get("种子价格", 0)),
                     "seed_sell_price": self._f(d.get("种子卖出价格", 0)),
                     "yield": int(self._f(d.get("产量", 0))),
@@ -5155,6 +6316,7 @@ class SignInPlugin(Star):
             else:
                 result.append({
                     "name": it["name"],
+                    "desc": d.get("描述", ""),
                     "price": int(self._f(d.get("肥料价格", 0))),
                     "time_reduce": self._f(d.get("减少时间", 0)),
                     "yield_add": self._f(d.get("增加产量", 0)),
@@ -5162,10 +6324,53 @@ class SignInPlugin(Star):
                 })
         return result
 
+    def _norm_crop_entry(self, d: dict):
+        """规范化一条作物配置（扁平 dict，键与 _parse_crop_fert 输出一致）"""
+        if not isinstance(d, dict):
+            return None
+        name = str(d.get("name", "")).strip()
+        if not name:
+            return None
+        return {
+            "name": name,
+            "desc": str(d.get("desc", "") or ""),
+            "seed_price": self._f(d.get("seed_price", 0)),
+            "seed_sell_price": self._f(d.get("seed_sell_price", 0)),
+            "yield": int(self._f(d.get("yield", 0))),
+            "crop_price": self._f(d.get("crop_price", 0)),
+            "exp": int(self._f(d.get("exp", 0))),
+            "min_level": int(self._f(d.get("min_level", 0))),
+            "grow_minutes": int(self._f(d.get("grow_minutes", 0))),
+        }
+
+    def _norm_fert_entry(self, d: dict):
+        """规范化一条肥料配置"""
+        if not isinstance(d, dict):
+            return None
+        name = str(d.get("name", "")).strip()
+        if not name:
+            return None
+        return {
+            "name": name,
+            "desc": str(d.get("desc", "") or ""),
+            "price": int(self._f(d.get("price", 0))),
+            "time_reduce": self._f(d.get("time_reduce", 0)),
+            "yield_add": self._f(d.get("yield_add", 0)),
+            "max_uses": int(self._f(d.get("max_uses", -1))),
+        }
+
     def _load_crops(self):
+        """1.7.7：优先读 game_items.json；不存在/损坏回退解析 作物.txt"""
+        flat = self._read_items_json()
+        if flat is not None:
+            return [c for c in (self._norm_crop_entry(d) for d in flat["crops"]) if c]
         return self._parse_crop_fert(CROP_FILE, "作物")
 
     def _load_fertilizers(self):
+        """1.7.7：优先读 game_items.json；不存在/损坏回退解析 肥料.txt"""
+        flat = self._read_items_json()
+        if flat is not None:
+            return [f_ for f_ in (self._norm_fert_entry(d) for d in flat["ferts"]) if f_]
         return self._parse_crop_fert(FERT_FILE, "肥料")
 
     def _farm_of(self, data, key):
@@ -5413,6 +6618,10 @@ class SignInPlugin(Star):
                 for ln in wrap(c["name"], name_font):
                     rows.append(("plain", ln, ""))
                 rows.append(("plain", cnt_text, ""))
+            # 商品描述：名称下方、要求（等级条件）上方
+            if c.get("desc"):
+                for ln in wrap(c["desc"], body_font):
+                    rows.append(("plain", ln, ""))
             # 等级条件（左）+ 成熟时间（右）
             lv_t = f"需要 Lv.{c['min_level']}" if c["min_level"] > 0 else ""
             tm_t = f"成熟 {c['grow_minutes']} 分钟"
@@ -5437,6 +6646,10 @@ class SignInPlugin(Star):
                 for ln in wrap(f["name"], name_font):
                     rows.append(("plain", ln, ""))
                 rows.append(("plain", cnt_text, ""))
+            # 商品描述：名称下方、效果上方
+            if f.get("desc"):
+                for ln in wrap(f["desc"], body_font):
+                    rows.append(("plain", ln, ""))
             for ln in wrap(f"减时{f['time_reduce']:.0f}% 增产{f['yield_add']:.0f}%", body_font):
                 rows.append(("plain", ln, ""))
             maxu = "不限" if f["max_uses"] < 0 else f"{f['max_uses']}次"
@@ -7071,9 +8284,11 @@ class SignInPlugin(Star):
         for c in sorted(crops, key=lambda c: (int(round(c["seed_price"] * mult)), c["name"])):
             p = int(round(c["seed_price"] * mult))
             lv = f"需Lv.{c['min_level']}" if c["min_level"] > 0 else "无等级"
-            lines.append(f"🌱 {c['name']}（{lv}）{p}金币 售价{int(round(c['yield']*c['crop_price']))}金 经验{c['exp']}")
+            desc = f"（{c['desc']}）" if c.get("desc") else ""
+            lines.append(f"🌱 {c['name']}（{lv}）{p}金币{desc} 售价{int(round(c['yield']*c['crop_price']))}金 经验{c['exp']}")
         for f in sorted(ferts, key=lambda f: (int(f["price"]), f["name"])):
-            lines.append(f"🧪 {f['name']} {int(f['price'])}金币 减时{f['time_reduce']:.0f}% 增产{f['yield_add']:.0f}%")
+            desc = f"（{f['desc']}）" if f.get("desc") else ""
+            lines.append(f"🧪 {f['name']} {int(f['price'])}金币{desc} 减时{f['time_reduce']:.0f}% 增产{f['yield_add']:.0f}%")
         return "\n".join(lines)
 
     def _handle_farm_seed_shop(self, event):
