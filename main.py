@@ -44,6 +44,16 @@ def _build_text_image_chain(text, img_path):
     return _MessageChain(chain=[_Plain(text=text), _Image(file=img_path)])
 
 
+def _resolve_file_value(file_v):
+    """把文件值（bytes / 本地路径 / URL）统一转为 OneBot 可用的字符串；本地文件读字节转 base64"""
+    if isinstance(file_v, (bytes, bytearray)):
+        return "base64://" + base64.b64encode(bytes(file_v)).decode()
+    if isinstance(file_v, str) and os.path.exists(file_v):
+        with open(file_v, "rb") as f:
+            return "base64://" + base64.b64encode(f.read()).decode()
+    return file_v if file_v else None
+
+
 def _chain_to_onebot_segments(chain):
     """把 AstrBot 消息链转成 OneBot v11 段数组；本地图片读字节转 base64 最稳"""
     segs = []
@@ -51,42 +61,20 @@ def _chain_to_onebot_segments(chain):
         cname = type(comp).__name__
         if cname == "Plain":
             segs.append({"type": "text", "data": {"text": comp.text}})
-        elif cname == "Image":
+        elif cname in ("Image", "Record"):
             file_v = (
                 getattr(comp, "file", None)
                 or getattr(comp, "path", None)
                 or getattr(comp, "url", None)
             )
-            data = {}
-            if isinstance(file_v, (bytes, bytearray)):
-                data["file"] = "base64://" + base64.b64encode(bytes(file_v)).decode()
-            elif isinstance(file_v, str) and os.path.exists(file_v):
-                with open(file_v, "rb") as f:
-                    data["file"] = "base64://" + base64.b64encode(f.read()).decode()
-            elif file_v:
-                data["file"] = file_v  # URL / file:// / 服务端相对路径
-            if data:
-                segs.append({"type": "image", "data": data})
+            resolved = _resolve_file_value(file_v)
+            if resolved:
+                segs.append({"type": "image" if cname == "Image" else "record",
+                             "data": {"file": resolved}})
         elif cname == "At":
             qq = getattr(comp, "qq", None)
             if qq is not None:
                 segs.append({"type": "at", "data": {"qq": str(qq)}})
-        elif cname == "Record":
-            file_v = (
-                getattr(comp, "file", None)
-                or getattr(comp, "path", None)
-                or getattr(comp, "url", None)
-            )
-            data = {}
-            if isinstance(file_v, (bytes, bytearray)):
-                data["file"] = "base64://" + base64.b64encode(bytes(file_v)).decode()
-            elif isinstance(file_v, str) and os.path.exists(file_v):
-                with open(file_v, "rb") as f:
-                    data["file"] = "base64://" + base64.b64encode(f.read()).decode()
-            elif file_v:
-                data["file"] = file_v
-            if data:
-                segs.append({"type": "record", "data": data})
         else:
             logger.warning(f"[插件] 序列化忽略未知消息组件 {cname}")
     return segs
@@ -205,8 +193,8 @@ CMD_HEADS = frozenset((
     "解锁宠物", "宠物", "更改宠物名字", "治疗宠物", "打工", "玩耍",
     "商店", "购买", "使用", "背包", "看家",
     "农场", "解锁农场", "购买土地", "土地升级", "种子商店", "农场商店", "购买种子",
-    "肥料商店", "购买肥料", "种植", "施肥", "收割", "取消种植", "土地状态", "我的农场", "农场仓库",
-    "售卖", "农场帮助", "农场经验球",
+    "肥料商店", "购买肥料", "种植", "种地", "施肥", "收割", "收获", "取消种植", "土地状态", "我的农场", "农场仓库",
+    "售卖", "农场帮助", "农场经验球", "偷菜", "自动偷菜",
     "存款", "取款", "银行统计", "借款", "还款", "我的贷款", "我的征信",
     "查询流水", "流水查询", "消费记录", "金币红包", "开红包", "抢红包", "开",
     "金币排行", "宠物排行", "农场排行", "活动", "活动中心",
@@ -314,6 +302,10 @@ RAIN_AMOUNT = 1000
 RAIN_COUNT = 10
 RAIN_TIMES = "8,12,16,20"
 RAIN_HOURS = 1
+
+# 自动偷菜（1.7.6）：每日成功次数上限 / 每次随机抽取目标数（目标数固定 4）
+AUTO_STEAL_DAILY_LIMIT = 5
+AUTO_STEAL_TARGETS = 4
 
 # ============ 排行榜（1.7.5） ============
 RANK_DISPLAY = 20                        # 每个排行榜最多展示的名次数（前 N 名）
@@ -451,6 +443,8 @@ RUNTIME_PARAMS = [
      "desc": "看家生效时偷菜成功额外减少的损失比例下限（0.02 = 2%）", "default": 0.02, "min": 0, "max": 1},
     {"key": "STEAL_GUARD_REDUCE_MAX", "label": "看家额外减免上限", "type": "float", "group": "偷菜", "subgroup": "宠物防护",
      "desc": "看家生效时偷菜成功额外减少的损失比例上限（0.06 = 6%）", "default": 0.06, "min": 0, "max": 1},
+    {"key": "AUTO_STEAL_DAILY_LIMIT", "label": "自动偷菜每日成功次数", "type": "int", "group": "偷菜", "subgroup": "自动偷菜",
+     "desc": "自动偷菜每天最多成功次数（失败不消耗次数；被宠物抓到则当天锁定）", "default": 5, "min": 1, "max": 20},
     {"key": "STEAL_SCENT_THRESHOLD", "label": "气味记忆触发次数", "type": "int", "group": "偷菜", "subgroup": "气味记忆",
      "desc": "同一偷菜者24小时内尝试偷菜超过该次数，对方获得「气味记忆」", "default": 4, "min": 1, "max": 50},
     {"key": "STEAL_SCENT_HOURS_MIN", "label": "气味记忆时长下限（小时）", "type": "int", "group": "偷菜", "subgroup": "气味记忆",
@@ -849,8 +843,23 @@ def _text_measurer():
     return tw
 
 
+def _ensure_pillow():
+    """尝试导入 Pillow 的 Image 和 ImageDraw；不可用时返回 (None, None)"""
+    try:
+        from PIL import Image, ImageDraw
+        return Image, ImageDraw
+    except Exception as e:
+        logger.error(f"[插件] 缺少 Pillow，无法生成图片: {e}")
+        return None, None
+
+
 def _make_wrapper(tw, default_width):
-    """生成按像素宽度换行的函数：优先在空格处断行，无空格则按字符硬切"""
+    """生成按像素宽度换行的函数：自适应填满最大可用宽度后才换行。
+
+    策略：优先在空格处断行（保持单词完整）；若空格断点会让当前行留下大片空白
+    （还能再装入尾部词的一段），则把尾部词按「段」并入当前行直至满宽——
+    段 = 连续数字/英文字母（永不拆分，如 100000）、单个中文字符。
+    无空格时按字符硬切（同样满宽）。"""
 
     def wrap(text, font, max_w=None):
         limit = default_width if max_w is None else max_w
@@ -860,14 +869,38 @@ def _make_wrapper(tw, default_width):
             if tw(cur + ch, font) <= limit:
                 cur += ch
                 continue
+            # 超宽 → 换行
             sp = cur.rfind(" ")
             if sp > 0:
+                tail = cur[sp + 1:]
+                # 若还能把尾部词至少一段并入当前行，则逐段并入至满宽（词/数字保持完整）
+                # 行1 前缀 = cur[:sp] + 断点空格 + 已并入的 tail 段
+                if tail and tw(cur[:sp] + " " + tail[0], font) <= limit:
+                    i = 0
+                    n = len(tail)
+                    while i < n:
+                        if tail[i].isalnum() and tail[i].isascii():
+                            j = i
+                            while j < n and tail[j].isalnum() and tail[j].isascii():
+                                j += 1
+                            seg = tail[i:j]
+                        else:
+                            seg = tail[i]
+                            j = i + 1
+                        if tw(cur[:sp] + " " + tail[:i] + seg, font) > limit:
+                            break
+                        i = j
+                    if i > 0:
+                        lines.append(cur[:sp] + " " + tail[:i])
+                        cur = tail[i:] + ch
+                        continue
                 lines.append(cur[:sp])
-                cur = cur[sp + 1:] + ch
-            else:
-                if cur:
-                    lines.append(cur)
-                cur = ch
+                cur = tail + ch
+                continue
+            # 无空格：字符级硬切（满宽）
+            if cur:
+                lines.append(cur)
+            cur = ch
         if cur:
             lines.append(cur)
         return lines or [""]
@@ -939,7 +972,7 @@ class RouletteGame:
         return "、".join(p["name"] for p in self.players)
 
 
-@register("astrbot_plugin_signin", "sishijiu", "群签到 + 左轮手枪 + 宠物养成 + 金币银行 + 农场", "1.7.5")
+@register("astrbot_plugin_signin", "sishijiu", "群签到 + 左轮手枪 + 宠物养成 + 金币银行 + 农场", "1.7.6")
 class SignInPlugin(Star):
     def __init__(self, context: Context, config: dict = None):
         super().__init__(context)
@@ -953,34 +986,39 @@ class SignInPlugin(Star):
                 return default
 
         # 从 WebUI 配置页（_conf_schema.json）读取设置，未配置时用默认值
-        self.min_coins = _get("min_coins", MIN_COINS)
-        self.max_coins = _get("max_coins", MAX_COINS)
-        self.pet_unlock_cost = _get("pet_unlock_cost", PET_UNLOCK_COST)
-        self.pet_signin_exp_min = _get("pet_signin_exp_min", PET_SIGNIN_EXP_MIN, float)
-        self.pet_signin_exp_max = _get("pet_signin_exp_max", PET_SIGNIN_EXP_MAX, float)
-        self.pill_drop_chance = _get("pill_drop_chance", PILL_DROP_CHANCE, float)
-        self.pill_drop_min = _get("pill_drop_min", PILL_DROP_MIN)
-        self.pill_drop_max = _get("pill_drop_max", PILL_DROP_MAX)
-        self.pill_daily_limit = _get("pill_daily_limit", PILL_DAILY_LIMIT)
-        self.exp_ball_daily_limit = _get("exp_ball_daily_limit", EXP_BALL_DAILY_LIMIT)
-        self.pill_attr_count = _get("pill_attr_count", PILL_ATTR_COUNT)
-        self.pill_boost_min = _get("pill_boost_min", PILL_BOOST_MIN, float)
-        self.pill_boost_max = _get("pill_boost_max", PILL_BOOST_MAX, float)
-        self.exp_ball_min_pct = _get("exp_ball_min_pct", EXP_BALL_MIN_PCT, float)
-        self.exp_ball_max_pct = _get("exp_ball_max_pct", EXP_BALL_MAX_PCT, float)
-        self.money_event_chance = _get("money_event_chance", MONEY_EVENT_CHANCE, float)
-        self.money_event_gain = _get("money_event_gain", MONEY_EVENT_GAIN)
-        self.money_event_max_per_day = _get("money_event_max_per_day", MONEY_EVENT_MAX_PER_DAY)
-        self.min_fav = _get("min_fav", MIN_FAV, float)
-        self.max_fav = _get("max_fav", MAX_FAV, float)
-        self.level_step = _get("level_step", LEVEL_STEP, float)
-        self.loan_special_rate = _get("loan_special_rate", LOAN_SPECIAL_RATE, float)
-        self.loan_special_days = _get("loan_special_days", LOAN_SPECIAL_DAYS)
-
-        # 红包雨活动配置（WebUI 可改）
-        self.rain_amount = _get("rain_amount", RAIN_AMOUNT)
-        self.rain_count = _get("rain_count", RAIN_COUNT)
-        self.rain_hours = _get("rain_hours", RAIN_HOURS)
+        # 格式：(属性名, 配置键, 默认值, 类型转换函数)
+        _INT = int
+        _FLOAT = float
+        _config_map = [
+            ("min_coins", "min_coins", MIN_COINS, _INT),
+            ("max_coins", "max_coins", MAX_COINS, _INT),
+            ("pet_unlock_cost", "pet_unlock_cost", PET_UNLOCK_COST, _INT),
+            ("pet_signin_exp_min", "pet_signin_exp_min", PET_SIGNIN_EXP_MIN, _FLOAT),
+            ("pet_signin_exp_max", "pet_signin_exp_max", PET_SIGNIN_EXP_MAX, _FLOAT),
+            ("pill_drop_chance", "pill_drop_chance", PILL_DROP_CHANCE, _FLOAT),
+            ("pill_drop_min", "pill_drop_min", PILL_DROP_MIN, _INT),
+            ("pill_drop_max", "pill_drop_max", PILL_DROP_MAX, _INT),
+            ("pill_daily_limit", "pill_daily_limit", PILL_DAILY_LIMIT, _INT),
+            ("exp_ball_daily_limit", "exp_ball_daily_limit", EXP_BALL_DAILY_LIMIT, _INT),
+            ("pill_attr_count", "pill_attr_count", PILL_ATTR_COUNT, _INT),
+            ("pill_boost_min", "pill_boost_min", PILL_BOOST_MIN, _FLOAT),
+            ("pill_boost_max", "pill_boost_max", PILL_BOOST_MAX, _FLOAT),
+            ("exp_ball_min_pct", "exp_ball_min_pct", EXP_BALL_MIN_PCT, _FLOAT),
+            ("exp_ball_max_pct", "exp_ball_max_pct", EXP_BALL_MAX_PCT, _FLOAT),
+            ("money_event_chance", "money_event_chance", MONEY_EVENT_CHANCE, _FLOAT),
+            ("money_event_gain", "money_event_gain", MONEY_EVENT_GAIN, _INT),
+            ("money_event_max_per_day", "money_event_max_per_day", MONEY_EVENT_MAX_PER_DAY, _INT),
+            ("min_fav", "min_fav", MIN_FAV, _FLOAT),
+            ("max_fav", "max_fav", MAX_FAV, _FLOAT),
+            ("level_step", "level_step", LEVEL_STEP, _FLOAT),
+            ("loan_special_rate", "loan_special_rate", LOAN_SPECIAL_RATE, _FLOAT),
+            ("loan_special_days", "loan_special_days", LOAN_SPECIAL_DAYS, _INT),
+            ("rain_amount", "rain_amount", RAIN_AMOUNT, _INT),
+            ("rain_count", "rain_count", RAIN_COUNT, _INT),
+            ("rain_hours", "rain_hours", RAIN_HOURS, _INT),
+        ]
+        for attr, key, default, cast in _config_map:
+            setattr(self, attr, _get(key, default, cast))
         _rt = str(self.config.get("rain_times", RAIN_TIMES)).replace("，", ",")
         _rain_t = []
         for _x in _rt.split(","):
@@ -1019,77 +1057,34 @@ class SignInPlugin(Star):
         # 应用 WebUI 保存过的运行参数（覆盖默认常量，无需重启）
         self._load_runtime_params()
 
-        # 注册 WebUI Pages 的后端 API
-        context.register_web_api(
-            f"/{PLUGIN_NAME}/backend/config", self.web_get_backend_config, ["GET"], "读取后台.txt（打工/玩耍）"
-        )
-        context.register_web_api(
-            f"/{PLUGIN_NAME}/backend/config", self.web_save_backend_config, ["POST"], "保存后台.txt（打工/玩耍）"
-        )
-        context.register_web_api(
-            f"/{PLUGIN_NAME}/petshop", self.web_get_petshop, ["GET"], "读取宠物商店.txt"
-        )
-        context.register_web_api(
-            f"/{PLUGIN_NAME}/petshop", self.web_save_petshop, ["POST"], "保存宠物商店.txt"
-        )
-        context.register_web_api(
-            f"/{PLUGIN_NAME}/feature/status", self.web_get_feature_status, ["GET"], "读取功能开关"
-        )
-        context.register_web_api(
-            f"/{PLUGIN_NAME}/feature/status", self.web_save_feature_status, ["POST"], "保存功能开关"
-        )
-        context.register_web_api(
-            f"/{PLUGIN_NAME}/data/export", self.web_export_data, ["GET"], "导出全部数据（存档+自定义配置）"
-        )
-        context.register_web_api(
-            f"/{PLUGIN_NAME}/data/import", self.web_import_data, ["POST"], "导入全部数据（存档+自定义配置）"
-        )
-        context.register_web_api(
-            f"/{PLUGIN_NAME}/farm/crops", self.web_get_crops, ["GET"], "读取作物.txt"
-        )
-        context.register_web_api(
-            f"/{PLUGIN_NAME}/farm/crops", self.web_save_crops, ["POST"], "保存作物.txt"
-        )
-        context.register_web_api(
-            f"/{PLUGIN_NAME}/farm/ferts", self.web_get_ferts, ["GET"], "读取肥料.txt"
-        )
-        context.register_web_api(
-            f"/{PLUGIN_NAME}/farm/ferts", self.web_save_ferts, ["POST"], "保存肥料.txt"
-        )
-        context.register_web_api(
-            f"/{PLUGIN_NAME}/loan/packages", self.web_get_loan_pkgs, ["GET"], "读取贷款套餐.txt"
-        )
-        context.register_web_api(
-            f"/{PLUGIN_NAME}/loan/packages", self.web_save_loan_pkgs, ["POST"], "保存贷款套餐.txt"
-        )
-        context.register_web_api(
-            f"/{PLUGIN_NAME}/activities", self.web_get_activities, ["GET"], "读取活动模块启用状态"
-        )
-        context.register_web_api(
-            f"/{PLUGIN_NAME}/activities", self.web_save_activities, ["POST"], "保存活动模块启用状态"
-        )
-        context.register_web_api(
-            f"/{PLUGIN_NAME}/params", self.web_get_params, ["GET"], "读取运行参数"
-        )
-        context.register_web_api(
-            f"/{PLUGIN_NAME}/params", self.web_save_params, ["POST"], "保存运行参数"
-        )
-        context.register_web_api(
-            f"/{PLUGIN_NAME}/debug/status", self.web_debug_status, ["GET"], "调试模式状态"
-        )
-        context.register_web_api(
-            f"/{PLUGIN_NAME}/debug/toggle", self.web_debug_toggle, ["POST"], "开关调试模式"
-        )
-        context.register_web_api(
-            f"/{PLUGIN_NAME}/group/names/sync", self.web_sync_group_names, ["POST"],
-            "同步全部群聊的成员昵称（排行榜默认昵称）"
-        )
-        context.register_web_api(
-            f"/{PLUGIN_NAME}/alias/list", self.web_get_aliases, ["GET"], "读取同义口令"
-        )
-        context.register_web_api(
-            f"/{PLUGIN_NAME}/alias/save", self.web_save_aliases, ["POST"], "保存同义口令"
-        )
+        # 注册 WebUI Pages 的后端 API（数据驱动批量注册）
+        _web_apis = [
+            ("backend/config", "GET", self.web_get_backend_config, "读取后台.txt（打工/玩耍）"),
+            ("backend/config", "POST", self.web_save_backend_config, "保存后台.txt（打工/玩耍）"),
+            ("petshop", "GET", self.web_get_petshop, "读取宠物商店.txt"),
+            ("petshop", "POST", self.web_save_petshop, "保存宠物商店.txt"),
+            ("feature/status", "GET", self.web_get_feature_status, "读取功能开关"),
+            ("feature/status", "POST", self.web_save_feature_status, "保存功能开关"),
+            ("data/export", "GET", self.web_export_data, "导出全部数据（存档+自定义配置）"),
+            ("data/import", "POST", self.web_import_data, "导入全部数据（存档+自定义配置）"),
+            ("farm/crops", "GET", self.web_get_crops, "读取作物.txt"),
+            ("farm/crops", "POST", self.web_save_crops, "保存作物.txt"),
+            ("farm/ferts", "GET", self.web_get_ferts, "读取肥料.txt"),
+            ("farm/ferts", "POST", self.web_save_ferts, "保存肥料.txt"),
+            ("loan/packages", "GET", self.web_get_loan_pkgs, "读取贷款套餐.txt"),
+            ("loan/packages", "POST", self.web_save_loan_pkgs, "保存贷款套餐.txt"),
+            ("activities", "GET", self.web_get_activities, "读取活动模块启用状态"),
+            ("activities", "POST", self.web_save_activities, "保存活动模块启用状态"),
+            ("params", "GET", self.web_get_params, "读取运行参数"),
+            ("params", "POST", self.web_save_params, "保存运行参数"),
+            ("debug/status", "GET", self.web_debug_status, "调试模式状态"),
+            ("debug/toggle", "POST", self.web_debug_toggle, "开关调试模式"),
+            ("group/names/sync", "POST", self.web_sync_group_names, "同步全部群聊的成员昵称（排行榜默认昵称）"),
+            ("alias/list", "GET", self.web_get_aliases, "读取同义口令"),
+            ("alias/save", "POST", self.web_save_aliases, "保存同义口令"),
+        ]
+        for path, method, handler, desc in _web_apis:
+            context.register_web_api(f"/{PLUGIN_NAME}/{path}", handler, [method], desc)
 
     # ================= 消息路由（无需前缀 / @） =================
     @filter.event_message_type(EventMessageType.ALL)
@@ -1265,6 +1260,77 @@ class SignInPlugin(Star):
         target = aliases.get(head)
         return target if isinstance(target, str) and target else head
 
+    # ================= 指令路由表（字典分发，替代 if-elif 链） =================
+    # 无参数指令 → 方法名（不需要 event 参数的帮助类指令）
+    _ROUTE_NO_ARG = {
+        "签到帮助": "_handle_help_signin",
+        "游戏帮助": "_handle_help_game",
+        "宠物帮助": "_handle_help_pet",
+        "农场帮助": "_handle_help_farm",
+        "左轮手枪帮助": "_handle_help_roulette",
+        "查看后台配置": "_handle_view_config",
+        "导出数据": "_handle_export_data",
+    }
+    # 带 event 参数的指令 → 方法名
+    _ROUTE_WITH_EVENT = {
+        "签到": "_handle_sign_in",
+        "我的签到": "_handle_my_info",
+        "装弹": "_handle_load",
+        "加入": "_handle_join",
+        "开始": "_handle_start",
+        "开枪": "_handle_shoot",
+        "我的战绩": "_handle_stats",
+        "解锁宠物": "_handle_unlock_pet",
+        "宠物": "_handle_pet_status",
+        "更改宠物名字": "_handle_rename_pet",
+        "治疗宠物": "_handle_weak_heal",
+        "打工": "_handle_work",
+        "玩耍": "_handle_play",
+        "商店": "_handle_shop",
+        "购买": "_handle_buy",
+        "使用": "_handle_use_item",
+        "背包": "_handle_bag",
+        "保存后台配置": "_handle_save_backend_config",
+        "导入数据": "_handle_import_data",
+        "存款": "_handle_bank_deposit",
+        "取款": "_handle_bank_withdraw",
+        "银行统计": "_handle_bank_stats",
+        "借款": "_handle_loan_borrow",
+        "还款": "_handle_loan_repay",
+        "我的贷款": "_handle_my_loans",
+        "我的征信": "_handle_my_credit",
+        "金币红包": "_handle_redpacket_send",
+        "活动": "_handle_activity_center",
+        "解锁农场": "_handle_farm_unlock",
+        "购买土地": "_handle_farm_buy_land",
+        "土地升级": "_handle_farm_upgrade",
+        "种子商店": "_handle_farm_seed_shop",
+        "农场商店": "_handle_farm_shop",
+        "购买种子": "_handle_farm_buy_seed",
+        "肥料商店": "_handle_farm_fert_shop",
+        "购买肥料": "_handle_farm_buy_fert",
+        "施肥": "_handle_farm_fertilize",
+        "取消种植": "_handle_farm_cancel",
+        "土地状态": "_handle_farm_plots",
+        "我的农场": "_handle_farm_plots",
+        "农场仓库": "_handle_farm_warehouse",
+        "售卖种子": "_handle_farm_sell_seed",
+        "售卖": "_handle_farm_sell",
+        "偷菜": "_handle_steal",
+        "自动偷菜": "_handle_auto_steal",
+        "看家": "_handle_guard",
+        "金币排行": "_handle_rank_coins",
+        "宠物排行": "_handle_rank_pet",
+        "农场排行": "_handle_rank_farm",
+    }
+    # 多个指令映射到同一处理方法
+    _ROUTE_MULTI = {
+        ("查询流水", "流水查询", "消费记录"): "_handle_ledger",
+        ("开", "开红包", "抢红包"): "_handle_redpacket_open",
+        ("种植", "种地"): "_handle_farm_plant",
+        ("收割", "收获"): "_handle_farm_harvest",
+    }
+
     def _route(self, head: str, event: AstrMessageEvent):
         # 功能开关拦截：对应模块关闭时返回提示（帮助类指令不受影响）
         mod = self.FEATURE_CMD_MAP.get(head)
@@ -1281,125 +1347,18 @@ class SignInPlugin(Star):
             if _pet and _pet.get("weak"):
                 return (f"😷 {event.get_sender_name()} 的宠物处于虚弱状态，宠物功能已锁定！\n"
                         f"发送「治疗宠物」（{WEAK_HEAL_COST} 金币）即可重新激活宠物。")
-        if head == "签到":
-            return self._handle_sign_in(event)
-        if head == "我的签到":
-            return self._handle_my_info(event)
-        if head == "签到帮助":
-            return self._handle_help_signin()
-        if head == "游戏帮助":
-            return self._handle_help_game()
-        if head == "装弹":
-            return self._handle_load(event)
-        if head == "加入":
-            return self._handle_join(event)
-        if head == "开始":
-            return self._handle_start(event)
-        if head == "开枪":
-            return self._handle_shoot(event)
-        if head == "我的战绩":
-            return self._handle_stats(event)
-        if head == "解锁宠物":
-            return self._handle_unlock_pet(event)
-        if head == "宠物":
-            return self._handle_pet_status(event)
-        if head == "更改宠物名字":
-            return self._handle_rename_pet(event)
-        if head == "治疗宠物":
-            return self._handle_weak_heal(event)
-        if head == "打工":
-            return self._handle_work(event)
-        if head == "玩耍":
-            return self._handle_play(event)
-        if head == "商店":
-            return self._handle_shop(event)
-        if head == "购买":
-            return self._handle_buy(event)
-        if head == "使用":
-            return self._handle_use_item(event)
-        if head == "背包":
-            return self._handle_bag(event)
-        if head == "宠物帮助":
-            return self._handle_help_pet()
-        if head == "农场帮助":
-            return self._handle_help_farm()
-        if head == "左轮手枪帮助":
-            return self._handle_help_roulette()
-        if head == "查看后台配置":
-            return self._handle_view_config()
-        if head == "保存后台配置":
-            return self._handle_save_backend_config(event)
-        if head == "导出数据":
-            return self._handle_export_data()
-        if head == "导入数据":
-            return self._handle_import_data(event)
-        if head == "存款":
-            return self._handle_bank_deposit(event)
-        if head == "取款":
-            return self._handle_bank_withdraw(event)
-        if head == "银行统计":
-            return self._handle_bank_stats(event)
-        if head == "借款":
-            return self._handle_loan_borrow(event)
-        if head == "还款":
-            return self._handle_loan_repay(event)
-        if head == "我的贷款":
-            return self._handle_my_loans(event)
-        if head == "我的征信":
-            return self._handle_my_credit(event)
-        if head in ("查询流水", "流水查询", "消费记录"):
-            return self._handle_ledger(event)
-        if head == "金币红包":
-            return self._handle_redpacket_send(event)
-        if head in ("开", "开红包", "抢红包"):
-            return self._handle_redpacket_open(event)
-        if head == "活动":
-            return self._handle_activity_center(event)
-        if head == "解锁农场":
-            return self._handle_farm_unlock(event)
-        if head == "购买土地":
-            return self._handle_farm_buy_land(event)
-        if head == "土地升级":
-            return self._handle_farm_upgrade(event)
-        if head == "种子商店":
-            return self._handle_farm_seed_shop(event)
-        if head == "农场商店":
-            return self._handle_farm_shop(event)
-        if head == "购买种子":
-            return self._handle_farm_buy_seed(event)
-        if head == "肥料商店":
-            return self._handle_farm_fert_shop(event)
-        if head == "购买肥料":
-            return self._handle_farm_buy_fert(event)
-        if head == "种植":
-            return self._handle_farm_plant(event)
-        if head == "施肥":
-            return self._handle_farm_fertilize(event)
-        if head == "收割":
-            return self._handle_farm_harvest(event)
-        if head == "取消种植":
-            return self._handle_farm_cancel(event)
-        if head == "土地状态":
-            return self._handle_farm_plots(event)
-        if head == "我的农场":
-            return self._handle_farm_plots(event)
-        if head == "农场仓库":
-            return self._handle_farm_warehouse(event)
-        if head == "售卖种子":
-            return self._handle_farm_sell_seed(event)
-        if head == "售卖":
-            return self._handle_farm_sell(event)
-        if head == "偷菜":
-            return self._handle_steal(event)
-        if head == "看家":
-            return self._handle_guard(event)
-        # 排行榜（1.7.5）
-        if head == "金币排行":
-            return self._handle_rank_coins(event)
-        if head == "宠物排行":
-            return self._handle_rank_pet(event)
-        if head == "农场排行":
-            return self._handle_rank_farm(event)
+        # 无参数指令（帮助/配置/导出）
+        no_arg = self._ROUTE_NO_ARG.get(head)
+        if no_arg is not None:
+            return getattr(self, no_arg)()
+        # 带 event 参数的指令
+        with_event = self._ROUTE_WITH_EVENT.get(head)
+        if with_event is not None:
+            return getattr(self, with_event)(event)
+        # 多指令映射
+        for keys, method_name in self._ROUTE_MULTI.items():
+            if head in keys:
+                return getattr(self, method_name)(event)
         # 调试模式口令（仅管理员在对话框输入）：解锁 WebUI 的调试按钮
         if head == DEBUG_PASSWORD:
             self._debug_unlocked = True
@@ -1425,31 +1384,29 @@ class SignInPlugin(Star):
             return self._debug_data
         return self._load_disk()
 
+    @staticmethod
+    def _default_data() -> dict:
+        """返回空白数据模板（每次调用返回新字典）"""
+        return {"users": {}, "roulette": {}, "pets": {}, "bank": {}, "farms": {}, "loans": {},
+                "ledger": {}, "redpackets": [], "activities": {}, "group_members": {}, "group_names": {},
+                "alias_cmds": {**DEFAULT_ALIAS_CMDS}}
+
+    # 需要 setdefault 的字典键列表（与 _default_data 保持一致）
+    _DATA_DICT_KEYS = ("users", "roulette", "pets", "bank", "farms", "loans",
+                       "ledger", "activities", "activity_config", "params",
+                       "group_members", "group_names")
+
     def _load_disk(self) -> dict:
         if not os.path.exists(DATA_FILE):
-            return {"users": {}, "roulette": {}, "pets": {}, "bank": {}, "farms": {}, "loans": {},
-                    "ledger": {}, "redpackets": [], "activities": {}, "group_members": {}, "group_names": {},
-                    "alias_cmds": {**DEFAULT_ALIAS_CMDS}}
+            return self._default_data()
         try:
             with open(DATA_FILE, "r", encoding="utf-8") as f:
                 data = json.load(f)
             if not isinstance(data, dict):
-                return {"users": {}, "roulette": {}, "pets": {}, "bank": {}, "farms": {}, "loans": {},
-                        "ledger": {}, "redpackets": [], "activities": {}, "group_members": {}, "group_names": {},
-                        "alias_cmds": {**DEFAULT_ALIAS_CMDS}}
-            data.setdefault("users", {})
-            data.setdefault("roulette", {})
-            data.setdefault("pets", {})
-            data.setdefault("bank", {})
-            data.setdefault("farms", {})
-            data.setdefault("loans", {})
-            data.setdefault("ledger", {})
+                return self._default_data()
+            for k in self._DATA_DICT_KEYS:
+                data.setdefault(k, {})
             data.setdefault("redpackets", [])
-            data.setdefault("activities", {})
-            data.setdefault("activity_config", {})
-            data.setdefault("params", {})
-            data.setdefault("group_members", {})
-            data.setdefault("group_names", {})
             # 同义口令：没有该键时写入默认同义词（用户可在 WebUI 编辑）
             if not isinstance(data.get("alias_cmds"), dict):
                 data["alias_cmds"] = {**DEFAULT_ALIAS_CMDS}
@@ -1458,9 +1415,7 @@ class SignInPlugin(Star):
             return data
         except Exception as e:
             logger.error(f"[插件] 读取数据失败: {e}")
-            return {"users": {}, "roulette": {}, "pets": {}, "bank": {}, "farms": {}, "loans": {},
-                    "ledger": {}, "redpackets": [], "activities": {}, "group_members": {}, "group_names": {},
-                    "alias_cmds": {**DEFAULT_ALIAS_CMDS}}
+            return self._default_data()
 
     def _migrate_pet_levels(self, data: dict) -> None:
         """按新经验体系重算所有宠物的等级（旧数据按经验总值匹配新等级体系）"""
@@ -1495,12 +1450,22 @@ class SignInPlugin(Star):
                     else:
                         val = bool(raw)
                 elif spec["type"] == "list":
-                    # 逗号分隔字符串 → tuple（如 "1000,1500,2000,3000"）；单值也可
-                    items = str(raw).replace("，", ",").split(",")
-                    val = tuple(self._f(x) for x in items if str(x).strip() != "")
-                    if len(val) == 1:
-                        val = tuple(float(x) if "." in str(val[0]) or isinstance(val[0], float) else int(val[0])
-                                    for x in val)
+                    # 兼容字符串 "1000,1500,2000,3000" 与 JSON 数组 [1000, 1500, ...] 两种提交；
+                    # 并容忍历史坏数据（数组 str() 后残留的方括号导致首尾项解析失败为 0）
+                    if isinstance(raw, (list, tuple)):
+                        items = [str(x) for x in raw]
+                    else:
+                        items = str(raw).replace("，", ",").split(",")
+                    parts = []
+                    for x in items:
+                        s = str(x).strip().strip("[]")
+                        if s:
+                            parts.append(self._f(s))
+                    val = tuple(parts)
+                    # 土地升级费用应恰为 4 个正数（贫瘠→红→普通→肥沃→黑 共 4 次升级）；
+                    # 历史坏值（如 (0.0,1500.0,2000.0,0.0)）回退默认
+                    if key == "FARM_UPGRADE_COSTS" and len(val) == 4 and any(v <= 0 for v in val):
+                        val = (1000.0, 1500.0, 2000.0, 3000.0)
                 else:
                     val = str(raw)
             except (TypeError, ValueError):
@@ -1770,12 +1735,24 @@ class SignInPlugin(Star):
         return f"💰 当前金币：{self._coins_of(data, key)}"
 
     def _pet_state_snippet(self, pet: dict) -> str:
-        """宠物当前状态摘要（打工/玩耍/使用道具反馈末尾附加）"""
+        """宠物当前状态摘要（打工/玩耍/使用道具反馈末尾附加）。
+        1.7.6：状态低判定采用第三档标准——饱食 <50 或 口渴 <60 或 心情 <40 时附加红色提示。"""
         sat_max, thr_max, sta_max, mood_max = self._attr_max(pet["health"])
         weak = "，😷 虚弱（发送「治疗宠物」）" if pet.get("weak") else ""
-        return (f"🐾 {pet.get('name', '宠物')}：饱食 {pet['satiety']:.0f}/{sat_max:.0f}，"
+        line = (f"🐾 {pet.get('name', '宠物')}：饱食 {pet['satiety']:.0f}/{sat_max:.0f}，"
                 f"口渴 {pet['thirst']:.0f}/{thr_max:.0f}，体力 {pet['stamina']:.0f}/{sta_max:.0f}，"
                 f"心情 {pet['mood']:.0f}/{mood_max:.0f}，健康 {pet['health']:.0f}/{PET_MAX_HEALTH:.0f}{weak}")
+        # 第三档标准判定状态低
+        lows = []
+        if pet["satiety"] < 50:
+            lows.append("饿了")
+        if pet["thirst"] < 60:
+            lows.append("渴了")
+        if pet["mood"] < 40:
+            lows.append("不开心")
+        if lows:
+            line += f"（{'、'.join(lows)}，状态低！）"
+        return line
 
     @staticmethod
     def _pet_busy_until(pet: dict) -> float:
@@ -1817,6 +1794,13 @@ class SignInPlugin(Star):
             return float(x)
         except (TypeError, ValueError):
             return 0.0
+
+    @staticmethod
+    def _image_text_or_plain(img, text):
+        """若 img 是有效的 ("image", path) 元组，返回 ("image_text", text, path)；否则返回纯文本"""
+        if img is not None and isinstance(img, tuple) and img[0] == "image":
+            return ("image_text", text, img[1])
+        return text
 
     # ================= 签到 =================
     def _handle_sign_in(self, event: AstrMessageEvent) -> str:
@@ -1952,9 +1936,11 @@ class SignInPlugin(Star):
     # ================= 宠物：结算逻辑 =================
     @staticmethod
     def _attr_max(health: float):
-        """返回 (饱食上限, 口渴上限, 体力上限, 心情上限)，由健康度决定"""
-        if health >= 100:
-            return 120.0, 120.0, 200.0, 100.0
+        """返回 (饱食上限, 口渴上限, 体力上限, 心情上限)，由健康度决定（1.7.6 新规则）：
+        健康 140-200 → 200/200/200/120；80-139 → 120/120/120/100；
+        40-79 → 100/100/100/100；0-39 → 80/80/60/80。健康度最大值 200（PET_MAX_HEALTH）。"""
+        if health >= 140:
+            return 200.0, 200.0, 200.0, 120.0
         if health >= 80:
             return 120.0, 120.0, 120.0, 100.0
         if health >= 40:
@@ -1971,25 +1957,26 @@ class SignInPlugin(Star):
 
     @staticmethod
     def _worst_tier(satiety: float, thirst: float, mood: float) -> int:
-        """每个属性单独定档，取最差档（3 最差）"""
-        tiers = []
-        tiers.append(1 if satiety >= 100 else (2 if satiety >= 50 else 3))
-        tiers.append(1 if thirst >= 100 else (2 if thirst >= 70 else 3))
-        tiers.append(1 if mood >= 80 else (2 if mood >= 50 else 3))
-        return max(tiers)
+        """饱食/口渴/心情对健康的影响档位（1.7.6 四档），每个属性单独定档后取最差档（4 最差）：
+        一档：≥120 / ≥120 / ≥80；二档：50-119 / 70-119 / 50-79；
+        三档：30-49 / 30-59 / 30-39；四档：<30 / <30 / <30。"""
+        t_sat = 1 if satiety >= 120 else (2 if satiety >= 50 else (3 if satiety >= 30 else 4))
+        t_thr = 1 if thirst >= 120 else (2 if thirst >= 70 else (3 if thirst >= 30 else 4))
+        t_mood = 1 if mood >= 80 else (2 if mood >= 50 else (3 if mood >= 30 else 4))
+        return max(t_sat, t_thr, t_mood)
 
     def _settle_once(self, pet: dict, settle_date: str) -> None:
         """执行一次每日结算"""
         health = pet["health"]
 
-        # 1. 基础结算（按健康档位）
-        if health >= 100:
+        # 1. 基础结算（按健康档位，1.7.6 新规则）
+        if health >= 100:      # 100-200
             sat_d = -random.uniform(10.0, 15.0)
             thr_d = -random.uniform(10.0, 15.0)
             sta_d = random.uniform(100.0, 120.0)
-            mood_d = random.uniform(1.0, 5.0)
+            mood_d = random.uniform(3.0, 7.0)
             health_base_d = 0.0
-        elif health >= 40:
+        elif health >= 40:     # 40-99
             sat_d = -random.uniform(15.0, 20.0)
             thr_d = -random.uniform(15.0, 20.0)
             if random.random() < 0.8:
@@ -1998,21 +1985,23 @@ class SignInPlugin(Star):
                 sta_d = random.uniform(100.0, 120.0)
             mood_d = random.uniform(1.0, 2.5)
             health_base_d = 0.0
-        else:
+        else:                  # 0-39
             sat_d = -random.uniform(20.0, 25.0)
             thr_d = -random.uniform(20.0, 25.0)
             sta_d = random.uniform(40.0, 60.0)
             mood_d = -random.uniform(2.0, 5.0)
             health_base_d = -random.uniform(1.0, 8.0)
 
-        # 2. 饱食/口渴/心情 三档对健康的影响
+        # 2. 饱食/口渴/心情 四档对健康的影响（取最差档）
         tier = self._worst_tier(pet["satiety"], pet["thirst"], pet["mood"])
         if tier == 1:
             health_tier_d = random.uniform(5.0, 10.0)
         elif tier == 2:
             health_tier_d = random.uniform(0.1, 6.0)
+        elif tier == 3:
+            health_tier_d = -random.uniform(4.0, 10.0)
         else:
-            health_tier_d = -random.uniform(0.1, 10.0)
+            health_tier_d = -random.uniform(8.0, 15.0)
 
         health_d = health_base_d + health_tier_d
 
@@ -2034,7 +2023,7 @@ class SignInPlugin(Star):
             "health_d": round(health_d, 2),
             "rested_well": sta_d > 100.0,
             "sick": pet["health"] <= 39.0,
-            "tier3": tier == 3,
+            "tier": tier,   # 1.7.6：1-4 档（3/4 为状态差，签到时提醒）
         }
 
         # 虚弱判定：连续两天结算健康均为 0 → 宠物进入「虚弱」状态（治疗宠物 可解除）
@@ -2076,8 +2065,11 @@ class SignInPlugin(Star):
             lines.append("😴 昨晚你的宠物休息得很好！")
         if ls.get("sick"):
             lines.append("🤒 宠物生病了，快给它吃药吧！")
-        if ls.get("tier3"):
-            lines.append("⚠️ 有属性处于第三档（太差），注意喂食 / 饮水 / 陪伴！")
+        tier = int(ls.get("tier", 0))
+        if tier >= 4:
+            lines.append("🚨 你的宠物急需你的照顾！")
+        elif tier == 3:
+            lines.append("⚠️ 你的宠物看起来蔫蔫的，快去照顾吧～")
         return lines
 
     @staticmethod
@@ -2348,11 +2340,11 @@ class SignInPlugin(Star):
         "解锁农场": "farm", "购买土地": "farm", "土地升级": "farm",
         "农场商店": "farm", "种子商店": "farm", "肥料商店": "farm",
         "购买种子": "farm", "购买肥料": "farm",
-        "种植": "farm", "施肥": "farm", "收割": "farm", "取消种植": "farm",
+        "种植": "farm", "种地": "farm", "施肥": "farm", "收割": "farm", "收获": "farm", "取消种植": "farm",
         "土地状态": "farm", "我的农场": "farm", "农场仓库": "farm",
         "售卖": "farm", "售卖种子": "farm", "农场帮助": "farm",
         # 偷菜系统
-        "偷菜": "steal", "看家": "steal",
+        "偷菜": "steal", "自动偷菜": "steal", "看家": "steal",
     }
 
     def _feature_enabled(self, data: dict, key: str) -> bool:
@@ -2747,10 +2739,13 @@ class SignInPlugin(Star):
         if not cfg["jobs"]:
             return "后台还没有配置打工项目（请管理员编辑 后台.txt）。"
         pet = None
+        coins = None
         if event is not None:
             data = self._load()
-            pet = data.get("pets", {}).get(self._user_key(event))
-        img = self._render_work_play_image("打工", event.get_sender_name(), pet, cfg["jobs"])
+            key = self._user_key(event)
+            pet = data.get("pets", {}).get(key)
+            coins = self._coins_of(data, key)
+        img = self._render_work_play_image("打工", event.get_sender_name(), pet, cfg["jobs"], coins)
         if img is not None:
             return img
         lines = ["发送「打工 <名称>」开始", ""]
@@ -2841,10 +2836,13 @@ class SignInPlugin(Star):
         if not cfg["plays"]:
             return "后台还没有配置玩耍项目（请管理员编辑 后台.txt）。"
         pet = None
+        coins = None
         if event is not None:
             data = self._load()
-            pet = data.get("pets", {}).get(self._user_key(event))
-        img = self._render_work_play_image("玩耍", event.get_sender_name(), pet, cfg["plays"])
+            key = self._user_key(event)
+            pet = data.get("pets", {}).get(key)
+            coins = self._coins_of(data, key)
+        img = self._render_work_play_image("玩耍", event.get_sender_name(), pet, cfg["plays"], coins)
         if img is not None:
             return img
         lines = ["发送「玩耍 <名称>」开始", ""]
@@ -2859,10 +2857,8 @@ class SignInPlugin(Star):
         """「宠物」指令图片（1.7.1）：
         标题(用户名称) + 宠物信息卡（名称/状态/等级/经验/升级进度条）+ 宠物属性条区（每个属性：名称 当前值/最大值 + 属性条(普通进度条高度的30%) + 状态解释）+ 底部空闲进度条（忙碌 #FFC000 不满 / 空闲 #92D050 满）+ 文字描述。
         属性条颜色：红 #C00000（饱食<50 口渴<70 心情<50 体力<20 健康<40）、绿 #92D050（与最大值差值<20 且健康度≥41）、灰 #333333 默认。"""
-        try:
-            from PIL import Image, ImageDraw
-        except Exception as e:
-            logger.error(f"[插件] 缺少 Pillow，无法生成图片: {e}")
+        Image, ImageDraw = _ensure_pillow()
+        if Image is None:
             return None
         # 字号语义：标题 32 / 宠物名 26（大两号）/ 状态 18 / 正文 20 / 经验 16 / 属性名 18 / 提示 16 / 描述 18
         fonts = _load_fonts(32, 26, 18, 20, 16, 18, 16, 18)
@@ -2963,13 +2959,13 @@ class SignInPlugin(Star):
             t = f"{label} {val:.0f}/{amax:.0f}"
             d.text((int(pad + inner), yy), t, font=attr_font, fill=(60, 60, 60))
             yy += attr_label_h
-            # 属性条颜色判定
+            # 属性条颜色判定（1.7.6：饱/渴/心 采用第三档标准 = 状态低）
             if label == "饱食度":
                 red = val < 50
             elif label == "口渴值":
-                red = val < 70
+                red = val < 60
             elif label == "心情值":
-                red = val < 50
+                red = val < 40
             elif label == "体力值":
                 red = val < 20
             else:  # 健康度
@@ -3038,26 +3034,25 @@ class SignInPlugin(Star):
 
         return _save_temp_image(img, "_pet_", "宠物状态")
 
-    def _render_work_play_image(self, kind, name, pet, items):
+    def _render_work_play_image(self, kind, name, pet, items, coins=None):
         """打工/玩耍列表图片（1.7.1 布局）：
         标题(用户名称) + 宠物信息卡片(横跨整行) + 分割线 + 内容卡片（每行 WORK/PLAY_CARD_COLS 个）。
         宠物信息卡：宠物名称(大两号)+状态(小一号) / 等级+经验值(小两号,两端对齐) / 升级进度条(含百分比) / 属性(过低红色)。
         内容卡：名称(大三号,居左)+时间(居右) / 描述 / 条件(如有) / 消耗 / 卡片内分割线 / 报酬或变更(红 #C00000,右,大一号)。
         卡片高度自适应（按换行后行数），同行取最高；不能打工/玩耍的卡片灰(#D9D9D9)。
-        pet 可为 None（无宠物）：宠物信息卡显示「还没有宠物」提示，内容卡全部灰卡。"""
+        pet 可为 None（无宠物）：宠物信息卡显示「还没有宠物」提示，内容卡全部灰卡。
+        coins（1.7.6）：不为 None 时在标题下方显示金币余额行。"""
         try:
-            return self._render_work_play_image_inner(kind, name, pet, items)
+            return self._render_work_play_image_inner(kind, name, pet, items, coins)
         except Exception as e:
             logger.error(f"[插件] 渲染{kind}列表图片异常: {e}")
             return None
 
-    def _render_work_play_image_inner(self, kind, name, pet, items):
+    def _render_work_play_image_inner(self, kind, name, pet, items, coins=None):
         """打工/玩耍列表图片实际渲染（异常由外层捕获并回退文本）"""
-        try:
-            from PIL import Image, ImageDraw
-        except Exception as e:
-            logger.error(f"[插件] 缺少 Pillow，无法生成图片: {e}")
-            raise
+        Image, ImageDraw = _ensure_pillow()
+        if Image is None:
+            raise ImportError("Pillow 不可用")
         # 字号语义：标题 32 / 宠物名 26 / 状态 18 / 正文 20 / 经验 16 / 属性 18 / 内容名 28 / 描述 20 / 报酬 22
         fonts = _load_fonts(32, 26, 18, 20, 16, 18, 28, 20, 22)
         if fonts is None:
@@ -3072,12 +3067,12 @@ class SignInPlugin(Star):
             busy = now_ts < self._pet_busy_until(pet)
             status = "虚弱中" if pet.get("weak") else ("忙碌中" if busy else "空闲中")
             sat_max, thr_max, sta_max, mood_max = self._attr_max(pet["health"])
-            # 属性展示（过低红色高亮，与「宠物」指令属性条阈值一致）：饱食<50 / 口渴<70 / 体力<20 / 心情<50 / 健康<40
+            # 属性展示（过低红色高亮，与「宠物」指令属性条阈值一致，1.7.6 第三档标准）：饱食<50 / 口渴<60 / 体力<20 / 心情<40 / 健康<40
             attrs = [
                 ("饱食", pet["satiety"], sat_max, pet["satiety"] < 50),
-                ("口渴", pet["thirst"], thr_max, pet["thirst"] < 70),
+                ("口渴", pet["thirst"], thr_max, pet["thirst"] < 60),
                 ("体力", pet["stamina"], sta_max, pet["stamina"] < 20),
-                ("心情", pet["mood"], mood_max, pet["mood"] < 50),
+                ("心情", pet["mood"], mood_max, pet["mood"] < 40),
                 ("健康", pet["health"], PET_MAX_HEALTH, pet["health"] < 40),
             ]
         else:
@@ -3085,6 +3080,7 @@ class SignInPlugin(Star):
 
         pad = 20
         title_h = 52
+        coin_h = 28  # 1.7.6：标题下方金币余额行高度
         rule_h = 22          # 宠物卡与内容卡之间的分割线
         gap = 12
         inner = 10
@@ -3220,7 +3216,7 @@ class SignInPlugin(Star):
             cards_h += max(p[3] for p in group) + gap
         if cards_h > 0:
             cards_h -= gap
-        height = pad * 2 + title_h + pet_card_h + rule_h + cards_h
+        height = pad * 2 + title_h + (coin_h if coins is not None else 0) + pet_card_h + rule_h + cards_h
 
         img = Image.new("RGB", (width, height), (255, 255, 255))
         d = ImageDraw.Draw(img)
@@ -3229,6 +3225,10 @@ class SignInPlugin(Star):
         # 标题：<用户名称>
         d.text((pad, y), name, font=title_font, fill=(20, 20, 20))
         y += title_h
+        # 1.7.6：标题下方金币余额
+        if coins is not None:
+            d.text((pad, y), f"💰 金币余额：{coins}", font=attr_font, fill=(140, 90, 0))
+            y += coin_h
 
         # ---------- 宠物信息卡片（横跨整行） ----------
         d.rectangle([pad, y, pad + pet_w, y + pet_card_h], outline=(205, 205, 205), width=1)
@@ -3313,7 +3313,7 @@ class SignInPlugin(Star):
         cfg = self._load_config()
         if not cfg["shop"]:
             return "商店暂无商品（请管理员编辑 后台.txt）。"
-        # 按类型分组（保持配置顺序）
+        # 按类型分组（保持配置顺序），组内商品按价格升序（价格越高位置越靠后）
         categories = []
         seen = {}
         for it in cfg["shop"]:
@@ -3322,12 +3322,17 @@ class SignInPlugin(Star):
                 seen[typ] = len(categories)
                 categories.append((typ, []))
             categories[seen[typ]][1].append(it)
+        for typ, items in categories:
+            items.sort(key=lambda it: (int(it["price"]), it["name"]))
+        # 分类之间也按「组内最低价」升序，便宜的类别靠前
+        categories.sort(key=lambda cat: (min((int(it["price"]) for it in cat[1]), default=0), cat[0]))
         # 当前用户持有数量
         key = self._user_key(event)
         data = self._load()
         pet = data.get("pets", {}).get(key)
         inventory = pet.get("inventory", {}) if pet else {}
-        img = self._render_shop_image(event.get_sender_name(), categories, inventory)
+        img = self._render_shop_image(event.get_sender_name(), categories, inventory,
+                                      self._coins_of(data, key))
         if img is not None:
             return img
         lines = ["🛒 宠物商店（发送「购买 <道具名> [数量]」购买，发送「使用 <道具名> [数量]」使用）："]
@@ -3340,13 +3345,12 @@ class SignInPlugin(Star):
         lines.append(f"· {EXP_BALL_NAME}（特殊）：获得升级经验 5%~20%（每日最多 {self.exp_ball_daily_limit} 次，签到 30% 概率获得）")
         return "\n".join(lines)
 
-    def _render_shop_image(self, name, categories, inventory):
+    def _render_shop_image(self, name, categories, inventory, coins=None):
         """宠物商店：每行 SHOP_CARD_COLS 个卡片；名称(大三号)/持有数 / 效果(空格优先换行) / 分割线 / 价格(红、右、大一号、分割线与底边之间 N 像素)
-        卡片高度自适应，同行取最高；被拉伸的低卡片忽略价格与分割线的 N 约束。"""
-        try:
-            from PIL import Image, ImageDraw
-        except Exception as e:
-            logger.error(f"[插件] 缺少 Pillow，无法生成图片: {e}")
+        卡片高度自适应，同行取最高；被拉伸的低卡片忽略价格与分割线的 N 约束。
+        coins（1.7.6）：不为 None 时在标题下方显示金币余额行。"""
+        Image, ImageDraw = _ensure_pillow()
+        if Image is None:
             return None
         # 字号语义：标题 32 / 分类 26 / 名称 26（大三号）/ 正文 18 / 价格 20（大一号）
         fonts = _load_fonts(32, 26, 26, 18, 20)
@@ -3356,6 +3360,7 @@ class SignInPlugin(Star):
 
         pad = 20
         title_h = 52
+        coin_h = 28  # 1.7.6：标题下方金币余额行高度
         cat_h = 30
         rule_h = 18
         cols = int(globals().get("SHOP_CARD_COLS", 3))
@@ -3407,7 +3412,7 @@ class SignInPlugin(Star):
         width = pad * 2 + card_w * cols + gap * (cols - 1)
 
         # 总高度（卡片行高度取同行最大值）+ 底部特殊道具提示（自动换行防溢出）
-        height = pad * 2 + title_h
+        height = pad * 2 + title_h + (coin_h if coins is not None else 0)
         for typ, item_plans in cat_plans:
             height += cat_h + rule_h
             if item_plans:
@@ -3441,6 +3446,10 @@ class SignInPlugin(Star):
         y = pad
         d.text((pad, y), f"{name} 的宠物商店", font=title_font, fill=(20, 20, 20))
         y += title_h
+        # 1.7.6：标题下方金币余额
+        if coins is not None:
+            d.text((pad, y), f"💰 金币余额：{coins}", font=body_font, fill=(140, 90, 0))
+            y += coin_h
 
         for typ, item_plans in cat_plans:
             # 类别名（居中；坐标必须转 int）
@@ -3501,10 +3510,8 @@ class SignInPlugin(Star):
 
     def _render_text_image(self, title: str, lines):
         """把标题 + 正文行渲染为 PNG 图片（使用 OPPOSans-M.ttf）。返回 ("image", path)；失败返回 None"""
-        try:
-            from PIL import Image, ImageDraw
-        except Exception as e:
-            logger.error(f"[插件] 缺少 Pillow，无法生成图片: {e}")
+        Image, ImageDraw = _ensure_pillow()
+        if Image is None:
             return None
         # 字号语义：标题 36 / 正文 24
         fonts = _load_fonts(36, 24)
@@ -3774,8 +3781,10 @@ class SignInPlugin(Star):
                 ("农场商店 [展开] [页]", "查看种子+化肥（展开=全部种子翻页）"),
                 ("购买 <种子名>种子 [数量]", "购买种子（必须带「种子」后缀，也可用「购买种子」）；「购买 <化肥名> [数量]」购买化肥"),
                 ("种植 <作物> [起] [止/数量]", "种植（不填=种子够则种满空闲地，不够则全部种完）"),
+                ("种地 / 种植（不填作物）", "快捷种地：先收割成熟 → 仓库随机种子自动种 → 缺则自动购买 → 种满"),
                 ("施肥 <肥料> [起] [止] [次数]", "施肥（快捷；也可「使用 <化肥> <数量>」）"),
-                ("收割 [编号]", "收割成熟作物（不填=全部）"),
+                ("施肥（不填肥料）", "快捷施肥：所有种植中作物各用 1 次化肥（不可用则有机化肥，缺失自动购买）"),
+                ("收割 [编号] / 收获", "收割成熟作物并自动售出（不填=全部）"),
                 ("取消种植 <编号>", "取消种植"),
                 ("土地状态 / 农场仓库", "查看土地与仓库"),
                 ("售卖 / 售卖种子", "出售作物 / 种子"),
@@ -3822,9 +3831,12 @@ class SignInPlugin(Star):
                 ("土地升级 <编号>", "升级土地等级"),
                 ("农场商店 [展开] [页]", "查看种子+化肥（展开=全部种子翻页）"),
                 ("购买 <种子名>种子 [数量]", "购买种子（必须带「种子」后缀）；「购买 <化肥名> [数量]」购买化肥"),
-                ("种植 / 施肥 / 收割", "种植、施肥（也可「使用 <化肥>」）、收割"),
+                ("种地 / 种植 / 施肥 / 收割 / 收获", "快捷种地（自动播种）/ 快捷施肥（自动购买）/ 收割并自动售出"),
                 ("土地状态 / 我的农场", "查看土地与仓库（农场属性）"),
                 ("售卖 / 售卖种子", "出售作物 / 种子"),
+                ("偷菜 <@对方>", "偷走对方成熟作物（10%~20%）"),
+                ("自动偷菜", "每天 5 次：随机偷 4 位用户的成熟作物（无收益不扣次数，被宠物抓到当天锁定）"),
+                ("看家 开 / 看家 关", "开启/关闭宠物看家防护"),
             ]),
             ("数据管理", [
                 ("查看后台配置 / 保存后台配置", "管理后台配置"),
@@ -4461,10 +4473,8 @@ class SignInPlugin(Star):
 
     def _render_activity_image(self, activities):
         """活动中心：每个活动一个矩形卡片，一行一卡（名称/时间/简介/要求/指令）；文字自动换行、卡片高度自适应"""
-        try:
-            from PIL import Image, ImageDraw
-        except Exception as e:
-            logger.error(f"[插件] 缺少 Pillow，无法生成图片: {e}")
+        Image, ImageDraw = _ensure_pillow()
+        if Image is None:
             return None
         # 字号语义：标题 32 / 名称 26 / 正文 18
         fonts = _load_fonts(32, 26, 18)
@@ -5239,9 +5249,8 @@ class SignInPlugin(Star):
     # ---- 农场富文本图片 ----
     def _render_rich_image(self, title, rows):
         """rows: 每行是 (text, color, strike) 元组列表。返回 ('image', path) 或 None"""
-        try:
-            from PIL import Image, ImageDraw
-        except Exception:
+        Image, ImageDraw = _ensure_pillow()
+        if Image is None:
             return None
         # 字号语义：标题 34 / 正文 24
         fonts = _load_fonts(34, 24)
@@ -5339,10 +5348,8 @@ class SignInPlugin(Star):
         卡片高度自适应（同行取最高，低卡拉伸忽略分割线侧 N）；图片高度按绘制流程计算，文字不溢出。
         默认：能买等级最大的 9 款种子 + 不能买等级最低的 3 款（灰卡）；化肥全部。
         展开：按等级从高到低分页显示全部能购买的种子（每页 9 款）。"""
-        try:
-            from PIL import Image, ImageDraw
-        except Exception as e:
-            logger.error(f"[插件] 缺少 Pillow，无法生成图片: {e}")
+        Image, ImageDraw = _ensure_pillow()
+        if Image is None:
             return None
         # 字号语义：标题 32 / 分类 26 / 名称 26（大三号）/ 正文 18 / 价格 20（大一号）
         fonts = _load_fonts(32, 26, 26, 18, 20)
@@ -5376,9 +5383,11 @@ class SignInPlugin(Star):
         ferts_have = farm.get("warehouse", {}).get("fertilizers", {})
 
         # ---- 种子选择 ----
+        # 展示顺序按价格升序（价格越高位置越靠后）；默认模式保留「能买 9 款 + 不能买 3 款灰卡」的选择
         buyable = [c for c in crops if c["min_level"] <= farm_lv]
+        price_of = lambda c: int(round(float(c["seed_price"]) * mult))
         if expanded:
-            sorted_buy = sorted(buyable, key=lambda c: c["min_level"], reverse=True)
+            sorted_buy = sorted(buyable, key=lambda c: (price_of(c), c["name"]))
             per_page = 9
             total_pages = max(1, (len(sorted_buy) + per_page - 1) // per_page)
             page = max(1, min(page, total_pages))
@@ -5386,7 +5395,7 @@ class SignInPlugin(Star):
         else:
             top9 = sorted(buyable, key=lambda c: c["min_level"], reverse=True)[:9]
             low3 = sorted((c for c in crops if c["min_level"] > farm_lv), key=lambda c: c["min_level"])[:3]
-            seed_list = top9 + low3
+            seed_list = sorted(top9 + low3, key=lambda c: (price_of(c), c["name"]))
 
         # ---- 卡片行规划（plain 行已按宽度换行展开，保证高度自适应） ----
         # 行类型：
@@ -5437,7 +5446,8 @@ class SignInPlugin(Star):
             return rows
 
         seed_plans = [(c, seed_rows(c), c["min_level"] > farm_lv) for c in seed_list]
-        fert_plans = [(f, fert_rows(f), False) for f in ferts]
+        fert_plans = [(f, fert_rows(f), False)
+                      for f in sorted(ferts, key=lambda f: (int(f["price"]), f["name"]))]
 
         # 卡片高度：内容区（inner*2 + 各行）+ 分割线间隙 N + 分割线半行 + 价格区（价格高 + 底边 N）
         # 分割线固定在价格上方 N 距离（N = SHOP_PRICE_PAD）
@@ -5566,13 +5576,13 @@ class SignInPlugin(Star):
         return "、".join(bad) if bad else "无"
 
     def _render_plot_status(self, name, farm, crops, ferts, steal_lines=None,
-                            highlight_plots=None, new_plots=None):
+                            highlight_plots=None, new_plots=None, fert_mode=False):
         """土地状态 / 我的农场：顶部农场属性（等级/经验/升级进度条/总盈利）+ 4 列土地卡片（自动换行、高度自适应）
         steal_lines：偷菜信息表格行（可选）；highlight_plots：黄色高亮的地块编号集合（1-based，施肥用）；
-        new_plots：新种植地块编号集合（1-based，植株名后加「新种」+ 黄色高亮）。"""
-        try:
-            from PIL import Image, ImageDraw
-        except Exception:
+        new_plots：新种植地块编号集合（1-based，植株名后加「新种」+ 黄色高亮）；
+        fert_mode（1.7.6）：施肥快捷图——栽种地块原本显示「预计收益」的位置替换为化肥使用效果。"""
+        Image, ImageDraw = _ensure_pillow()
+        if Image is None:
             return None
         # 字号语义：标题 32 / 等级 26 / 小字 18 / 经验 16（小两号）
         fonts = _load_fonts(32, 26, 18, 16)
@@ -5598,7 +5608,7 @@ class SignInPlugin(Star):
             if grade >= len(FARM_UPGRADE_COSTS):
                 upgrade = "🏆 已满级"
             else:
-                upgrade = f"⬆️ 升级 {FARM_UPGRADE_COSTS[grade]}金"
+                upgrade = f"⬆️ 升级 {int(FARM_UPGRADE_COSTS[grade])}金"
             hl = num in highlight_plots or num in new_plots
             if plot.get("crop") is None:
                 lines = [f"#{num} {gname}", "空闲中", upgrade]
@@ -5615,12 +5625,32 @@ class SignInPlugin(Star):
                 else:
                     state = "占用中"
                     remain = self._fmt_duration(plot.get("mature_ts", 0) - now)
-                lines = [
-                    f"#{num} {gname} {state}",
-                    crop_name,
-                    f"剩余 {remain} 预计 {income}金",
-                    upgrade,
-                ]
+                if fert_mode:
+                    # 施肥快捷图：预期收益位置替换为化肥使用效果（减时/增产累计百分比）
+                    f_parts = []
+                    f_t = float(plot.get("fert_time", 0.0))
+                    f_y = float(plot.get("fert_yield", 0.0))
+                    if f_t > 0:
+                        f_parts.append(f"减时 {int(f_t * 100)}%")
+                    if f_y > 0:
+                        f_parts.append(f"增产 {int(f_y * 100)}%")
+                    if f_parts:
+                        fert_txt = " · ".join(f_parts)
+                    else:
+                        fert_txt = "化肥 未使用"
+                    lines = [
+                        f"#{num} {gname} {state}",
+                        crop_name,
+                        f"剩余 {remain} · 化肥 {fert_txt}",
+                        upgrade,
+                    ]
+                else:
+                    lines = [
+                        f"#{num} {gname} {state}",
+                        crop_name,
+                        f"剩余 {remain} 预计 {income}金",
+                        upgrade,
+                    ]
             cards.append((lines, hl))
 
         # ---------- 布局参数 ----------
@@ -5848,7 +5878,7 @@ class SignInPlugin(Star):
             return "这块地已经是最高等级（黑土地）了。"
         if plot.get("crop") is not None:
             return "这块土地正在种植中，收割后才能升级。"
-        cost = FARM_UPGRADE_COSTS[grade]
+        cost = int(FARM_UPGRADE_COSTS[grade])
         if self._coins_of(data, key) < cost:
             return f"升级需要 {cost} 金币（当前 {self._coins_of(data, key)}）。"
         self._add_coins(data, key, -cost, f"升级土地·{num}号")
@@ -5949,7 +5979,8 @@ class SignInPlugin(Star):
         key = self._user_key(event)
         parts = event.message_str.split(maxsplit=1)
         if len(parts) < 2:
-            return "格式：种植 <作物名> [起始编号] [结束编号/数量]"
+            # 1.7.6 快捷种地：不指定作物 → 收割成熟 → 仓库随机种子自动种 → 缺则自动购买 → 种满
+            return self._farm_plant_auto(event)
         args = parts[1].split()
         crop_name = args[0]
         crops = self._load_crops()
@@ -6007,18 +6038,7 @@ class SignInPlugin(Star):
 
         now = datetime.now().timestamp()
         for i in targets:
-            plot = plots[i]
-            gname, gy, gt = self._plot_grade(int(plot.get("grade", 0)))
-            base_sec = crop["grow_minutes"] * 60
-            plot["crop"] = crop_name
-            plot["seed"] = crop_name
-            plot["plant_ts"] = now
-            plot["base_time"] = base_sec
-            plot["yield"] = int(crop["yield"] * (1 + gy))
-            plot["mature_ts"] = now + base_sec * (1 - gt)
-            plot["fert_time"] = 0.0
-            plot["fert_yield"] = 0.0
-            plot["fert"] = {}
+            self._plant_plot(plots[i], crop, now)
         wh[crop_name] = have - len(targets)
         if wh[crop_name] <= 0:
             wh.pop(crop_name, None)
@@ -6026,16 +6046,190 @@ class SignInPlugin(Star):
         text = (f"✅ 在 {len(targets)} 块土地上种下 {crop_name}（编号 {targets[0] + 1}~{targets[-1] + 1}）。\n"
                 f"{self._farm_state_snippet(farm)}")
         # 响应末尾附加「土地状态」指令的响应内容（图片）；新种地块黄色高亮 + 名称加「新种」；失败则纯文本
+        return self._safe_render_plot_status(name, farm, crops, self._load_fertilizers(), text,
+                                             new_plots=[i + 1 for i in targets])
+
+    @staticmethod
+    def _clear_plot(plot):
+        """清空一块地块（收割/取消种植后重置所有种植字段）"""
+        plot["crop"] = None
+        plot["seed"] = None
+        plot["plant_ts"] = 0
+        plot["mature_ts"] = 0
+        plot["base_time"] = 0
+        plot["yield"] = 0
+        plot["fert_time"] = 0.0
+        plot["fert_yield"] = 0.0
+        plot["fert"] = {}
+
+    @staticmethod
+    def _plant_plot(plot, crop, now):
+        """把作物种到一块空闲地块（字段赋值，不落盘）"""
+        gname, gy, gt = SignInPlugin._plot_grade(int(plot.get("grade", 0)))
+        base_sec = crop["grow_minutes"] * 60
+        plot["crop"] = crop["name"]
+        plot["seed"] = crop["name"]
+        plot["plant_ts"] = now
+        plot["base_time"] = base_sec
+        plot["yield"] = int(crop["yield"] * (1 + gy))
+        plot["mature_ts"] = now + base_sec * (1 - gt)
+        plot["fert_time"] = 0.0
+        plot["fert_yield"] = 0.0
+        plot["fert"] = {}
+
+    def _harvest_mature(self, data, farm, crops, now, targets=None):
+        """收割成熟地块作物进仓库（不落盘）。targets=None = 全部成熟地块。
+        返回 (harvested 编号列表[1-based], {作物:数量}, 总经验)。"""
+        plots = farm["plots"]
+        if targets is None:
+            idxs = [i for i, p in enumerate(plots)
+                    if p.get("crop") is not None and now >= p.get("mature_ts", 0)]
+        else:
+            idxs = [i for i in targets
+                    if plots[i].get("crop") is not None and now >= plots[i].get("mature_ts", 0)]
+        if not idxs:
+            return [], {}, 0
+        wh = farm["warehouse"].setdefault("crops", {})
+        amounts = {}
+        total_exp = 0
+        harvested = []
+        for i in idxs:
+            plot = plots[i]
+            crop = self._find_item(crops, plot["crop"])
+            amount = int(plot.get("yield", 0))
+            wh[plot["crop"]] = int(wh.get(plot["crop"], 0)) + amount
+            amounts[plot["crop"]] = amounts.get(plot["crop"], 0) + amount
+            gy = self._plot_grade(int(plot.get("grade", 0)))[1]
+            base_exp = int(crop["exp"]) if crop else 0
+            total_exp += int(round(base_exp * (1 + gy))) if crop else 0
+            harvested.append(i + 1)
+            self._clear_plot(plot)
+        # 被偷批次：本次收割的地块若有偷菜信息，标记 harvest_ts（24h 内可见）
+        now_ts = datetime.now().timestamp()
+        for it in farm.get("steal_infos", []):
+            if it.get("harvest_ts") is None:
+                it["harvest_ts"] = now_ts
+        return harvested, amounts, total_exp
+
+    def _farm_plant_auto(self, event):
+        """种地/种植（无参数）快捷流程：
+        1) 先收割成熟作物；2) 用仓库随机种子自动种；3) 仓库不足 → 自动购买能购买的种子；
+        4) 金币不足则尽可能种满。回复 = 信息文本 + 土地状态图（新种高亮）。"""
+        name = event.get_sender_name()
+        key = self._user_key(event)
+        data = self._load()
+        err = self._farm_need(data, key, name)
+        if err:
+            return err
+        farm = self._farm_of(data, key)
+        if not farm or not farm.get("plots"):
+            return "还没有土地，发送「购买土地」开垦。"
+        crops = self._load_crops()
+        now = datetime.now().timestamp()
+        lines = []
+        planted_ids = []
+
+        # 1) 先收割成熟作物（进仓库）
+        harvested, _, total_exp = self._harvest_mature(data, farm, crops, now)
+        if harvested:
+            lvl_msg = self._farm_gain_exp(farm, total_exp)
+            lines.append(f"🌾 先收割了 {len(harvested)} 块成熟作物（编号 {harvested}）{lvl_msg}。")
+
+        plots = farm["plots"]
+        free = [i for i, p in enumerate(plots) if self._plot_free(p)]
+        if not free:
+            lines.append("🈳 没有空闲的土地可以种植。")
+            img = self._render_plot_status(name, farm, crops, self._load_fertilizers())
+            return self._image_text_or_plain(img, "\n".join(lines))
+
+        # 2) 使用仓库种子（随机名称逐个种）
+        wh_seeds = farm["warehouse"].setdefault("seeds", {})
+        usable = [n for n, c in wh_seeds.items() if int(c or 0) > 0 and self._find_item(crops, n)]
+        free_left = list(free)
+        used_desc = {}
+        while free_left and usable:
+            nm = random.choice(usable)
+            crop = self._find_item(crops, nm)
+            if int(farm.get("level", 0)) < crop["min_level"]:
+                usable.remove(nm)  # 等级不够的种子跳过（不种）
+                continue
+            i = free_left.pop(0)
+            self._plant_plot(plots[i], crop, now)
+            planted_ids.append(i)
+            wh_seeds[nm] = int(wh_seeds.get(nm, 0)) - 1
+            used_desc[nm] = used_desc.get(nm, 0) + 1
+            if wh_seeds[nm] <= 0:
+                wh_seeds.pop(nm, None)
+                usable.remove(nm)
+        if used_desc:
+            lines.append("📦 使用仓库种子：" + "、".join(f"{n}×{c}" for n, c in used_desc.items()) + "。")
+
+        # 3) 仓库不足 → 自动购买当前用户能购买的种子并种植
+        #    购买规则（1.7.6 更正）：只买「当前等级下能买到的、等级要求最高」的种子（不可随机）；
+        #    最高等级买不起时才降级尝试次高等级（金币不足则尽可能种满）
+        if free_left:
+            buyable = [c for c in crops if int(farm.get("level", 0)) >= c["min_level"]]
+            if not buyable:
+                lines.append("😢 当前农场等级没有可购买的种子，剩余空地未能种植。")
+            else:
+                missing = len(free_left)
+                lines.append(f"🛒 仓库种子不足，自动购买 {missing} 颗种子补种…")
+                coins = self._coins_of(data, key)
+                bought = 0
+                spent = 0
+                order = sorted(buyable, key=lambda c: c["min_level"], reverse=True)  # 等级要求最高优先（同等级按配置顺序）
+                while free_left:
+                    bought_any = False
+                    for crop in order:
+                        if not free_left:
+                            break
+                        price = int(round(crop["seed_price"] * self._farm_seed_mult(farm)))
+                        if coins < price:
+                            continue  # 买不起这个 → 降级试下一个（金币不足尽可能种满）
+                        self._add_coins(data, key, -price, f"购买种子·{crop['name']}")
+                        farm["total_profit"] = int(farm.get("total_profit", 0)) - price
+                        i = free_left.pop(0)
+                        self._plant_plot(plots[i], crop, now)
+                        planted_ids.append(i)
+                        bought += 1
+                        spent += price
+                        coins -= price
+                        bought_any = True
+                        break  # 本轮只种 1 块：下一轮仍从「最高等级」种子开始（每块都尽量用最高等级）
+                    if not bought_any:
+                        break  # 所有可购种子都买不起
+                if bought:
+                    lines.append(f"🛒 自动购买并种下 {bought} 颗种子（花费 {spent} 金币）。")
+                if free_left:
+                    lines.append(f"🍂 金币不足，剩余 {len(free_left)} 块空地未能种植。")
+        self._save(data)
+        # 4) 附土地状态图（新种地块黄色高亮）
+        return self._safe_render_plot_status(name, farm, crops, self._load_fertilizers(),
+                                             "\n".join(lines),
+                                             new_plots=[i + 1 for i in planted_ids])
+
+    def _apply_fert_to_plots(self, plots, use_plan, fert_name, time_reduce, yield_add):
+        """对 use_plan 中的地块施肥并重算成熟时间/产量（不落盘）"""
+        for i, cnt in use_plan.items():
+            plot = plots[i]
+            plot.setdefault("fert", {})[fert_name] = int(plot["fert"].get(fert_name, 0)) + cnt
+            plot["fert_time"] = float(plot.get("fert_time", 0.0)) + cnt * (time_reduce / 100.0)
+            plot["fert_yield"] = float(plot.get("fert_yield", 0.0)) + cnt * (yield_add / 100.0)
+            gname, gy, gt = self._plot_grade(int(plot.get("grade", 0)))
+            crop = self._find_item(self._load_crops(), plot.get("crop", ""))
+            base_time = int(plot.get("base_time", 0)) or (crop["grow_minutes"] * 60 if crop else 0)
+            time_mult = max(0.05, 1 - gt - float(plot.get("fert_time", 0.0)))
+            plot["mature_ts"] = float(plot.get("plant_ts", 0)) + base_time * time_mult
+            plot["yield"] = int((crop["yield"] if crop else 0) * (1 + gy + float(plot.get("fert_yield", 0.0))))
+
+    def _safe_render_plot_status(self, name, farm, crops, ferts, text, **kwargs):
+        """安全渲染土地状态图片并返回 image_text 或纯文本回退"""
         try:
-            new_plots = [i + 1 for i in targets]
-            img = self._render_plot_status(name, farm, crops, self._load_fertilizers(),
-                                           new_plots=new_plots)
+            img = self._render_plot_status(name, farm, crops, ferts, **kwargs)
         except Exception as e:
             logger.error(f"[插件] 渲染土地状态图片异常: {e}")
             img = None
-        if img is not None and isinstance(img, tuple) and img[0] == "image":
-            return ("image_text", text, img[1])
-        return text
+        return self._image_text_or_plain(img, text)
 
     def _apply_fert_use(self, data, key, name, farm, fert, count):
         """使用化肥 count 次：对全部生长中土地按需分配（每块地最多 max_uses 次）"""
@@ -6063,17 +6257,7 @@ class SignInPlugin(Star):
             remain -= add
         if not use_plan:
             return "生长中的土地都已达到该化肥的最大使用次数。"
-        for i, cnt in use_plan.items():
-            plot = plots[i]
-            plot["fert"][fert["name"]] = int(plot["fert"].get(fert["name"], 0)) + cnt
-            plot["fert_time"] = float(plot.get("fert_time", 0.0)) + cnt * (fert["time_reduce"] / 100.0)
-            plot["fert_yield"] = float(plot.get("fert_yield", 0.0)) + cnt * (fert["yield_add"] / 100.0)
-            gname, gy, gt = self._plot_grade(int(plot.get("grade", 0)))
-            crop = self._find_item(self._load_crops(), plot.get("crop", ""))
-            base_time = int(plot.get("base_time", 0)) or (crop["grow_minutes"] * 60 if crop else 0)
-            time_mult = max(0.05, 1 - gt - float(plot.get("fert_time", 0.0)))
-            plot["mature_ts"] = float(plot.get("plant_ts", 0)) + base_time * time_mult
-            plot["yield"] = int((crop["yield"] if crop else 0) * (1 + gy + float(plot.get("fert_yield", 0.0))))
+        self._apply_fert_to_plots(plots, use_plan, fert["name"], fert["time_reduce"], fert["yield_add"])
         wh[fert["name"]] = have - count
         if wh[fert["name"]] <= 0:
             wh.pop(fert["name"], None)
@@ -6086,7 +6270,8 @@ class SignInPlugin(Star):
         key = self._user_key(event)
         parts = event.message_str.split(maxsplit=1)
         if len(parts) < 2:
-            return "格式：施肥 <肥料名> [起始编号] [结束编号] [次数]"
+            # 1.7.6 快捷施肥：所有种植中的作物用一次化肥；化肥不可用则用有机化肥；缺失自动购买
+            return self._auto_fertilize(event)
         args = parts[1].split()
         fert_name = args[0]
         ferts = self._load_fertilizers()
@@ -6149,18 +6334,7 @@ class SignInPlugin(Star):
         if have < total_need:
             return f"{fert_name} 库存不足（需要 {total_need}，当前 {have}）。"
 
-        for i, cnt in use_plan.items():
-            plot = plots[i]
-            plot["fert"][fert_name] = int(plot["fert"].get(fert_name, 0)) + cnt
-            plot["fert_time"] = float(plot.get("fert_time", 0.0)) + cnt * (fert["time_reduce"] / 100.0)
-            plot["fert_yield"] = float(plot.get("fert_yield", 0.0)) + cnt * (fert["yield_add"] / 100.0)
-            gname, gy, gt = self._plot_grade(int(plot.get("grade", 0)))
-            crop = self._find_item(self._load_crops(), plot.get("crop", ""))
-            base_time = int(plot.get("base_time", 0)) or (crop["grow_minutes"] * 60 if crop else 0)
-            # 重算成熟时间：plant_ts + 基础时间*(1 - 土地时间减免 - 化肥时间减免)，至少 1 分钟
-            time_mult = max(0.05, 1 - gt - float(plot.get("fert_time", 0.0)))
-            plot["mature_ts"] = float(plot.get("plant_ts", 0)) + base_time * time_mult
-            plot["yield"] = int((crop["yield"] if crop else 0) * (1 + gy + float(plot.get("fert_yield", 0.0))))
+        self._apply_fert_to_plots(plots, use_plan, fert_name, fert["time_reduce"], fert["yield_add"])
         wh[fert_name] = have - total_need
         if wh[fert_name] <= 0:
             wh.pop(fert_name, None)
@@ -6168,18 +6342,115 @@ class SignInPlugin(Star):
         text = (f"✅ 对 {len(use_plan)} 块地使用了 {fert_name} ×{total_need}（剩余 {wh.get(fert_name, 0)}）。\n"
                 f"{self._farm_state_snippet(farm)}")
         # 响应末尾附加「土地状态」图片，使用化肥的地块黄色高亮；失败则纯文本
-        try:
-            highlight_plots = [i + 1 for i in use_plan]
-            img = self._render_plot_status(name, farm, self._load_crops(), ferts,
-                                           highlight_plots=highlight_plots)
-        except Exception as e:
-            logger.error(f"[插件] 渲染土地状态图片异常: {e}")
-            img = None
-        if img is not None and isinstance(img, tuple) and img[0] == "image":
-            return ("image_text", text, img[1])
-        return text
+        return self._safe_render_plot_status(name, farm, self._load_crops(), ferts, text,
+                                             highlight_plots=[i + 1 for i in use_plan])
+
+    def _auto_fertilize(self, event):
+        """施肥（无参数）快捷流程：对所有种植中的作物各使用 1 次「化肥」；
+        某块地化肥不可用（已达上限/未配置）则改用「有机化肥」；缺失的化肥自动在商店购买。"""
+        name = event.get_sender_name()
+        key = self._user_key(event)
+        data = self._load()
+        err = self._farm_need(data, key, name)
+        if err:
+            return err
+        farm = self._farm_of(data, key)
+        if not farm or not farm.get("plots"):
+            return "还没有土地，发送「购买土地」开垦。"
+        now = datetime.now().timestamp()
+        ferts = self._load_fertilizers()
+        if not ferts:
+            return "还没有配置任何化肥，发送「农场商店」查看。"
+        growing = [i for i, p in enumerate(farm["plots"])
+                   if p.get("crop") is not None and now < p.get("mature_ts", 0)]
+        if not growing:
+            return "没有正在生长中的作物可以施肥。"
+
+        def fert_ok(plot, f):
+            max_uses = int(f["max_uses"])
+            used = int(plot.get("fert", {}).get(f["name"], 0))
+            return max_uses < 0 or used < max_uses
+
+        def pick_fert(plot):
+            # 优先「化肥」；不可用则「有机化肥」；再不行则任意一种可用化肥
+            for f in ferts:
+                if f["name"] == "化肥" and fert_ok(plot, f):
+                    return f
+            for f in ferts:
+                if "有机" in f["name"] and fert_ok(plot, f):
+                    return f
+            for f in ferts:
+                if fert_ok(plot, f):
+                    return f
+            return None
+
+        plan = {}
+        for i in growing:
+            f = pick_fert(farm["plots"][i])
+            if f is not None:
+                plan[i] = f
+        if not plan:
+            return "生长中的土地都已达到各化肥的最大使用次数。"
+        need = {}
+        for f in plan.values():
+            need[f["name"]] = need.get(f["name"], 0) + 1
+        wh = farm["warehouse"].setdefault("fertilizers", {})
+        lines = []
+        # 缺失的化肥自动在商店购买（金币不足则买多少算多少）
+        for fname, n in list(need.items()):
+            have = int(wh.get(fname, 0))
+            if have >= n:
+                continue
+            fert = self._find_item(ferts, fname)
+            unit = int(fert["price"]) if fert else 0
+            coins = self._coins_of(data, key)
+            buy = (coins // unit) if unit > 0 else (n - have)
+            buy = max(0, min(n - have, buy))
+            if buy <= 0:
+                continue
+            self._add_coins(data, key, -buy * unit, f"购买肥料·{fname}")
+            farm["total_profit"] = int(farm.get("total_profit", 0)) - buy * unit
+            wh[fname] = have + buy
+            if buy < n - have:
+                lines.append(f"🛒 自动购买 {fname} ×{buy}（花费 {buy * unit} 金币，金币不足未买满）。")
+            else:
+                lines.append(f"🛒 自动购买 {fname} ×{buy}（花费 {buy * unit} 金币）。")
+        # 执行施肥：每块地各 1 次（按库存实际可用）
+        crops = self._load_crops()
+        used_plots = []
+        used_total = 0
+        for i, f in plan.items():
+            fname = f["name"]
+            have = int(wh.get(fname, 0))
+            if have <= 0:
+                continue
+            plot = farm["plots"][i]
+            plot["fert"][fname] = int(plot["fert"].get(fname, 0)) + 1
+            plot["fert_time"] = float(plot.get("fert_time", 0.0)) + f["time_reduce"] / 100.0
+            plot["fert_yield"] = float(plot.get("fert_yield", 0.0)) + f["yield_add"] / 100.0
+            gname, gy, gt = self._plot_grade(int(plot.get("grade", 0)))
+            crop = self._find_item(crops, plot.get("crop", ""))
+            base_time = int(plot.get("base_time", 0)) or (crop["grow_minutes"] * 60 if crop else 0)
+            time_mult = max(0.05, 1 - gt - float(plot.get("fert_time", 0.0)))
+            plot["mature_ts"] = float(plot.get("plant_ts", 0)) + base_time * time_mult
+            plot["yield"] = int((crop["yield"] if crop else 0) * (1 + gy + float(plot.get("fert_yield", 0.0))))
+            wh[fname] = have - 1
+            if wh[fname] <= 0:
+                wh.pop(fname, None)
+            used_plots.append(i + 1)
+            used_total += 1
+        self._save(data)
+        if not used_plots:
+            return "化肥库存不足且金币不足，无法自动购买施肥。"
+        lines.insert(0, f"✅ 施肥完成：对 {len(used_plots)} 块地各使用 1 次化肥（共 {used_total} 次）。")
+        text = "\n".join(lines) + "\n" + self._farm_state_snippet(farm)
+        # 界面类似土地状态；预期收益部分替换为化肥使用效果
+        return self._safe_render_plot_status(name, farm, crops, ferts, text,
+                                             highlight_plots=used_plots, fert_mode=True)
 
     def _handle_farm_harvest(self, event):
+        """收割 / 收获（1.7.6）：收割成熟作物并**自动售出**，图片回复（收获状况 + 获得资金）。
+        指定编号 = 收割并售出该块；不填 = 全部成熟作物。"""
         name = event.get_sender_name()
         key = self._user_key(event)
         parts = event.message_str.split(maxsplit=1)
@@ -6200,52 +6471,37 @@ class SignInPlugin(Star):
                 return f"土地编号无效（当前共 {len(plots)} 块）。"
             targets = [num - 1]
         else:
-            targets = [i for i, p in enumerate(plots) if p.get("crop") is not None and now >= p.get("mature_ts", 0)]
-        if not targets:
-            return "没有可收割的成熟作物。"
-
-        wh = farm["warehouse"].setdefault("crops", {})
-        total_exp = 0
-        harvested = []
-        for i in targets:
-            plot = plots[i]
-            if plot.get("crop") is None or now < plot.get("mature_ts", 0):
-                continue
-            crop = self._find_item(crops, plot["crop"])
-            amount = int(plot.get("yield", 0))
-            wh[plot["crop"]] = int(wh.get(plot["crop"], 0)) + amount
-            # 收割经验：只受土地等级产量加成影响，化肥加成不作用于经验
-            gy = self._plot_grade(int(plot.get("grade", 0)))[1]
-            base_exp = int(crop["exp"]) if crop else 0
-            exp = int(round(base_exp * (1 + gy))) if crop else 0
-            total_exp += exp
-            # 盈利在购买（成本）与卖出（收入）时即时结算，收割不在此加减
-            harvested.append(i + 1)
-            plot["crop"] = None
-            plot["seed"] = None
-            plot["plant_ts"] = 0
-            plot["mature_ts"] = 0
-            plot["base_time"] = 0
-            plot["yield"] = 0
-            plot["fert_time"] = 0.0
-            plot["fert_yield"] = 0.0
-            plot["fert"] = {}
+            targets = None
+        harvested, amounts, total_exp = self._harvest_mature(data, farm, crops, now, targets=targets)
         if not harvested:
-            return "指定的土地没有成熟作物。"
+            return "没有可收割的成熟作物。"
         lvl_msg = self._farm_gain_exp(farm, total_exp)
-        # 被偷批次：本次收割的地块若有偷菜信息，标记 harvest_ts（24h 内可见）
-        now_ts = datetime.now().timestamp()
-        for it in farm.get("steal_infos", []):
-            if it.get("harvest_ts") is None:
-                it["harvest_ts"] = now_ts
+        # 自动售出本次收割的全部作物
+        total_sold = 0
+        wh = farm["warehouse"].setdefault("crops", {})
+        for nm, cnt in amounts.items():
+            c = self._find_item(crops, nm)
+            gain = int(round(cnt * (float(c["crop_price"]) if c else 0.0)))
+            total_sold += gain
+            have = int(wh.get(nm, 0))
+            if have <= cnt:
+                wh.pop(nm, None)
+            else:
+                wh[nm] = have - cnt
+        self._add_coins(data, key, total_sold, "收割售卖")
+        farm["total_profit"] = int(farm.get("total_profit", 0)) + total_sold
         self._save(data)
-        text = (f"✅ 收割了 {len(harvested)} 块地（编号 {harvested}），作物已入库，农场经验 +{total_exp}{lvl_msg}。\n"
-                f"{self._farm_state_snippet(farm)}")
-        # 附加偷菜信息（收割后 24h 内可见）
-        steal_lines = self._steal_info_lines(farm, now_ts)
+        # 收获状况 + 获得资金（偷菜记录附加）
+        lines = [f"🌾 收获：收割 {len(harvested)} 块地（编号 {harvested}），农场经验 +{total_exp}{lvl_msg}",
+                 f"💰 获得资金：{total_sold} 金币",
+                 self._coin_line(data, key)]
+        steal_lines = self._steal_info_lines(farm, datetime.now().timestamp())
         if steal_lines:
-            text += "\n" + "\n".join(steal_lines)
-        return text
+            lines.append("")
+            lines.extend(steal_lines)
+        text = "\n".join(lines)
+        # 图片回复：收获状况 + 获得资金（附收割后的土地状态图）
+        return self._safe_render_plot_status(name, farm, crops, self._load_fertilizers(), text)
 
     # ================= 偷菜 =================
     def _steal_enabled(self, data) -> bool:
@@ -6321,15 +6577,30 @@ class SignInPlugin(Star):
         tdata_farm = self._farm_of(data, tkey)
         if not tdata_farm:
             return "对方还没有解锁农场，无法偷菜。"
-        tplots = tdata_farm.get("plots", [])
         now_ts = datetime.now().timestamp()
         crops = self._load_crops()
+        r = self._do_steal(data, key, name, tkey, now_ts, crops)
+        if r is None:
+            return "对方农场没有可偷的成熟作物。"
+        self._save(data)
+        return self._steal_summary(name, key, r)
 
+    def _do_steal(self, data, key, name, tkey, now_ts, crops):
+        """对单个目标执行偷菜核心（不落盘，调用方统一 _save）。
+        返回 None（对方无可偷成熟作物）或 dict：
+        {gain, events, guard, fine, tname}——gain=偷菜方金币收益；guard=宠物效果(catch/return/slack/None)；
+        events=结果明细（被偷方视角）；fine=罚款。"""
+        tdata_farm = self._farm_of(data, tkey)
+        if not tdata_farm:
+            return None
+        tplots = tdata_farm.get("plots", [])
         # 目标已成熟地块（未收割）
         ripe = [(i, p) for i, p in enumerate(tplots)
                 if p.get("crop") is not None and now_ts >= p.get("mature_ts", 0)]
         if not ripe:
-            return "对方农场没有已成熟的作物可偷。"
+            return None
+        key_farm = self._farm_of(data, key)
+        farm = key_farm or {"level": 0, "plots": []}
 
         # 基本防御：目标作物最低等级 > 偷菜者农场等级 + 5 → 无法偷该作物
         # 逐地块尝试偷菜（每个成熟地块独立判定）
@@ -6369,10 +6640,10 @@ class SignInPlugin(Star):
         pet_guard_effect = None  # "catch"(抓到你了) / "return"(给我站住) / "slack"(摸鱼)
         tpet_busy = bool(tpet and now_ts < self._pet_busy_until(tpet))
         if guard_effective and tpet is not None and not tpet_busy and tpet["stamina"] > 40:
-            r = random.random()
-            if r < 0.30:
+            rnd = random.random()
+            if rnd < 0.30:
                 pet_guard_effect = "return"   # 给我站住：追回 40-60%
-            elif r < 0.50:
+            elif rnd < 0.50:
                 pet_guard_effect = "catch"    # 抓到你了：偷菜失败 + 罚款 + 气味记忆
             else:
                 pet_guard_effect = "slack"    # 摸鱼：偷菜方溜之大吉
@@ -6445,7 +6716,7 @@ class SignInPlugin(Star):
                            "status": "success"})
 
         if not events:
-            return "对方农场没有可偷的成熟作物。"
+            return None
 
         # 记录被偷事件（含本次批次收割时间戳，24h 有效期）
         t_events = tdata_farm.setdefault("steal_infos", [])
@@ -6477,23 +6748,115 @@ class SignInPlugin(Star):
             # 给我站住：体力消耗 2-5
             tpet["stamina"] = round(max(0.0, tpet["stamina"] - random.randint(2, 5)), 2)
 
-        self._save(data)
+        return {
+            "gain": my_gain,
+            "events": events,
+            "guard": pet_guard_effect,
+            "fine": fine,
+            "tname": self._user_name(data, tkey) or "对方",
+        }
 
-        # 偷菜方视角摘要
+    def _steal_summary(self, name, key, r):
+        """偷菜方视角摘要（单个目标的结果 r）"""
+        events = r["events"]
         ok_count = sum(1 for e in events if e["status"] in ("success", "pet_return"))
         fail_count = sum(1 for e in events if e["status"] in ("level_fail", "pet_catch"))
-        tname = self._user_name(data, tkey) or "对方"
-        lines = [f"🥬 {name} 对 {tname} 的农场进行了偷菜："]
-        if my_gain > 0:
-            lines.append(f"💰 偷得作物折合 {my_gain} 金币！")
+        lines = [f"🥬 {name} 对 {r['tname']} 的农场进行了偷菜："]
+        if r["gain"] > 0:
+            lines.append(f"💰 偷得作物折合 {r['gain']} 金币！")
         if fail_count:
             lines.append(f"🛡️ {fail_count} 个地块防御成功（等级不足/被宠物发现）")
-        if pet_guard_effect == "return":
+        if r["guard"] == "return":
             lines.append("🐾 对方的宠物触发了「给我站住」，追回了部分作物！")
-        elif pet_guard_effect == "catch":
-            lines.append(f"🐾 对方的宠物触发了「抓到你了」，偷菜失败！罚款 {fine} 金币！")
-        elif pet_guard_effect == "slack":
+        elif r["guard"] == "catch":
+            lines.append(f"🐾 对方的宠物触发了「抓到你了」，偷菜失败！罚款 {r['fine']} 金币！")
+        elif r["guard"] == "slack":
             lines.append("🐾 对方的宠物摸鱼了，溜之大吉～")
+        return "\n".join(lines)
+
+    def _handle_auto_steal(self, event):
+        """自动偷菜（1.7.6）：每天最多 5 次，随机抽取 4 位可偷菜用户的农场进行偷菜。
+        判定：产生金币收益 = 成功，消耗 1 次；无收益 = 失败，不消耗次数；
+        被宠物拦截（触发「抓到你了」）= 当天锁定，不能再使用自动偷菜。"""
+        name = event.get_sender_name()
+        key = self._user_key(event)
+        data = self._load()
+        if not self._steal_enabled(data):
+            return "⚠️ 「偷菜系统」功能已被管理员关闭，暂时无法使用。"
+        err = self._farm_need(data, key, name)
+        if err:
+            return err
+        u = self._ensure_user(data, key)
+        today = date.today().isoformat()
+        limit = int(globals().get("AUTO_STEAL_DAILY_LIMIT", 5))
+        if u.get("auto_steal_date") != today:
+            u["auto_steal_date"] = today
+            u["auto_steal_used"] = 0
+            u["auto_steal_blocked"] = False
+        if u.get("auto_steal_blocked"):
+            return "🐾 今天自动偷菜已被宠物拦截，无法再次使用（明天重置）。"
+        used = int(u.get("auto_steal_used", 0))
+        if used >= limit:
+            return f"今天的自动偷菜次数已用完（{used}/{limit}）。"
+        now_ts = datetime.now().timestamp()
+        crops = self._load_crops()
+        # 随机抽取 4 位「可偷菜」用户：有农场 + 有成熟作物（且产量 > 0）+ 非自己
+        candidates = []
+        for uid, f in (data.get("farms") or {}).items():
+            if uid == key:
+                continue
+            if any(p.get("crop") is not None and now_ts >= p.get("mature_ts", 0)
+                   and int(p.get("yield", 0)) > 0
+                   for p in f.get("plots", [])):
+                candidates.append(uid)
+        if not candidates:
+            return "没有可偷菜的用户（暂无他人有成熟作物）。"
+        targets = random.sample(candidates, min(AUTO_STEAL_TARGETS, len(candidates)))
+
+        results = []
+        total_gain = 0
+        blocked = False
+        for tkey in targets:
+            r = self._do_steal(data, key, name, tkey, now_ts, crops)
+            if r is None:
+                continue
+            results.append(r)
+            total_gain += r["gain"]
+            if r["guard"] == "catch":
+                blocked = True
+                break  # 被宠物拦截 → 停止本轮并锁定今天
+
+        # 被宠物拦截：今天锁定（不算次数）
+        if blocked:
+            u["auto_steal_date"] = today
+            u["auto_steal_blocked"] = True
+            self._save(data)
+            lines = [f"🥬 {name} 自动偷菜被宠物拦截！",
+                     "🐾 今天无法再次使用自动偷菜（明天重置）。"]
+            for r in results:
+                lines.append(f"· {r['tname']}：被宠物抓到，偷菜失败")
+            return "\n".join(lines)
+
+        # 有收益 = 成功，消耗 1 次
+        if total_gain > 0:
+            u["auto_steal_date"] = today
+            u["auto_steal_used"] = used + 1
+            self._save(data)
+            lines = [f"🥬 {name} 自动偷菜成功！偷了 {len(results)} 位用户，共获得 {total_gain} 金币。"]
+            for r in results:
+                if r["guard"] == "return":
+                    lines.append(f"· {r['tname']}：+{r['gain']} 金币（宠物追回部分）")
+                else:
+                    lines.append(f"· {r['tname']}：+{r['gain']} 金币")
+            lines.append(f"今日剩余自动偷菜次数：{limit - used - 1} 次")
+            return "\n".join(lines)
+
+        # 无收益 = 失败，不消耗次数
+        self._save(data)
+        lines = [f"🥬 {name} 自动偷菜没有偷到任何收益（本次不消耗次数）。"]
+        for r in results:
+            lines.append(f"· {r['tname']}：0 金币（未偷到作物）")
+        lines.append(f"今日剩余自动偷菜次数：{limit - used} 次")
         return "\n".join(lines)
 
     def _user_name(self, data, uid):
@@ -6561,15 +6924,7 @@ class SignInPlugin(Star):
         plot = farm["plots"][num - 1]
         if plot.get("crop") is None:
             return f"{num} 号土地本来就是空闲的。"
-        plot["crop"] = None
-        plot["seed"] = None
-        plot["plant_ts"] = 0
-        plot["mature_ts"] = 0
-        plot["base_time"] = 0
-        plot["yield"] = 0
-        plot["fert_time"] = 0.0
-        plot["fert_yield"] = 0.0
-        plot["fert"] = {}
+        self._clear_plot(plot)
         self._save(data)
         return (f"✅ 已取消 {num} 号土地的种植。\n"
                 f"{self._farm_state_snippet(farm)}")
@@ -6710,13 +7065,14 @@ class SignInPlugin(Star):
         img = self._render_farm_shop(name, farm, crops, ferts, expanded, page)
         if img is not None:
             return img
-        # 文本回退
+        # 文本回退（同样按价格升序）
         lines = [f"{name} 的农场商店（发送「农场商店 展开」查看全部种子）"]
-        for c in crops:
-            p = int(round(c["seed_price"] * self._farm_seed_mult(farm)))
+        mult = self._farm_seed_mult(farm)
+        for c in sorted(crops, key=lambda c: (int(round(c["seed_price"] * mult)), c["name"])):
+            p = int(round(c["seed_price"] * mult))
             lv = f"需Lv.{c['min_level']}" if c["min_level"] > 0 else "无等级"
             lines.append(f"🌱 {c['name']}（{lv}）{p}金币 售价{int(round(c['yield']*c['crop_price']))}金 经验{c['exp']}")
-        for f in ferts:
+        for f in sorted(ferts, key=lambda f: (int(f["price"]), f["name"])):
             lines.append(f"🧪 {f['name']} {int(f['price'])}金币 减时{f['time_reduce']:.0f}% 增产{f['yield_add']:.0f}%")
         return "\n".join(lines)
 
@@ -7279,10 +7635,8 @@ class SignInPlugin(Star):
         进度条左侧留白 = 基准 12px × RANK_BAR_GAP_LEFT_MULT（默认 200%）、右侧 = × RANK_BAR_GAP_RIGHT_MULT（默认 300%）；
         每行文字行高固定 line_h、分割线紧跟行底，文字与分割线间距一致；
         图片宽度 = 内容宽度 × RANK_IMAGE_SCALE（默认 2.5 = 原来的 250%），高度自适应。"""
-        try:
-            from PIL import Image, ImageDraw
-        except Exception as e:
-            logger.error(f"[插件] 缺少 Pillow，无法生成图片: {e}")
+        Image, ImageDraw = _ensure_pillow()
+        if Image is None:
             return None
         fonts = _load_fonts(36, 24)
         if fonts is None:
