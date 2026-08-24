@@ -8,7 +8,10 @@
   </head>
   <body>
     <div class="container">
-      <h1>🐾 签到娱乐系统后台管理</h1>
+      <header class="page-head">
+        <h1>🐾 签到娱乐系统<span class="accent">后台管理</span></h1>
+        <p class="page-sub">商店 / 打工玩耍 / 贷款 / 功能开关 / 设置 / 活动 / 同义口令 / 数据</p>
+      </header>
 
       <div id="debug-bar" class="debug-bar hidden"></div>
 
@@ -17,67 +20,75 @@
         <button class="tab" data-tab="config">打工玩耍</button>
         <button class="tab" data-tab="loanpkgs">贷款套餐</button>
         <button class="tab" data-tab="features">功能开关</button>
-        <button class="tab" data-tab="params">运行参数</button>
+        <button class="tab" data-tab="params">设置</button>
         <button class="tab" data-tab="activities">活动中心</button>
         <button class="tab" data-tab="aliases">同义口令</button>
-        <button class="tab" data-tab="names">群昵称同步</button>
         <button class="tab" data-tab="data">数据导入导出</button>
       </div>
 
-      <!-- 商店编辑：宠物商店（按类型）/ 农场商店（种子、肥料） -->
+      <!-- 商店编辑：宠物商店（表格）/ 农场商店（种子、肥料） -->
       <section id="panel-shopedit" class="panel">
         <details class="param-group" open>
-          <summary>🐾 宠物商店（按类型拆分：食物/饮料/药物/玩具）</summary>
+          <summary>🐾 宠物商店（表格编辑）</summary>
           <div class="toolbar">
-            <button id="btn-load-petshop-all">全部加载</button>
-            <button id="btn-save-petshop-all" class="primary">全部保存</button>
+            <button id="btn-load-petshop-all">加载</button>
+            <button id="btn-save-petshop-all" class="primary">保存</button>
             <span id="status-petshop" class="status"></span>
           </div>
-          <div class="param-subgroups">
-            <div id="petshop-editors"></div>
-            <p class="hint">1.7.3 起宠物商店商品按 食物 / 饮料 / 药物 / 玩具 拆分为独立文件编辑（原 宠物商店.txt 自动拆分迁移）。</p>
-          </div>
+          <div class="table-wrap" id="petshop-table"></div>
+          <button id="btn-petshop-add" class="add-row">＋ 添加新商品</button>
+          <p class="hint">1.7.7 起商店数值改为表格编辑（存储于 game_items.json，旧版 txt 自动迁移）。商品**按类别分组**展示（食物 / 饮料 / 药物 / 玩具），表头滚动时常驻；每行一种商品：名称+描述 / 类型 / 五项属性效果 / 价格。修改后点「保存」立即生效。</p>
         </details>
         <details class="param-group" open>
-          <summary>🌾 农场商店</summary>
+          <summary>🌾 农场商店（表格编辑）</summary>
           <div class="param-subgroups">
             <details class="param-subgroup" open>
-              <summary>🌱 种子（作物.txt）</summary>
+              <summary>🌱 种子（作物）</summary>
               <div class="sub-editor">
                 <div class="toolbar">
                   <button id="btn-load-crops">加载</button>
                   <button id="btn-save-crops" class="primary">保存</button>
                   <span id="status-crops" class="status"></span>
                 </div>
-                <textarea id="crops-text" spellcheck="false" placeholder="点击「加载」读取 作物.txt 内容..."></textarea>
-                <p class="hint">编辑作物配置（种子价格 / 产量 / 成熟时间等），保存后立即生效。</p>
+                <div class="table-wrap" id="crops-table"></div>
+                <button id="btn-crops-add" class="add-row">＋ 添加新作物</button>
               </div>
             </details>
             <details class="param-subgroup" open>
-              <summary>🧪 肥料（肥料.txt）</summary>
+              <summary>🧪 肥料</summary>
               <div class="sub-editor">
                 <div class="toolbar">
                   <button id="btn-load-ferts">加载</button>
                   <button id="btn-save-ferts" class="primary">保存</button>
                   <span id="status-ferts" class="status"></span>
                 </div>
-                <textarea id="ferts-text" spellcheck="false" placeholder="点击「加载」读取 肥料.txt 内容..."></textarea>
-                <p class="hint">编辑肥料配置（价格 / 减时 / 增产 / 最大次数），保存后立即生效。</p>
+                <div class="table-wrap" id="ferts-table"></div>
+                <button id="btn-ferts-add" class="add-row">＋ 添加新肥料</button>
               </div>
             </details>
           </div>
+          <p class="hint">1.7.7 起农场商店同样改为表格编辑（一并存于 game_items.json，旧版 作物.txt / 肥料.txt 自动迁移）。作物列：种子价格 / 种子卖价 / 产量 / 成熟售价 / 收获经验 / 需要农场等级 / 成熟时间(分钟)；肥料列：价格 / 减时% / 增产% / 最大使用次数（-1 不限）。保存后立即生效。</p>
         </details>
       </section>
 
-      <!-- 打工 / 玩耍（原后台.txt 剩余部分） -->
+      <!-- 打工 / 玩耍（表格编辑） -->
       <section id="panel-config" class="panel hidden">
         <div class="toolbar">
           <button id="btn-load-config">加载</button>
           <button id="btn-save-config" class="primary">保存</button>
           <span id="status-config" class="status"></span>
         </div>
-        <textarea id="config-text" spellcheck="false" placeholder="点击「加载」读取 后台.txt 内容..."></textarea>
-        <p class="hint">编辑打工 / 玩耍配置（1.7.3：宠物商店商品已拆分到 宠物商店.txt，本文件仅含打工/玩耍），保存后立即生效。</p>
+        <details class="param-group" open>
+          <summary>💼 打工项目</summary>
+          <div class="table-wrap" id="jobs-table"></div>
+          <button id="btn-jobs-add" class="add-row">＋ 添加新打工项目</button>
+        </details>
+        <details class="param-group" open>
+          <summary>🎾 玩耍项目</summary>
+          <div class="table-wrap" id="plays-table"></div>
+          <button id="btn-plays-add" class="add-row">＋ 添加新玩耍项目</button>
+        </details>
+        <p class="hint">1.7.7 起打工/玩耍数值改为表格编辑（存储于 game_items.json，旧版 后台.txt 自动迁移）。每行一个项目：名称+描述 / 参与要求（最低等级/健康/心情）/ 消耗数值 / 时间，最后是金币与经验收益。修改后点「保存」立即生效。</p>
       </section>
 
       <section id="panel-loanpkgs" class="panel hidden">
@@ -86,8 +97,9 @@
           <button id="btn-save-loanpkgs" class="primary">保存</button>
           <span id="status-loanpkgs" class="status"></span>
         </div>
-        <textarea id="loanpkgs-text" spellcheck="false" placeholder="点击「加载」读取 贷款套餐.txt 内容..."></textarea>
-        <p class="hint">编辑自定义贷款套餐（代码 3~10）：最大金额 / 好感度等级要求 / 宠物等级要求 / 农场等级要求 / 利息，保存后立即生效。</p>
+        <div class="table-wrap" id="loans-table"></div>
+        <button id="btn-loans-add" class="add-row">＋ 添加新套餐</button>
+        <p class="hint">1.7.7 起贷款套餐改为表格编辑（一并存于 game_items.json，旧版 贷款套餐.txt 自动迁移）。每行一个套餐：代码（3~10 整数，1/2 为系统内置）/ 最大金额 / 好感度等级要求 / 宠物等级要求 / 农场等级要求 / 日利率%。保存后立即生效。</p>
       </section>
 
       <!-- 功能开关 -->
@@ -110,9 +122,31 @@
           <span id="status-params" class="status"></span>
         </div>
         <div id="params-list" class="param-list">
-          <p class="hint">点击「加载」读取运行参数...</p>
+          <p class="hint">点击「加载」读取设置...</p>
         </div>
         <p class="hint">修改后点击「保存并立即生效」即可（无需重启插件）。参数保存在 plugin_data 的 data.json 中，重启后仍保留。</p>
+        <!-- 群昵称同步：并入本选项卡 -->
+        <details class="param-group" open>
+          <summary>👥 群昵称同步</summary>
+          <div class="param-subgroups">
+            <div class="toolbar">
+              <button id="btn-sync-group-names" class="primary">同步全部群聊的成员昵称</button>
+              <span id="status-names" class="status"></span>
+            </div>
+            <p class="hint">点击按钮后，插件通过机器人 API（aiocqhttp / OneBot）拉取<b>所有群聊</b>的成员昵称，存为<b>排行榜用户默认昵称</b>（data.json → group_names）。同步后：排行榜优先显示「用户触发功能时记录的最新昵称」，其次显示本同步数据，最后才是存档昵称 / 掩码。成员较多的群可能需要一点时间，请勿频繁点击。</p>
+          </div>
+        </details>
+        <!-- 危险操作：默认折叠，放在面板最后 -->
+        <details class="param-group danger-zone">
+          <summary>⚠️ 危险操作区（默认道具数据）</summary>
+          <div class="param-subgroups">
+            <div class="toolbar">
+              <button id="btn-apply-benchmark" class="danger">使用插件默认道具数据</button>
+              <span id="status-benchmark" class="status"></span>
+            </div>
+            <p class="hint">点击后需输入弹窗中显示的 6 位验证码确认。<b>农场系统（种子/作物、肥料）</b>与<b>宠物系统（商店商品）</b>的道具数值将替换为插件包 <code>Benchmark data/game_items.json</code> 中的默认数据，立即生效。当前自定义数值会被覆盖（打工/玩耍/贷款套餐不受影响），建议先导出备份。</p>
+          </div>
+        </details>
       </section>
 
       <section id="panel-activities" class="panel hidden">
@@ -139,14 +173,6 @@
         <p class="hint">同义口令 = 词义相近的口令别名，发送别名与发送对应指令效果完全相同（降低记忆指令的难度）。例如默认预置 <code>打卡 → 签到</code>、<code>我的宠物 → 宠物</code>、<code>存金币 → 存款</code>、<code>治疗 → 治疗宠物</code>、<code>财富榜 → 金币排行</code> 等。目标指令从下拉列表选择，同义词不能与标准指令同名；保存后立即生效（重启后保留）。</p>
       </section>
 
-      <section id="panel-names" class="panel hidden">
-        <div class="toolbar">
-          <button id="btn-sync-group-names" class="primary">同步全部群聊的成员昵称</button>
-          <span id="status-names" class="status"></span>
-        </div>
-        <p class="hint">点击按钮后，插件通过机器人 API（aiocqhttp / OneBot）拉取<b>所有群聊</b>的成员昵称，存为<b>排行榜用户默认昵称</b>（data.json → group_names）。同步后：排行榜优先显示「用户触发功能时记录的最新昵称」，其次显示本同步数据，最后才是存档昵称 / 掩码。成员较多的群可能需要一点时间，请勿频繁点击。</p>
-      </section>
-
       <section id="panel-data" class="panel hidden">
         <div class="toolbar">
           <button id="btn-export-data">导出全部数据</button>
@@ -154,10 +180,31 @@
           <button id="btn-import-data" class="primary">导入</button>
           <span id="status-data" class="status"></span>
         </div>
-        <p class="hint">导出会把 **用户存档（data.json）+ 自定义配置（后台.txt / 宠物商店.txt / 作物.txt / 肥料.txt / 贷款套餐.txt）** 打包为单个 JSON 文件下载；导入会用所选文件覆盖以上全部文件（建议先导出备份）。</p>
+        <p class="hint">导出会把 **用户存档（data.json）+ 数值配置（game_items.json：商店/打工/玩耍/作物/肥料/贷款套餐）** 打包为单个 JSON 文件下载；导入会用所选文件覆盖以上全部文件（兼容旧版 txt 备份，导入后自动迁移为 game_items.json；建议先导出备份）。</p>
       </section>
+
+      <footer class="page-foot">签到娱乐系统 · 1.7.7</footer>
     </div>
 
     <script type="module" src="./app.js"></script>
+
+    <!-- 验证码确认弹窗（危险操作：使用默认道具数据） -->
+    <div id="captcha-modal" class="captcha-modal hidden">
+      <div class="captcha-box">
+        <div class="captcha-title">⚠️ 确认使用默认道具数据</div>
+        <p class="captcha-warn">此操作将<b>覆盖</b>农场（作物/肥料）与宠物（商店商品）的全部自定义数值，且立即生效、不可撤销。</p>
+        <div class="captcha-row">
+          <span class="captcha-label">验证码</span>
+          <span id="captcha-code" class="captcha-code"></span>
+          <input id="captcha-input" class="captcha-input" type="text" inputmode="numeric"
+                 maxlength="6" autocomplete="off" placeholder="输入左侧 6 位数字" />
+        </div>
+        <div id="captcha-error" class="captcha-error hidden">验证码不正确，请重新输入</div>
+        <div class="captcha-actions">
+          <button id="btn-captcha-cancel">取消</button>
+          <button id="btn-captcha-ok" class="danger">确认执行</button>
+        </div>
+      </div>
+    </div>
   </body>
 </html>

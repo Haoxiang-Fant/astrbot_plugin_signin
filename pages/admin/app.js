@@ -7,183 +7,381 @@ function setStatus(id, text) {
   if (el) el.textContent = text;
 }
 
+function esc(s) {
+  return String(s ?? "")
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;");
+}
+
+// ================= 数值表格编辑器（1.7.7：商店/打工/玩耍） =================
+// 列定义：[key, 表头]；第一列固定为「名称+描述」，最后为金币/经验类收益列
+const JOB_FIELDS = [
+  ["min_level", "最低等级"], ["min_health", "最低健康"], ["min_mood", "最低心情"],
+  ["cost_stamina", "消耗体力"], ["cost_satiety", "消耗饱食"], ["cost_thirst", "消耗口渴"],
+  ["cost_health", "消耗健康"], ["cost_mood", "消耗心情"],
+  ["time", "时间(秒)"], ["coins", "金币"], ["exp", "经验"],
+];
+const PLAY_FIELDS = [
+  ["min_level", "最低等级"], ["min_health", "最低健康"], ["min_mood", "最低心情"],
+  ["cost_stamina", "消耗体力"], ["cost_satiety", "消耗饱食"], ["cost_thirst", "消耗口渴"],
+  ["cost_health", "消耗健康"], ["cost_mood", "消耗心情"],
+  ["time", "时间(秒)"], ["exp", "经验"], ["mood", "心情"], ["stamina", "体力"], ["health", "健康"],
+];
+// 商店：名称+描述 | 类型 | 五项效果 | 价格（金币）
+const SHOP_EFFECT_FIELDS = [
+  ["satiety", "饱食度"], ["thirst", "口渴值"], ["stamina", "体力"],
+  ["mood", "心情值"], ["health", "健康度"],
+];
+const PETSHOP_TYPES = ["食物", "饮料", "药物", "玩具"];
+const PETSHOP_TYPE_ICONS = { 食物: "🍖", 饮料: "🥤", 药物: "💊", 玩具: "🧸" };
+// 农场商店：作物 / 肥料
+const CROP_FIELDS = [
+  ["seed_price", "种子价格"], ["seed_sell_price", "种子卖价"], ["yield", "产量"],
+  ["crop_price", "成熟售价"], ["exp", "收获经验"], ["min_level", "需要等级"],
+  ["grow_minutes", "成熟(分钟)"],
+];
+const FERT_FIELDS = [
+  ["price", "价格"], ["time_reduce", "减时%"], ["yield_add", "增产%"],
+  ["max_uses", "最大次数(-1不限)"],
+];
+// 贷款套餐：代码（3~10）+ 5 个数值列
+const LOAN_FIELDS = [
+  ["max_amount", "最大金额"], ["fav_req", "好感等级"], ["pet_req", "宠物等级"],
+  ["farm_req", "农场等级"], ["rate", "日利率%"],
+];
+
+// ================= 「先加载后编辑」保护 =================
+// 各数据编辑选项卡：未成功加载前禁用表格区域与「添加」按钮，并阻止保存（避免空表覆盖数据）
+const loadedTabs = {};
+const LOCKED_SECTIONS = {
+  petshop: { tables: ["petshop-table"], adds: ["btn-petshop-add"], status: "status-petshop" },
+  config: { tables: ["jobs-table", "plays-table"], adds: ["btn-jobs-add", "btn-plays-add"], status: "status-config" },
+  crops: { tables: ["crops-table"], adds: ["btn-crops-add"], status: "status-crops" },
+  ferts: { tables: ["ferts-table"], adds: ["btn-ferts-add"], status: "status-ferts" },
+  loanpkgs: { tables: ["loans-table"], adds: ["btn-loans-add"], status: "status-loanpkgs" },
+};
+
+function syncLockUI() {
+  for (const [key, s] of Object.entries(LOCKED_SECTIONS)) {
+    const on = !!loadedTabs[key];
+    s.tables.forEach((id) => { const el = $(id); if (el) el.classList.toggle("locked", !on); });
+    s.adds.forEach((id) => { const el = $(id); if (el) el.disabled = !on; });
+  }
+}
+
+function setLoaded(key, ok) {
+  loadedTabs[key] = ok;
+  syncLockUI();
+}
+
+function guardLoaded(key) {
+  if (loadedTabs[key]) return true;
+  setStatus(LOCKED_SECTIONS[key].status, "⚠️ 请先点击「加载」读取当前数据，加载后才能编辑/保存");
+  return false;
+}
+
+function numCell(f, v) {
+  return `<td><input class="i-num" data-f="${f}" type="number" step="any" value="${esc(v ?? 0)}" /></td>`;
+}
+
+function itemRowHtml(fields, item, opts) {
+  const nameDesc = opts?.codeMode
+    ? `<td class="c-name"><input class="i-num i-code" data-f="code" type="number" min="3" max="10" step="1" value="${esc(item?.code ?? "")}" placeholder="代码" /></td>`
+    : `<td class="c-name">
+      <input class="i-name" data-f="name" value="${esc(item?.name ?? "")}" placeholder="名称" />
+      <input class="i-desc" data-f="desc" value="${esc(item?.desc ?? "")}" placeholder="描述" />
+    </td>`;
+  const typeCell = opts?.withType
+    ? `<td><select class="i-type" data-f="type">${PETSHOP_TYPES.map(
+        (t) => `<option value="${t}"${(item?.type || "食物") === t ? " selected" : ""}>${t}</option>`,
+      ).join("")}</select></td>`
+    : "";
+  const nums = fields.map(([f]) => numCell(f, item?.[f])).join("");
+  return `<tr>${nameDesc}${typeCell}${nums}<td><button class="row-del danger" title="删除该行">删除</button></td></tr>`;
+}
+
+function itemTableHtml(fields, items, opts) {
+  const headCells =
+    (opts?.codeMode ? `<th class="c-name">代码</th>` : `<th class="c-name">名称 / 描述</th>`) +
+    (opts?.withType ? `<th>类型</th>` : "") +
+    fields.map(([, label]) => `<th>${label}</th>`).join("") +
+    `<th>操作</th>`;
+  const colCount = 1 + (opts?.withType ? 1 : 0) + fields.length + 1;
+  let bodyRows;
+  if (opts?.groupBy && Array.isArray(items)) {
+    // 按类别分组：组头行（整行合并）+ 各组条目；未知类别排在最后
+    const { field, order, icons } = opts.groupBy;
+    const groups = new Map();
+    for (const it of items) {
+      const g = String(it?.[field] || "") || "其它";
+      if (!groups.has(g)) groups.set(g, []);
+      groups.get(g).push(it);
+    }
+    const keys = [...order.filter((g) => groups.has(g)),
+                  ...[...groups.keys()].filter((g) => !order.includes(g))];
+    bodyRows = [];
+    for (const g of keys) {
+      const icon = (icons && icons[g]) || "📦";
+      bodyRows.push(`<tr class="cat-row"><td colspan="${colCount}">${icon} ${esc(g)}</td></tr>`);
+      for (const it of groups.get(g)) bodyRows.push(itemRowHtml(fields, it, opts));
+    }
+  } else {
+    bodyRows = (items || []).map((it) => itemRowHtml(fields, it, opts));
+  }
+  return `<table class="item-table"><thead><tr>${headCells}</tr></thead><tbody>${bodyRows.join("")}</tbody></table>`;
+}
+
+function bindRowDelete(container) {
+  container.querySelectorAll(".row-del").forEach((b) =>
+    b.addEventListener("click", () => b.closest("tr").remove()),
+  );
+}
+
+function renderItemTable(containerId, fields, items, opts) {
+  const box = $(containerId);
+  box.innerHTML = itemTableHtml(fields, items, opts);
+  bindRowDelete(box);
+}
+
+function addItemRow(containerId, fields, opts) {
+  const box = $(containerId);
+  const tbody = box.querySelector("tbody");
+  if (!tbody) {
+    renderItemTable(containerId, fields, [], opts);
+  }
+  const tr = document.createElement("template");
+  tr.innerHTML = itemRowHtml(fields, null, opts).trim();
+  const row = tr.content.firstElementChild;
+  row.querySelector(".row-del").addEventListener("click", () => row.remove());
+  (box.querySelector("tbody") || box).appendChild(row);
+  row.querySelector(".i-name, .i-code")?.focus();
+}
+
+function collectItemTable(containerId, fields, opts) {
+  // 返回 { items, errors }；客户端校验：名称（或代码）非空且不重复、数值必须是数字
+  const items = [];
+  const errors = [];
+  const seen = new Set();
+  const rows = document.querySelectorAll(`#${containerId} tbody tr`);
+  rows.forEach((tr, idx) => {
+    tr.querySelectorAll("input,select").forEach((el) => el.classList.remove("invalid"));
+    let item, label;
+    if (opts?.codeMode) {
+      const codeEl = tr.querySelector('[data-f="code"]');
+      if (!codeEl) return; // 分组行
+      const rawCode = codeEl.value.trim();
+      const code = rawCode === "" ? NaN : Number(rawCode);
+      if (!Number.isInteger(code) || code < 3 || code > 10) {
+        errors.push(`第 ${idx + 1} 行：代码必须是 3~10 的整数`);
+        codeEl.classList.add("invalid");
+        return;
+      }
+      if (seen.has(code)) {
+        errors.push(`代码 ${code} 重复`);
+        codeEl.classList.add("invalid");
+        return;
+      }
+      seen.add(code);
+      item = { code };
+      label = `套餐${code}`;
+    } else {
+      const nameEl = tr.querySelector('[data-f="name"]');
+      if (!nameEl) return; // 类别分组行，无输入框
+      const name = nameEl.value.trim();
+      const desc = tr.querySelector('[data-f="desc"]').value;
+      if (!name) {
+        errors.push(`第 ${idx + 1} 行：名称不能为空`);
+        nameEl.classList.add("invalid");
+        return;
+      }
+      if (seen.has(name)) {
+        errors.push(`「${name}」名称重复`);
+        nameEl.classList.add("invalid");
+        return;
+      }
+      seen.add(name);
+      item = { name, desc };
+      label = `「${name}」`;
+    }
+    if (opts?.withType) item.type = tr.querySelector('[data-f="type"]').value;
+    let bad = false;
+    for (const [f] of fields) {
+      const el = tr.querySelector(`[data-f="${f}"]`);
+      const raw = el.value.trim();
+      const v = raw === "" ? 0 : Number(raw);
+      if (raw !== "" && isNaN(v)) {
+        errors.push(`${label} 的 ${f} 必须是数字`);
+        el.classList.add("invalid");
+        bad = true;
+        break;
+      }
+      item[f] = v;
+    }
+    if (!bad) items.push(item);
+  });
+  return { items, errors };
+}
+
+async function saveItemTables(statusId, endpoint, payload) {
+  setStatus(statusId, "保存中...");
+  try {
+    const resp = await bridge.apiPost(endpoint, payload);
+    if (resp && resp.saved === false && resp.errors) {
+      setStatus(statusId, "⚠️ 未保存：" + Object.values(resp.errors).join("；"));
+      return;
+    }
+    setStatus(statusId, "✅ 已保存并立即生效");
+  } catch (e) {
+    setStatus(statusId, "❌ 保存失败：" + e.message);
+  }
+}
+
+// ---------- 打工 / 玩耍 ----------
 async function loadConfig() {
   setStatus("status-config", "加载中...");
   try {
     const data = await bridge.apiGet("backend/config");
-    $("config-text").value = (data && data.content) || "";
+    renderItemTable("jobs-table", JOB_FIELDS, (data && data.jobs) || []);
+    renderItemTable("plays-table", PLAY_FIELDS, (data && data.plays) || []);
+    setLoaded("config", true);
     setStatus("status-config", "✅ 已加载");
   } catch (e) {
+    setLoaded("config", false);
     setStatus("status-config", "❌ 加载失败：" + e.message);
   }
 }
 
 async function saveConfig() {
-  const content = $("config-text").value;
-  setStatus("status-config", "保存中...");
-  try {
-    await bridge.apiPost("backend/config", { content });
-    setStatus("status-config", "✅ 已保存");
-  } catch (e) {
-    setStatus("status-config", "❌ 保存失败：" + e.message);
+  if (!guardLoaded("config")) return;
+  const jobs = collectItemTable("jobs-table", JOB_FIELDS);
+  const plays = collectItemTable("plays-table", PLAY_FIELDS);
+  const errors = [...jobs.errors.map((m) => "打工·" + m), ...plays.errors.map((m) => "玩耍·" + m)];
+  if (errors.length) {
+    setStatus("status-config", "❌ " + errors.join("；"));
+    return;
   }
+  await saveItemTables("status-config", "backend/config", { jobs: jobs.items, plays: plays.items });
 }
 
-// 宠物商店固定类型（前端硬编码，不依赖后端返回；后端缺失 types 时按 content 解析填充）
-const PETSHOP_TYPES = ["食物", "饮料", "药物", "玩具"];
-
-// 从合并 content 中按 [商店:xxx] 段落提取属于某类型的文本
-function extractTypeContent(content, typeKey) {
-  if (!content) return "";
-  const sections = [];
-  let cur = null;
-  for (const line of content.split("\n")) {
-    const s = line.trim();
-    if (s.startsWith("[") && s.endsWith("]") && s.includes(":")) {
-      cur = { type: "", lines: [line + "\n"] };
-      sections.push(cur);
-      continue;
-    }
-    if (cur) cur.lines.push(line + "\n");
-    if (cur && s.startsWith("类型=")) {
-      let t = s.slice(3).trim();
-      if (t === "食品") t = "食物";
-      cur.type = t;
-    }
-  }
-  const out = sections
-    .filter((x) => x.type === typeKey)
-    .map((x) => x.lines.join(""))
-    .join("\n");
-  return out;
-}
-
+// ---------- 宠物商店 ----------
 async function loadPetShop() {
   setStatus("status-petshop", "加载中...");
   try {
     const data = await bridge.apiGet("petshop");
-    const types = (data && data.types) || [];
-    const mergedContent = (data && data.content) || "";
-    const box = $("petshop-editors");
-    // 永远渲染 4 个类型编辑器；内容优先 types，缺失时从合并 content 按类型提取
-    box.innerHTML = PETSHOP_TYPES.map((key, i) => {
-      const t = types.find((x) => x.key === key);
-      const content =
-        (t && t.content) || extractTypeContent(mergedContent, key);
-      return `<details class="param-subgroup" ${i === 0 ? "open" : ""}>
-        <summary>${key}</summary>
-        <div class="sub-editor">
-          <div class="toolbar">
-            <button data-petshop-load="${key}">加载</button>
-            <button data-petshop-save="${key}" class="primary">保存</button>
-            <span id="status-petshop-${key}" class="status"></span>
-          </div>
-          <textarea id="petshop-text-${key}" spellcheck="false" placeholder="点击「加载」读取 ${key} 配置...">${content}</textarea>
-        </div>
-      </details>`;
-    }).join("");
-    PETSHOP_TYPES.forEach((key) => {
-      document
-        .querySelector(`[data-petshop-load="${key}"]`)
-        .addEventListener("click", () => loadPetShopType(key));
-      document
-        .querySelector(`[data-petshop-save="${key}"]`)
-        .addEventListener("click", () => savePetShopType(key));
+    renderItemTable("petshop-table", SHOP_EFFECT_FIELDS, (data && data.items) || [], {
+      withType: true,
+      groupBy: { field: "type", order: PETSHOP_TYPES, icons: PETSHOP_TYPE_ICONS },
     });
+    setLoaded("petshop", true);
     setStatus("status-petshop", "✅ 已加载");
   } catch (e) {
+    setLoaded("petshop", false);
     setStatus("status-petshop", "❌ 加载失败：" + e.message);
   }
 }
 
-async function loadPetShopType(key) {
-  setStatus(`status-petshop-${key}`, "加载中...");
-  try {
-    const data = await bridge.apiGet("petshop");
-    const types = (data && data.types) || [];
-    const t = types.find((x) => x.key === key);
-    const mergedContent = (data && data.content) || "";
-    const content = (t && t.content) || extractTypeContent(mergedContent, key);
-    $(`petshop-text-${key}`).value = content || "";
-    setStatus(`status-petshop-${key}`, "✅ 已加载");
-  } catch (e) {
-    setStatus(`status-petshop-${key}`, "❌ 加载失败：" + e.message);
-  }
-}
-
-async function savePetShopType(key) {
-  const content = $(`petshop-text-${key}`).value;
-  setStatus(`status-petshop-${key}`, "保存中...");
-  try {
-    await bridge.apiPost("petshop", { key, content });
-    setStatus(`status-petshop-${key}`, "✅ 已保存");
-  } catch (e) {
-    setStatus(`status-petshop-${key}`, "❌ 保存失败：" + e.message);
-  }
-}
-
-async function loadPetShopAll() {
-  await loadPetShop(); // loadPetShop 已填充全部 4 个编辑器内容
-}
-
 async function savePetShopAll() {
-  setStatus("status-petshop", "保存中...");
-  let failed = false;
-  for (const key of PETSHOP_TYPES) {
-    const el = $(`petshop-text-${key}`);
-    if (!el) continue;
-    try {
-      await bridge.apiPost("petshop", { key, content: el.value });
-      setStatus(`status-petshop-${key}`, "✅ 已保存");
-    } catch (e) {
-      failed = true;
-      setStatus(`status-petshop-${key}`, "❌ 保存失败：" + e.message);
-    }
+  if (!guardLoaded("petshop")) return;
+  const shop = collectItemTable("petshop-table", SHOP_EFFECT_FIELDS, { withType: true });
+  if (shop.errors.length) {
+    setStatus("status-petshop", "❌ " + shop.errors.join("；"));
+    return;
   }
-  setStatus("status-petshop", failed ? "⚠️ 部分保存失败" : "✅ 已全部保存");
+  await saveItemTables("status-petshop", "petshop", { items: shop.items });
 }
 
 async function loadCrops() {
   setStatus("status-crops", "加载中...");
   try {
     const data = await bridge.apiGet("farm/crops");
-    $("crops-text").value = (data && data.content) || "";
+    renderItemTable("crops-table", CROP_FIELDS, (data && data.items) || []);
+    setLoaded("crops", true);
     setStatus("status-crops", "✅ 已加载");
   } catch (e) {
+    setLoaded("crops", false);
     setStatus("status-crops", "❌ 加载失败：" + e.message);
   }
 }
 
 async function saveCrops() {
-  const content = $("crops-text").value;
-  setStatus("status-crops", "保存中...");
-  try {
-    await bridge.apiPost("farm/crops", { content });
-    setStatus("status-crops", "✅ 已保存");
-  } catch (e) {
-    setStatus("status-crops", "❌ 保存失败：" + e.message);
+  if (!guardLoaded("crops")) return;
+  const crops = collectItemTable("crops-table", CROP_FIELDS);
+  if (crops.errors.length) {
+    setStatus("status-crops", "❌ " + crops.errors.join("；"));
+    return;
   }
+  await saveItemTables("status-crops", "farm/crops", { items: crops.items });
 }
 
 async function loadFerts() {
   setStatus("status-ferts", "加载中...");
   try {
     const data = await bridge.apiGet("farm/ferts");
-    $("ferts-text").value = (data && data.content) || "";
+    renderItemTable("ferts-table", FERT_FIELDS, (data && data.items) || []);
+    setLoaded("ferts", true);
     setStatus("status-ferts", "✅ 已加载");
   } catch (e) {
+    setLoaded("ferts", false);
     setStatus("status-ferts", "❌ 加载失败：" + e.message);
   }
 }
 
 async function saveFerts() {
-  const content = $("ferts-text").value;
-  setStatus("status-ferts", "保存中...");
+  if (!guardLoaded("ferts")) return;
+  const ferts = collectItemTable("ferts-table", FERT_FIELDS);
+  if (ferts.errors.length) {
+    setStatus("status-ferts", "❌ " + ferts.errors.join("；"));
+    return;
+  }
+  await saveItemTables("status-ferts", "farm/ferts", { items: ferts.items });
+}
+
+// ---------- 恢复默认道具数据（运行参数面板·危险操作区，需验证码确认） ----------
+let _captchaCode = "";
+
+function openCaptchaModal() {
+  // 每次打开生成新的 6 位随机验证码，显示在输入框旁边
+  _captchaCode = String(Math.floor(100000 + Math.random() * 900000));
+  $("captcha-code").textContent = _captchaCode;
+  const input = $("captcha-input");
+  input.value = "";
+  input.classList.remove("invalid");
+  $("captcha-error").classList.add("hidden");
+  $("captcha-modal").classList.remove("hidden");
+  setTimeout(() => input.focus(), 0);
+}
+
+function closeCaptchaModal() {
+  $("captcha-modal").classList.add("hidden");
+  _captchaCode = "";
+}
+
+async function applyBenchmark() {
+  openCaptchaModal();
+}
+
+async function submitCaptcha() {
+  const input = $("captcha-input");
+  if (input.value.trim() !== _captchaCode) {
+    input.classList.add("invalid");
+    $("captcha-error").classList.remove("hidden");
+    input.select();
+    return;
+  }
+  closeCaptchaModal();
+  setStatus("status-benchmark", "应用中...");
   try {
-    await bridge.apiPost("farm/ferts", { content });
-    setStatus("status-ferts", "✅ 已保存");
+    const r = await bridge.apiPost("items/apply_benchmark", {});
+    if (r && r.saved === false && r.errors) {
+      setStatus("status-benchmark", "⚠️ 默认数据校验失败：" + Object.values(r.errors).join("；"));
+      return;
+    }
+    setStatus("status-benchmark",
+      `✅ 已应用默认道具数据：商品 ${r.shop} / 作物 ${r.crops} / 肥料 ${r.ferts} 条`);
   } catch (e) {
-    setStatus("status-ferts", "❌ 保存失败：" + e.message);
+    setStatus("status-benchmark", "❌ 应用失败：" + e.message);
   }
 }
 
@@ -191,22 +389,23 @@ async function loadLoanPkgs() {
   setStatus("status-loanpkgs", "加载中...");
   try {
     const data = await bridge.apiGet("loan/packages");
-    $("loanpkgs-text").value = (data && data.content) || "";
+    renderItemTable("loans-table", LOAN_FIELDS, (data && data.items) || [], { codeMode: true });
+    setLoaded("loanpkgs", true);
     setStatus("status-loanpkgs", "✅ 已加载");
   } catch (e) {
+    setLoaded("loanpkgs", false);
     setStatus("status-loanpkgs", "❌ 加载失败：" + e.message);
   }
 }
 
 async function saveLoanPkgs() {
-  const content = $("loanpkgs-text").value;
-  setStatus("status-loanpkgs", "保存中...");
-  try {
-    await bridge.apiPost("loan/packages", { content });
-    setStatus("status-loanpkgs", "✅ 已保存");
-  } catch (e) {
-    setStatus("status-loanpkgs", "❌ 保存失败：" + e.message);
+  if (!guardLoaded("loanpkgs")) return;
+  const loans = collectItemTable("loans-table", LOAN_FIELDS, { codeMode: true });
+  if (loans.errors.length) {
+    setStatus("status-loanpkgs", "❌ " + loans.errors.join("；"));
+    return;
   }
+  await saveItemTables("status-loanpkgs", "loan/packages", { items: loans.items });
 }
 
 async function exportData() {
@@ -394,7 +593,7 @@ async function loadParams() {
     const items = (data && data.params) || [];
     const box = $("params-list");
     if (!items.length) {
-      box.innerHTML = '<p class="hint">没有可配置的运行参数。</p>';
+      box.innerHTML = '<p class="hint">没有可配置的设置项。</p>';
       return;
     }
     // 两级分组：组 → 子组 → 参数
@@ -557,7 +756,6 @@ function switchTab(name) {
   $("panel-params").classList.toggle("hidden", name !== "params");
   $("panel-activities").classList.toggle("hidden", name !== "activities");
   $("panel-aliases").classList.toggle("hidden", name !== "aliases");
-  $("panel-names").classList.toggle("hidden", name !== "names");
   $("panel-data").classList.toggle("hidden", name !== "data");
   if (name === "shopedit") {
     loadPetShop();
@@ -575,8 +773,36 @@ document.querySelectorAll(".tab").forEach((b) =>
 );
 $("btn-load-config").addEventListener("click", loadConfig);
 $("btn-save-config").addEventListener("click", saveConfig);
-$("btn-load-petshop-all").addEventListener("click", loadPetShopAll);
+$("btn-jobs-add").addEventListener("click", () => {
+  if (guardLoaded("config")) addItemRow("jobs-table", JOB_FIELDS);
+});
+$("btn-plays-add").addEventListener("click", () => {
+  if (guardLoaded("config")) addItemRow("plays-table", PLAY_FIELDS);
+});
+$("btn-load-petshop-all").addEventListener("click", loadPetShop);
 $("btn-save-petshop-all").addEventListener("click", savePetShopAll);
+$("btn-petshop-add").addEventListener("click", () => {
+  if (guardLoaded("petshop")) addItemRow("petshop-table", SHOP_EFFECT_FIELDS, { withType: true });
+});
+$("btn-crops-add").addEventListener("click", () => {
+  if (guardLoaded("crops")) addItemRow("crops-table", CROP_FIELDS);
+});
+$("btn-ferts-add").addEventListener("click", () => {
+  if (guardLoaded("ferts")) addItemRow("ferts-table", FERT_FIELDS);
+});
+$("btn-loans-add").addEventListener("click", () => {
+  if (guardLoaded("loanpkgs")) addItemRow("loans-table", LOAN_FIELDS, { codeMode: true });
+});
+$("btn-apply-benchmark").addEventListener("click", applyBenchmark);
+$("btn-captcha-ok").addEventListener("click", submitCaptcha);
+$("btn-captcha-cancel").addEventListener("click", closeCaptchaModal);
+$("captcha-input").addEventListener("keydown", (e) => {
+  if (e.key === "Enter") submitCaptcha();
+  if (e.key === "Escape") closeCaptchaModal();
+});
+$("captcha-modal").addEventListener("click", (e) => {
+  if (e.target === e.currentTarget) closeCaptchaModal(); // 点击遮罩关闭
+});
 $("btn-load-crops").addEventListener("click", loadCrops);
 $("btn-save-crops").addEventListener("click", saveCrops);
 $("btn-load-ferts").addEventListener("click", loadFerts);
@@ -718,6 +944,8 @@ async function saveAliases() {
 }
 
 await bridge.ready();
+// 初始锁定所有数据编辑区（加载成功后解锁）
+syncLockUI();
 // 默认进入「商店编辑」选项卡
 loadPetShop();
 loadCrops();
