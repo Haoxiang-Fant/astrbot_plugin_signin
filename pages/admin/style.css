@@ -1050,6 +1050,235 @@ input[type="file"] {
   text-align: center;
 }
 
+/* ---------- 局域网开放（1.7.9） ---------- */
+/* 锁屏：全屏遮罩，远程未解锁时盖住整个后台 */
+.lan-lock {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+  background: var(--bg);
+  animation: lanFadeIn 0.2s ease;
+}
+
+.lan-lock.hidden {
+  display: none;
+}
+
+.lan-lock-box {
+  width: 100%;
+  max-width: 400px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-2);
+  padding: 28px 24px;
+  animation: lanRise 0.25s ease;
+}
+
+.lan-lock-title {
+  font-size: 18px;
+  font-weight: 700;
+  color: var(--text);
+  margin-bottom: 10px;
+}
+
+.lan-lock-desc {
+  font-size: 13px;
+  color: var(--muted);
+  line-height: 1.6;
+  margin-bottom: var(--space-4);
+}
+
+.lan-lock-input {
+  width: 100%;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  color: var(--text);
+  font: inherit;
+  font-size: 15px;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+.lan-lock-input:focus-visible {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: var(--ring);
+}
+
+.lan-lock-error {
+  margin-top: var(--space-2);
+  font-size: 12px;
+  color: var(--danger);
+  font-weight: 500;
+  animation: shake 0.3s ease;
+}
+
+.lan-lock-error.hidden {
+  display: none;
+}
+
+.lan-lock-btn {
+  width: 100%;
+  margin-top: var(--space-4);
+}
+
+/* 记录 / 黑名单弹窗 */
+.lan-modal {
+  position: fixed;
+  inset: 0;
+  z-index: 900;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+  background: rgba(0, 0, 0, 0.45);
+  animation: lanFadeIn 0.2s ease;
+}
+
+.lan-modal.hidden {
+  display: none;
+}
+
+.lan-modal-box {
+  width: 100%;
+  max-width: 640px;
+  max-height: 78vh;
+  display: flex;
+  flex-direction: column;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-2);
+  padding: 20px;
+  animation: lanRise 0.25s ease;
+}
+
+.lan-modal-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--text);
+  margin-bottom: var(--space-3);
+}
+
+.icon-close {
+  border: none;
+  background: none;
+  color: var(--muted);
+  font-size: 16px;
+  cursor: pointer;
+  padding: 4px 8px;
+  border-radius: var(--radius-sm);
+}
+
+.icon-close:hover {
+  color: var(--danger);
+  background: var(--danger-soft);
+}
+
+.lan-table-wrap {
+  overflow: auto;
+  flex: 1;
+  min-height: 120px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+}
+
+.lan-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+.lan-table th,
+.lan-table td {
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--border);
+  text-align: left;
+  white-space: nowrap;
+}
+
+.lan-table th {
+  position: sticky;
+  top: 0;
+  background: var(--surface-2);
+  color: var(--text-2);
+  font-weight: 600;
+  z-index: 1;
+}
+
+.lan-table tr:last-child td {
+  border-bottom: none;
+}
+
+.lan-ok {
+  color: var(--success, #1a7f37);
+  font-weight: 600;
+}
+
+.lan-bad {
+  color: var(--danger);
+  font-weight: 600;
+}
+
+.lan-blacklist-input {
+  flex: 1;
+  min-width: 0;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  color: var(--text);
+  font: inherit;
+  font-size: 13px;
+}
+
+.lan-blacklist-input:focus-visible {
+  outline: none;
+  border-color: var(--danger);
+  box-shadow: var(--ring-danger);
+}
+
+/* 局域网设置组内的密码输入框宽度 */
+#lan-password {
+  width: 100%;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  color: var(--text);
+  font: inherit;
+  font-size: 13px;
+}
+
+@keyframes lanFadeIn {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes lanRise {
+  from {
+    opacity: 0;
+    transform: translateY(12px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
 /* ---------- 动画降级 ---------- */
 @media (prefers-reduced-motion: reduce) {
   *,
@@ -1076,5 +1305,24 @@ input[type="file"] {
   }
   .act-field {
     grid-template-columns: 84px 1fr;
+  }
+  /* 局域网（1.7.9）移动端适配 */
+  .lan-lock-box,
+  .lan-modal-box {
+    padding: 18px 14px;
+    max-height: 86vh;
+  }
+  .lan-modal-box {
+    max-width: none;
+  }
+  .lan-table {
+    font-size: 12px;
+  }
+  .lan-table th,
+  .lan-table td {
+    padding: 7px 8px;
+  }
+  .lan-blacklist-input {
+    min-width: 0;
   }
 }
