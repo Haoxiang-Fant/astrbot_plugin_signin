@@ -1170,7 +1170,7 @@ class RouletteGame:
         return "、".join(p["name"] for p in self.players)
 
 
-@register("astrbot_plugin_signin", "sishijiu", "群签到 + 左轮手枪 + 宠物养成 + 金币银行 + 农场", "1.7.7")
+@register("astrbot_plugin_signin", "sishijiu", "群签到 + 左轮手枪 + 宠物养成 + 金币银行 + 农场", "1.7.8")
 class SignInPlugin(Star):
     def __init__(self, context: Context, config: dict = None):
         super().__init__(context)
@@ -1900,9 +1900,32 @@ class SignInPlugin(Star):
         v = data.get("users", {}).get(key, {}).get("coins")
         return int(v) if isinstance(v, (int, float)) else 0
 
+    def _rank_score_coins(self, data: dict, key: str) -> int:
+        """金币排行积分（与金币排行榜一致）：金币 × 权重 + 存款本金 × 权重"""
+        cw = float(globals().get("RANK_COIN_COIN_W", 1.0))
+        bw = float(globals().get("RANK_COIN_BANK_W", 1.0))
+        bank = data.get("bank", {}).get(key)
+        dep = sum(self._dep_amount(d) for d in (bank.get("deposits", []) if isinstance(bank, dict) else []))
+        return int(self._coins_of(data, key) * cw + dep * bw)
+
+    def _ensure_bag_base(self, data: dict, key: str):
+        """背包「今日净收益」的零点基线（金币排行积分）。
+        积分只在金币/存款变动时变化，因此在「当日第一笔金币变动前」或「当日首次查看背包时」
+        记录的积分即等于当日零点的积分。返回 (基线值, 是否新建基线)。"""
+        user = self._ensure_user(data, key)
+        today = date.today().isoformat()
+        base = user.get("bag_base") or {}
+        if base.get("date") == today:
+            return int(base.get("score", 0)), False
+        score = self._rank_score_coins(data, key)
+        user["bag_base"] = {"date": today, "score": score}
+        return score, True
+
     def _add_coins(self, data: dict, key: str, amount: int, reason: str = "") -> int:
         """增加/扣除金币并记录流水（只有 reason 非空且金额变动才记）。amount 正为获得、负为消费。返回变动后的余额。
         有逾期贷款时，获得金币自动划扣 20% 还款（划扣部分是还贷，不重复记流水）。"""
+        # 1.7.8：当日第一笔金币变动前先记录背包净收益零点基线（保证红包/利息等全部计入）
+        self._ensure_bag_base(data, key)
         if amount > 0 and data.get("loans", {}).get(key):
             rec = data["loans"][key]
             if self._has_overdue_now(rec, datetime.now().timestamp()):
@@ -4556,9 +4579,11 @@ class SignInPlugin(Star):
             for nm, cnt in wh.get("seeds", {}).items():
                 c = self._find_item(crops, nm)
                 wh_total += int(round(int(cnt) * (float(c["seed_sell_price"]) if c else 0.0)))
-        today = date.today().isoformat()
-        net = sum(int(r.get("delta", 0)) for r in data.get("ledger", {}).get(key, [])
-                  if str(r.get("ts", ""))[:10] == today)
+        # 1.7.8：今日净收益 = 当前金币排行积分 − 当日零点基线（覆盖红包/利息/存款/左轮等所有金币变化）
+        base, base_new = self._ensure_bag_base(data, key)
+        net = self._rank_score_coins(data, key) - base
+        if base_new:
+            self._save(data)  # 持久化当日零点基线
 
         def my_rank(kind):
             for i, e in enumerate(self._rank_entries(kind, data)):
