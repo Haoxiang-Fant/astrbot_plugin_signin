@@ -951,3 +951,216 @@ loadPetShop();
 loadCrops();
 loadFerts();
 loadDebugStatus();
+
+// ================= 局域网开放（1.7.9） =================
+let lanState = null; // {enabled, is_local, unlocked, password_set, records_count, ip}
+
+function showLanLock() {
+  $("lan-lock").classList.remove("hidden");
+  $("lan-unlock-input").value = "";
+  $("lan-unlock-error").classList.add("hidden");
+  $("lan-unlock-input").focus();
+}
+function hideLanLock() {
+  $("lan-lock").classList.add("hidden");
+}
+
+async function lanRefresh() {
+  try {
+    lanState = await bridge.apiGet("lan/status");
+  } catch (e) {
+    lanState = null;
+    return;
+  }
+  const s = lanState || {};
+  if (s.is_local) {
+    hideLanLock();
+  } else if (s.enabled && !s.unlocked) {
+    showLanLock();
+  } else {
+    hideLanLock();
+  }
+}
+
+async function lanLoadSettings() {
+  setStatus("status-lan", "加载中...");
+  try {
+    const s = await bridge.apiGet("lan/status");
+    lanState = s;
+    $("lan-enabled").checked = !!s.enabled;
+    $("lan-password").value = "";
+    setStatus("status-lan", s.is_local
+      ? (s.enabled ? "✅ 已开启（本地免密）" : "⏸️ 已关闭（本地访问不受影响）")
+      : "⚠️ 远程设备无法修改局域网设置（仅本地服务器可改）");
+    // 远程设备禁用设置区
+    const localOnly = !!s.is_local;
+    ["lan-enabled", "lan-password", "btn-lan-save"].forEach((id) => {
+      const el = $(id);
+      if (el) el.disabled = !localOnly;
+    });
+  } catch (e) {
+    setStatus("status-lan", "❌ 读取失败：" + e.message);
+  }
+}
+
+async function lanSaveSettings() {
+  const enabled = $("lan-enabled").checked;
+  const password = $("lan-password").value;
+  const payload = { enabled };
+  if (password) payload.password = password;
+  setStatus("status-lan", "保存中...");
+  try {
+    await bridge.apiPost("lan/setup", payload);
+    $("lan-password").value = "";
+    setStatus("status-lan", "✅ 已保存" + (password ? "，密码已更新（仅存哈希）" : ""));
+    await lanLoadSettings();
+  } catch (e) {
+    if (e && e.message && /403|本地|仅本地/.test(String(e.message))) {
+      setStatus("status-lan", "❌ 远程设备无法修改，请在本地服务器上操作");
+    } else {
+      setStatus("status-lan", "❌ 保存失败：" + (e && e.message ? e.message : String(e)));
+    }
+  }
+}
+
+async function lanUnlock() {
+  const pw = $("lan-unlock-input").value;
+  if (!pw) {
+    $("lan-unlock-error").classList.remove("hidden");
+    $("lan-unlock-error").textContent = "请输入密码";
+    return;
+  }
+  try {
+    const r = await bridge.apiPost("lan/unlock", { password: pw });
+    if (r && r.unlocked) {
+      hideLanLock();
+      lanState = { ...(lanState || {}), unlocked: true };
+      location.reload(); // 重新加载，进入完整后台
+    }
+  } catch (e) {
+    $("lan-unlock-error").classList.remove("hidden");
+    $("lan-unlock-error").textContent = "密码错误，请重试";
+  }
+}
+
+// ---- 访问记录 ----
+async function openLanRecords() {
+  $("lan-records-modal").classList.remove("hidden");
+  $("lan-records-body").innerHTML = '<p class="hint">加载中...</p>';
+  try {
+    const r = await bridge.apiGet("lan/records");
+    const recs = (r && r.records) || [];
+    if (!recs.length) {
+      $("lan-records-body").innerHTML = '<p class="hint">暂无访问记录。</p>';
+      return;
+    }
+    $("lan-records-body").innerHTML = `<table class="lan-table">
+      <thead><tr><th>时间</th><th>设备</th><th>IP</th><th>密码</th></tr></thead>
+      <tbody>${recs.map((rc) => `<tr>
+        <td>${esc(rc.ts)}</td>
+        <td>${esc(rc.name)}</td>
+        <td>${esc(rc.ip)}</td>
+        <td>${rc.ok ? '<span class="lan-ok">✅ 正确</span>' : '<span class="lan-bad">❌ 未通过</span>'}</td>
+      </tr>`).join("")}</tbody>
+    </table>`;
+  } catch (e) {
+    $("lan-records-body").innerHTML = `<p class="hint">❌ 读取失败：${esc(e && e.message ? e.message : String(e))}（仅本地服务器可查看）</p>`;
+  }
+}
+function closeLanRecords() { $("lan-records-modal").classList.add("hidden"); }
+
+// ---- 黑名单 ----
+async function openLanBlacklist() {
+  $("lan-blacklist-modal").classList.remove("hidden");
+  $("lan-blacklist-input").value = "";
+  await renderLanBlacklist();
+}
+async function renderLanBlacklist() {
+  $("lan-blacklist-body").innerHTML = '<p class="hint">加载中...</p>';
+  try {
+    const r = await bridge.apiGet("lan/blacklist");
+    const list = (r && r.blacklist) || [];
+    if (!list.length) {
+      $("lan-blacklist-body").innerHTML = '<p class="hint">黑名单为空。</p>';
+      return;
+    }
+    $("lan-blacklist-body").innerHTML = `<table class="lan-table">
+      <thead><tr><th>禁止的 IP / 网段</th><th>操作</th></tr></thead>
+      <tbody>${list.map((ip) => `<tr>
+        <td>${esc(ip)}</td>
+        <td><button data-lan-bl-del="${esc(ip)}" class="row-del danger">解除</button></td>
+      </tr>`).join("")}</tbody>
+    </table>`;
+    $("lan-blacklist-body").querySelectorAll("button[data-lan-bl-del]").forEach((b) =>
+      b.addEventListener("click", () => lanBlacklist("remove", b.getAttribute("data-lan-bl-del"))),
+    );
+  } catch (e) {
+    $("lan-blacklist-body").innerHTML = `<p class="hint">❌ 读取失败：${esc(e && e.message ? e.message : String(e))}（仅本地服务器可管理）</p>`;
+  }
+}
+async function lanBlacklist(action, ip) {
+  try {
+    await bridge.apiPost("lan/blacklist", { action, ip });
+    await renderLanBlacklist();
+  } catch (e) {
+    alert("操作失败：" + (e && e.message ? e.message : String(e)));
+  }
+}
+function closeLanBlacklist() { $("lan-blacklist-modal").classList.add("hidden"); }
+
+// ---- 局域网访问门：任何 API 返回 403（未解锁/被禁）时重新弹出锁屏 ----
+function lanWrap(obj, name) {
+  const orig = obj[name];
+  obj[name] = async (...args) => {
+    try {
+      const r = await orig.apply(obj, args);
+      // 未解锁/被禁：后端返回网关拒绝，重新弹出锁屏
+      if (r && r.status === "error" && /局域网|禁止/.test(String(r.message || ""))) {
+        await lanRefresh();
+        const s = lanState || {};
+        if (!s.is_local && s.enabled && !s.unlocked) showLanLock();
+      }
+      return r;
+    } catch (e) {
+      const msg = e && (e.message || e.error || "") ? String(e.message || e.error || "") : "";
+      if (/局域网|禁止|403/.test(msg)) {
+        await lanRefresh();
+        const s = lanState || {};
+        if (!s.is_local && s.enabled && !s.unlocked) showLanLock();
+      }
+      throw e;
+    }
+  };
+  return obj[name];
+}
+if (bridge && typeof bridge.apiPost === "function") {
+  lanWrap(bridge, "apiGet");
+  lanWrap(bridge, "apiPost");
+}
+
+// 事件绑定
+$("btn-lan-save").addEventListener("click", lanSaveSettings);
+$("btn-lan-records").addEventListener("click", openLanRecords);
+$("btn-lan-records-close").addEventListener("click", closeLanRecords);
+$("btn-lan-blacklist").addEventListener("click", openLanBlacklist);
+$("btn-lan-blacklist-close").addEventListener("click", closeLanBlacklist);
+$("btn-lan-blacklist-add").addEventListener("click", () => {
+  const ip = ($("lan-blacklist-input").value || "").trim();
+  if (!ip) { alert("请输入要禁止的 IP 或网段"); return; }
+  lanBlacklist("add", ip);
+});
+$("btn-lan-unlock").addEventListener("click", lanUnlock);
+$("lan-unlock-input").addEventListener("keydown", (e) => {
+  if (e.key === "Enter") lanUnlock();
+  if (e.key === "Escape") hideLanLock();
+});
+$("lan-records-modal").addEventListener("click", (e) => {
+  if (e.target === e.currentTarget) closeLanRecords();
+});
+$("lan-blacklist-modal").addEventListener("click", (e) => {
+  if (e.target === e.currentTarget) closeLanBlacklist();
+});
+
+// 启动时检查局域网状态 & 加载设置
+lanRefresh();
+lanLoadSettings();

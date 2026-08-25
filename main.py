@@ -1,10 +1,15 @@
 import asyncio
 import base64
+import hashlib
+import hmac
+import ipaddress
 import json
 import math
 import os
 import random
+import secrets
 import shutil
+import socket
 from datetime import date, timedelta, datetime, time
 
 from astrbot.api.event import filter, AstrMessageEvent
@@ -35,6 +40,104 @@ except Exception:
     _Plain = None
     _Image = None
     _MessageChain = None
+
+
+# ================= 局域网管理页面开放（1.7.9） =================
+LAN_DATA_KEY = "lan"                # data.json 中的存储键
+LAN_COOKIE = "astrbot_signin_lan"   # 局域网访客会话 Cookie 名
+LAN_SESSION_HOURS = 12              # 输入正确密码后的免密会话时长（小时）
+LAN_MAX_RECORDS = 500               # 访问记录上限（超出丢弃最旧）
+# 局域网访问默认不建议开放；开启后同一局域网设备需输入哈希校验的管理密码才能访问 WebUI
+# 本地访问（loopback）免密；修改密码/开关/查看记录/管理黑名单仅限本地服务器
+_LAN_SALT_LEN = 16
+
+
+def _lan_hash_password(password: str, salt: str | None = None) -> tuple[str, str]:
+    """PBKDF2-SHA256 哈希密码。返回 (salt_hex, hash_hex)。不存储明文。"""
+    if salt is None:
+        salt = secrets.token_hex(_LAN_SALT_LEN)
+    digest = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"),
+                                 bytes.fromhex(salt), 120_000)
+    return salt, digest.hex()
+
+
+def _lan_verify_password(stored: str | None, password: str) -> bool:
+    """校验密码：stored 形如 'salt$hash'，否则直接失败。"""
+    if not isinstance(stored, str) or not isinstance(password, str):
+        return False
+    if "$" not in stored:
+        return False
+    salt, want = stored.split("$", 1)
+    try:
+        got = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"),
+                                  bytes.fromhex(salt), 120_000).hex()
+    except Exception:
+        return False
+    return hmac.compare_digest(got, want)
+
+
+def _is_loopback(host: str | None) -> bool:
+    """判断 client_host 是否为本地回环地址（x 为空/解析失败按非本地处理视为 False）。"""
+    if not host:
+        return False
+    host = host.strip()
+    if host in ("127.0.0.1", "localhost", "::1"):
+        return True
+    try:
+        addr = ipaddress.ip_address(host.split("%")[0])
+    except ValueError:
+        return False
+    if addr.is_loopback:
+        return True
+    if isinstance(addr, ipaddress.IPv6Address) and addr.ipv4_mapped:
+        return addr.ipv4_mapped.is_loopback
+    return False
+
+
+def _lan_ip_in_blacklist(ip: str | None, blacklist: list) -> bool:
+    """判断 IP 是否命中黑名单（支持精确 IP 或 CIDR）。"""
+    if not ip or not blacklist:
+        return False
+    ip = ip.split("%")[0]
+    for entry in blacklist:
+        if not isinstance(entry, str) or not entry.strip():
+            continue
+        entry = entry.strip()
+        if entry == ip:
+            return True
+        try:
+            if "/" in entry and ipaddress.ip_address(ip) in ipaddress.ip_network(entry, strict=False):
+                return True
+        except ValueError:
+            continue
+    return False
+
+
+def _enumerate_lan_ipv4() -> list[str]:
+    """枚举本机局域网 IPv4 地址（用于「管理网址」指令返回访问地址）。"""
+    ips = []
+    try:
+        hostname = socket.gethostname()
+        for info in socket.getaddrinfo(hostname, None, socket.AF_INET):
+            ip = info[4][0]
+            if ip and not _is_loopback(ip) and ip not in ips:
+                ips.append(ip)
+    except Exception:
+        pass
+    # 兜底：通过 UDP 连接探测拿本机出口地址（不会真正发包）
+    if not ips:
+        try:
+            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            try:
+                s.connect(("8.8.8.8", 80))
+                ip = s.getsockname()[0]
+                if ip and not _is_loopback(ip):
+                    ips.append(ip)
+            finally:
+                s.close()
+        except Exception:
+            pass
+    return ips
 
 
 def _build_text_image_chain(text, img_path):
@@ -201,6 +304,7 @@ CMD_HEADS = frozenset((
     "查询流水", "流水查询", "消费记录", "金币红包", "开红包", "抢红包", "开",
     "金币排行", "宠物排行", "农场排行", "活动", "活动中心",
     "查看后台配置", "保存后台配置", "导出数据", "导入数据", "重置数据",
+    "管理网址",
 ))
 # 默认同义词（首次加载或 WebUI 删除全部后重置为空）；用户可随时增删改
 DEFAULT_ALIAS_CMDS = {
@@ -1170,7 +1274,7 @@ class RouletteGame:
         return "、".join(p["name"] for p in self.players)
 
 
-@register("astrbot_plugin_signin", "sishijiu", "群签到 + 左轮手枪 + 宠物养成 + 金币银行 + 农场", "1.7.8")
+@register("astrbot_plugin_signin", "sishijiu", "群签到 + 左轮手枪 + 宠物养成 + 金币银行 + 农场", "1.7.9")
 class SignInPlugin(Star):
     def __init__(self, context: Context, config: dict = None):
         super().__init__(context)
@@ -1284,9 +1388,29 @@ class SignInPlugin(Star):
             ("group/names/sync", "POST", self.web_sync_group_names, "同步全部群聊的成员昵称（排行榜默认昵称）"),
             ("alias/list", "GET", self.web_get_aliases, "读取同义口令"),
             ("alias/save", "POST", self.web_save_aliases, "保存同义口令"),
+            # 局域网开放（1.7.9）：这些端点自身承担鉴权/记录职责，不套用访问门
+            ("lan/status", "GET", self.web_lan_status, "局域网开放：读取状态"),
+            ("lan/unlock", "POST", self.web_lan_unlock, "局域网开放：输入密码解锁"),
+            ("lan/setup", "POST", self.web_lan_setup, "局域网开放：开关/设置密码（仅本地）"),
+            ("lan/records", "GET", self.web_lan_records, "局域网开放：访问记录（仅本地）"),
+            ("lan/blacklist", "GET", self.web_lan_blacklist_get, "局域网开放：黑名单（仅本地）"),
+            ("lan/blacklist", "POST", self.web_lan_blacklist_set, "局域网开放：添加/移除黑名单（仅本地）"),
         ]
         for path, method, handler, desc in _web_apis:
+            if not path.startswith("lan/"):
+                handler = self._lan_gate_wrap(handler)
             context.register_web_api(f"/{PLUGIN_NAME}/{path}", handler, [method], desc)
+
+    def _lan_gate_wrap(self, handler):
+        """把非局域网端点的处理器包上访问门：未开启/本地/已解锁才放行，否则 403。
+        注意：AstrBot 在调用插件 Web API 时会把请求绑定到 request 上下文，
+        因此这里的 request 代理可用。处理器内部自带 self._lock，这里不再加锁。"""
+        async def _gated(*args, **kwargs):
+            data = self._load()
+            if not self._lan_gate(data):
+                return error_response("需要局域网访问密码或该设备已被禁止访问", status_code=403)
+            return await handler(*args, **kwargs)
+        return _gated
 
     # ================= 消息路由（无需前缀 / @） =================
     @filter.event_message_type(EventMessageType.ALL)
@@ -1524,6 +1648,7 @@ class SignInPlugin(Star):
         "金币排行": "_handle_rank_coins",
         "宠物排行": "_handle_rank_pet",
         "农场排行": "_handle_rank_farm",
+        "管理网址": "_handle_lan_url",
     }
     # 多个指令映射到同一处理方法
     _ROUTE_MULTI = {
@@ -1591,12 +1716,12 @@ class SignInPlugin(Star):
         """返回空白数据模板（每次调用返回新字典）"""
         return {"users": {}, "roulette": {}, "pets": {}, "bank": {}, "farms": {}, "loans": {},
                 "ledger": {}, "redpackets": [], "activities": {}, "group_members": {}, "group_names": {},
-                "alias_cmds": {**DEFAULT_ALIAS_CMDS}}
+                "alias_cmds": {**DEFAULT_ALIAS_CMDS}, LAN_DATA_KEY: {}}
 
     # 需要 setdefault 的字典键列表（与 _default_data 保持一致）
     _DATA_DICT_KEYS = ("users", "roulette", "pets", "bank", "farms", "loans",
                        "ledger", "activities", "activity_config", "params",
-                       "group_members", "group_names")
+                       "group_members", "group_names", LAN_DATA_KEY)
 
     def _load_disk(self) -> dict:
         if not os.path.exists(DATA_FILE):
@@ -8729,6 +8854,307 @@ class SignInPlugin(Star):
             if bot is not None and callable(getattr(bot, "call_action", None)):
                 bots.append(bot)
         return bots
+
+    # ================= 局域网开放（1.7.9） =================
+    def _lan_conf(self, data: dict) -> dict:
+        """读取局域网开放配置字典（缺失时补默认结构）。"""
+        lan = data.get(LAN_DATA_KEY)
+        if not isinstance(lan, dict):
+            lan = {}
+            data[LAN_DATA_KEY] = lan
+        lan.setdefault("enabled", False)
+        lan.setdefault("password_hash", None)
+        lan.setdefault("records", [])
+        lan.setdefault("blacklist", [])
+        return lan
+
+    @staticmethod
+    def _lan_client(req=None):
+        """取当前请求的客户端信息：IP、是否本地。req 缺省用 AstrBot 的 request 代理。"""
+        r = req if req is not None else request
+        client_host = None
+        ua = ""
+        try:
+            client_host = r.client_host
+        except Exception:
+            pass
+        try:
+            hdrs = r.headers
+            ua = hdrs.get("user-agent", "") if hdrs else ""
+        except Exception:
+            pass
+        return {
+            "ip": client_host or "unknown",
+            "is_local": _is_loopback(client_host),
+            "ua": (ua or "")[:200],
+        }
+
+    def _lan_record(self, data: dict, *, ip, is_local, ok, ua=""):
+        """写一条访问记录（本地访问也记录，便于管理员审计）。"""
+        lan = self._lan_conf(data)
+        recs = lan.setdefault("records", [])
+        name = "本地" if is_local else self._lan_device_name(ua)
+        recs.append({
+            "ts": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "ip": ip,
+            "name": name,
+            "ok": bool(ok),
+            "ua": (ua or "")[:200],
+        })
+        if len(recs) > LAN_MAX_RECORDS:
+            del recs[: len(recs) - LAN_MAX_RECORDS]
+
+    @staticmethod
+    def _lan_device_name(ua: str) -> str:
+        """从 User-Agent 简单推断设备名（移动端/桌面）。"""
+        ua = (ua or "").lower()
+        if "mobile" in ua or "android" in ua or "iphone" in ua:
+            return "移动端"
+        if "macintosh" in ua or "mac os" in ua:
+            return "macOS"
+        if "windows" in ua:
+            return "Windows"
+        if "linux" in ua:
+            return "Linux"
+        return "其它设备"
+
+    def _lan_secret(self, data: dict) -> str:
+        """会话签名密钥：首次访问局域网时生成并持久化（避免重启后所有访客失联）。"""
+        lan = self._lan_conf(data)
+        secret = lan.get("secret")
+        if not isinstance(secret, str) or len(secret) < 32:
+            secret = secrets.token_hex(32)
+            lan["secret"] = secret
+            try:
+                self._save(data)
+            except Exception:
+                pass
+        return secret
+
+    @staticmethod
+    def _lan_sign_token(secret: str, ip: str, exp_ts: int) -> str:
+        mac = hmac.new(secret.encode("utf-8"), f"{ip}:{exp_ts}".encode("utf-8"),
+                       hashlib.sha256).hexdigest()[:24]
+        return f"{exp_ts}.{mac}"
+
+    @staticmethod
+    def _lan_verify_token(secret: str, ip: str, token: str, now_ts: int) -> bool:
+        if not isinstance(token, str) or "." not in token:
+            return False
+        exp_s, mac = token.split(".", 1)
+        try:
+            exp_ts = int(exp_s)
+        except ValueError:
+            return False
+        if now_ts > exp_ts:
+            return False
+        expect = hmac.new(secret.encode("utf-8"), f"{ip}:{exp_ts}".encode("utf-8"),
+                          hashlib.sha256).hexdigest()[:24]
+        return hmac.compare_digest(mac, expect)
+
+    def _lan_is_unlocked(self, data: dict, client: dict, now_ts: int) -> bool:
+        """当前请求是否已通过局域网密码解锁（Cookie 会话有效）。"""
+        lan = self._lan_conf(data)
+        secret = lan.get("secret")
+        if not isinstance(secret, str) or len(secret) < 32:
+            return False
+        try:
+            token = request.cookies.get(LAN_COOKIE)
+        except Exception:
+            token = None
+        return self._lan_verify_token(secret, client["ip"], token or "", now_ts)
+
+    def _lan_gate(self, data: dict) -> bool:
+        """局域网访问门：True=放行，False=拒绝（返回 403）。
+        规则（先过 AstrBot 鉴权后，插件再加一层）：
+        1) 功能关闭 → 放行；
+        2) 本地访问 → 放行（免密）；
+        3) 命中黑名单 → 拒绝并记录；
+        4) 未解锁（无有效会话 Cookie） → 拒绝并记录；
+        5) 其余放行。
+        被拒绝的访问会写访问记录（含密码校验是否通过），供管理员审计；
+        通过密码解锁的访问由 web_lan_unlock 记录。"""
+        lan = self._lan_conf(data)
+        client = self._lan_client()
+        now_ts = int(datetime.now().timestamp())
+
+        if not lan.get("enabled"):
+            return True
+        if client["is_local"]:
+            return True
+        if _lan_ip_in_blacklist(client["ip"], lan.get("blacklist") or []):
+            self._lan_record(data, ip=client["ip"], is_local=False, ok=False, ua=client["ua"])
+            self._save(data)
+            return False
+        if not self._lan_is_unlocked(data, client, now_ts):
+            self._lan_record(data, ip=client["ip"], is_local=False, ok=False, ua=client["ua"])
+            self._save(data)
+            return False
+        return True
+
+    # ---- Web API ----
+    async def web_lan_status(self):
+        """读取局域网开放状态：{enabled, is_local, unlocked, password_set, records_count}"""
+        async with self._lock:
+            data = self._load()
+            lan = self._lan_conf(data)
+            client = self._lan_client()
+            now_ts = int(datetime.now().timestamp())
+            unlocked = client["is_local"] or (
+                lan.get("enabled") and self._lan_is_unlocked(data, client, now_ts)
+            )
+            return json_response({
+                "enabled": bool(lan.get("enabled")),
+                "is_local": client["is_local"],
+                "unlocked": unlocked,
+                "password_set": bool(lan.get("password_hash")),
+                "records_count": len(lan.get("records") or []),
+                "ip": client["ip"],
+            })
+
+    async def web_lan_unlock(self):
+        """输入密码解锁局域网访问：POST {password}。
+        校验哈希；正确则下发签名会话 Cookie 并记录；错误/未设密码则记录并返回失败。"""
+        async with self._lock:
+            payload = await request.json(default={})
+            password = payload.get("password") if isinstance(payload, dict) else None
+            data = self._load()
+            lan = self._lan_conf(data)
+            client = self._lan_client()
+            now_ts = int(datetime.now().timestamp())
+            if client["is_local"]:
+                return json_response({"unlocked": True})
+            if not lan.get("enabled"):
+                return error_response("局域网访问未开启", status_code=400)
+            if not lan.get("password_hash"):
+                self._lan_record(data, ip=client["ip"], is_local=False, ok=False, ua=client["ua"])
+                self._save(data)
+                return error_response("尚未设置局域网访问密码", status_code=400)
+            ok = isinstance(password, str) and _lan_verify_password(lan["password_hash"], password)
+            self._lan_record(data, ip=client["ip"], is_local=False, ok=ok, ua=client["ua"])
+            self._save(data)
+            if not ok:
+                return error_response("密码错误", status_code=401)
+            secret = self._lan_secret(data)
+            exp_ts = now_ts + LAN_SESSION_HOURS * 3600
+            token = self._lan_sign_token(secret, client["ip"], exp_ts)
+            resp = json_response({"unlocked": True})
+            try:
+                resp.set_cookie(LAN_COOKIE, token, max_age=LAN_SESSION_HOURS * 3600,
+                                httponly=True, samesite="lax", path="/")
+            except Exception:
+                pass
+            return resp
+
+    async def web_lan_setup(self):
+        """开关/设置局域网访问密码：POST {enabled?, password?}。【仅本地服务器可调用】
+        修改密码时仅保存哈希；开启功能但未设密码则要求同时提供 password。"""
+        async with self._lock:
+            client = self._lan_client()
+            if not client["is_local"]:
+                return error_response("只能在本地服务器上修改局域网访问设置", status_code=403)
+            payload = await request.json(default={})
+            data = self._load()
+            lan = self._lan_conf(data)
+            changed = {}
+            if "enabled" in payload and isinstance(payload, dict):
+                lan["enabled"] = bool(payload["enabled"])
+                changed["enabled"] = lan["enabled"]
+            if isinstance(payload, dict) and "password" in payload:
+                pw = payload["password"]
+                if not isinstance(pw, str):
+                    return error_response("密码必须是字符串", status_code=400)
+                if pw == "" or len(pw) < 4:
+                    return error_response("密码至少 4 位", status_code=400)
+                salt, digest = _lan_hash_password(pw)
+                lan["password_hash"] = f"{salt}${digest}"
+                changed["password_set"] = True
+            if lan.get("enabled") and not lan.get("password_hash"):
+                return error_response("开启局域网访问必须先设置访问密码", status_code=400)
+            self._save(data)
+            return json_response({"saved": True, **changed})
+
+    async def web_lan_records(self):
+        """读取访问记录。【仅本地】"""
+        async with self._lock:
+            client = self._lan_client()
+            if not client["is_local"]:
+                return error_response("仅本地服务器可查看访问记录", status_code=403)
+            data = self._load()
+            lan = self._lan_conf(data)
+            return json_response({"records": list(reversed(lan.get("records") or []))})
+
+    async def web_lan_blacklist_get(self):
+        """读取黑名单（IP/CIDR 列表）。【仅本地】"""
+        async with self._lock:
+            client = self._lan_client()
+            if not client["is_local"]:
+                return error_response("仅本地服务器可管理黑名单", status_code=403)
+            data = self._load()
+            lan = self._lan_conf(data)
+            return json_response({"blacklist": list(lan.get("blacklist") or [])})
+
+    async def web_lan_blacklist_set(self):
+        """添加/移除黑名单：POST {action: 'add'|'remove', ip}。【仅本地】"""
+        async with self._lock:
+            client = self._lan_client()
+            if not client["is_local"]:
+                return error_response("仅本地服务器可管理黑名单", status_code=403)
+            payload = await request.json(default={})
+            action = payload.get("action") if isinstance(payload, dict) else None
+            ip = payload.get("ip") if isinstance(payload, dict) else None
+            if action not in ("add", "remove") or not isinstance(ip, str) or not ip.strip():
+                return error_response("参数不合法", status_code=400)
+            ip = ip.strip()
+            data = self._load()
+            lan = self._lan_conf(data)
+            blacklist = [b for b in (lan.get("blacklist") or []) if isinstance(b, str)]
+            if action == "add":
+                if ip not in blacklist:
+                    blacklist.append(ip)
+            else:
+                blacklist = [b for b in blacklist if b != ip]
+            lan["blacklist"] = blacklist
+            self._save(data)
+            return json_response({"saved": True, "blacklist": blacklist})
+
+    def _handle_lan_url(self, event) -> str:
+        """指令「管理网址」：返回局域网访问地址（仅管理员私聊机器人，且要求已开启局域网开放）。"""
+        try:
+            if not event.is_private_chat():
+                return "请私聊机器人发送该指令获取局域网管理网址。"
+        except Exception:
+            pass
+        data = self._load()
+        lan = self._lan_conf(data)
+        if not lan.get("enabled"):
+            return "局域网访问尚未开启，请先在 WebUI「设置 → 局域网开放」中开启并设置密码。"
+        port = 6185
+        try:
+            conf = self.context.astrbot_config_mgr.get_conf(None)
+            dconf = getattr(conf, "dashboard", None)
+            if isinstance(dconf, dict) and dconf.get("port"):
+                port = int(dconf.get("port"))
+            elif dconf is not None and isinstance(getattr(dconf, "get", None), type(None)):
+                pass
+        except Exception:
+            try:
+                conf = getattr(self.context, "_config", None)
+                dconf = getattr(conf, "dashboard", None)
+                if isinstance(dconf, dict) and dconf.get("port"):
+                    port = int(dconf.get("port"))
+            except Exception:
+                pass
+        ips = _enumerate_lan_ipv4()
+        if not ips:
+            return "无法获取本机局域网 IP，请检查网络连接。"
+        lines = ["🌐 局域网管理网址（与本机同一局域网内的设备可访问：）"]
+        for ip in ips:
+            lines.append(f"http://{ip}:{port}")
+        lines.append("")
+        lines.append("· 本地访问 http://127.0.0.1:{} 免密".format(port))
+        lines.append("· 首次从局域网设备打开后需输入管理密码")
+        return "\n".join(lines)
 
     async def web_sync_group_names(self):
         """WebUI 按钮：拉取所有群聊的成员昵称（get_group_list → get_group_member_list），

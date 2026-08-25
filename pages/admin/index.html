@@ -136,6 +136,32 @@
             <p class="hint">点击按钮后，插件通过机器人 API（aiocqhttp / OneBot）拉取<b>所有群聊</b>的成员昵称，存为<b>排行榜用户默认昵称</b>（data.json → group_names）。同步后：排行榜优先显示「用户触发功能时记录的最新昵称」，其次显示本同步数据，最后才是存档昵称 / 掩码。成员较多的群可能需要一点时间，请勿频繁点击。</p>
           </div>
         </details>
+        <!-- 局域网开放（1.7.9）：并入设置页 -->
+        <details class="param-group" open>
+          <summary>🌐 局域网开放</summary>
+          <div class="param-subgroups">
+            <label class="param-item">
+              <span class="param-label">开启局域网访问</span>
+              <span class="param-input"><input type="checkbox" id="lan-enabled" /></span>
+              <small>关闭时局域网设备无法访问本后台（本地不受影响）；开启后需设置访问密码</small>
+            </label>
+            <label class="param-item">
+              <span class="param-label">访问密码</span>
+              <span class="param-input"><input type="password" id="lan-password" placeholder="设置局域网访问密码（≥4位，仅存哈希）" /></span>
+              <small>密码以哈希存储，服务器不保存明文；<b>更改密码只能在本地服务器上进行</b></small>
+            </label>
+            <div class="toolbar">
+              <button id="btn-lan-save" class="primary">保存局域网设置</button>
+              <span id="status-lan" class="status"></span>
+            </div>
+            <div class="toolbar">
+              <button id="btn-lan-records">查看访问记录</button>
+              <button id="btn-lan-blacklist">管理黑名单</button>
+              <span id="status-lan2" class="status"></span>
+            </div>
+            <p class="hint">开启后，与本机<b>同一局域网</b>内的设备访问 <code>http://服务器IP:端口</code> 并登录 AstrBot 后，需输入本密码才能进入该后台；<b>本地访问（127.0.0.1）免密</b>。每次局域网访问都会记录设备/IP/密码是否正确，可加入黑名单禁止。管理员私聊机器人发送「<b>管理网址</b>」获取局域网访问地址。</p>
+          </div>
+        </details>
         <!-- 危险操作：默认折叠，放在面板最后 -->
         <details class="param-group danger-zone">
           <summary>⚠️ 危险操作区（默认道具数据）</summary>
@@ -183,7 +209,7 @@
         <p class="hint">导出会把 **用户存档（data.json）+ 数值配置（game_items.json：商店/打工/玩耍/作物/肥料/贷款套餐）** 打包为单个 JSON 文件下载；导入会用所选文件覆盖以上全部文件（兼容旧版 txt 备份，导入后自动迁移为 game_items.json；建议先导出备份）。</p>
       </section>
 
-      <footer class="page-foot">签到娱乐系统 · 1.7.8</footer>
+      <footer class="page-foot">签到娱乐系统 · 1.7.9</footer>
     </div>
 
     <script type="module" src="./app.js"></script>
@@ -204,6 +230,45 @@
           <button id="btn-captcha-cancel">取消</button>
           <button id="btn-captcha-ok" class="danger">确认执行</button>
         </div>
+      </div>
+    </div>
+
+    <!-- 局域网访问密码锁屏（远程设备需输入密码才能使用 WebUI） -->
+    <div id="lan-lock" class="lan-lock hidden">
+      <div class="lan-lock-box">
+        <div class="lan-lock-title">🔐 局域网访问需要密码</div>
+        <p class="lan-lock-desc">该后台已开启局域网访问。请输入管理员设置的访问密码以继续使用全部功能。</p>
+        <input id="lan-unlock-input" class="lan-lock-input" type="password" placeholder="输入局域网访问密码" autocomplete="off" />
+        <div id="lan-unlock-error" class="lan-lock-error hidden">密码错误，请重试</div>
+        <button id="btn-lan-unlock" class="primary lan-lock-btn">解锁</button>
+      </div>
+    </div>
+
+    <!-- 访问记录弹窗 -->
+    <div id="lan-records-modal" class="lan-modal hidden">
+      <div class="lan-modal-box">
+        <div class="lan-modal-head">
+          <span>📋 局域网访问记录</span>
+          <button id="btn-lan-records-close" class="icon-close" title="关闭">✕</button>
+        </div>
+        <div class="lan-table-wrap" id="lan-records-body"><p class="hint">加载中...</p></div>
+        <p class="hint">记录每次局域网访问：时间 / 设备 / IP / 密码是否正确（✅ 通过 / ❌ 未通过）。仅本地服务器可查看。</p>
+      </div>
+    </div>
+
+    <!-- 黑名单管理弹窗 -->
+    <div id="lan-blacklist-modal" class="lan-modal hidden">
+      <div class="lan-modal-box">
+        <div class="lan-modal-head">
+          <span>🚫 黑名单管理</span>
+          <button id="btn-lan-blacklist-close" class="icon-close" title="关闭">✕</button>
+        </div>
+        <div class="toolbar">
+          <input id="lan-blacklist-input" class="lan-blacklist-input" placeholder="输入要禁止的 IP 或 CIDR，如 192.168.1.66" />
+          <button id="btn-lan-blacklist-add" class="primary">添加禁止</button>
+        </div>
+        <div class="lan-table-wrap" id="lan-blacklist-body"><p class="hint">加载中...</p></div>
+        <p class="hint">被加入黑名单的 IP 无法访问本后台（即使输入正确密码）。支持精确 IP 与网段（如 192.168.1.0/24）。仅本地服务器可管理。</p>
       </div>
     </div>
   </body>
