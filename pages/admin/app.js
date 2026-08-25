@@ -21,18 +21,18 @@ const JOB_FIELDS = [
   ["min_level", "最低等级"], ["min_health", "最低健康"], ["min_mood", "最低心情"],
   ["cost_stamina", "消耗体力"], ["cost_satiety", "消耗饱食"], ["cost_thirst", "消耗口渴"],
   ["cost_health", "消耗健康"], ["cost_mood", "消耗心情"],
-  ["time", "时间(秒)"], ["coins", "金币"], ["exp", "经验"],
+  ["time", "时间(分钟)"], ["coins", "金币"], ["exp", "经验"],
 ];
 const PLAY_FIELDS = [
   ["min_level", "最低等级"], ["min_health", "最低健康"], ["min_mood", "最低心情"],
   ["cost_stamina", "消耗体力"], ["cost_satiety", "消耗饱食"], ["cost_thirst", "消耗口渴"],
   ["cost_health", "消耗健康"], ["cost_mood", "消耗心情"],
-  ["time", "时间(秒)"], ["exp", "经验"], ["mood", "心情"], ["stamina", "体力"], ["health", "健康"],
+  ["time", "时间(分钟)"], ["exp", "经验"], ["mood", "心情"], ["stamina", "体力"], ["health", "健康"],
 ];
 // 商店：名称+描述 | 类型 | 五项效果 | 价格（金币）
 const SHOP_EFFECT_FIELDS = [
   ["satiety", "饱食度"], ["thirst", "口渴值"], ["stamina", "体力"],
-  ["mood", "心情值"], ["health", "健康度"],
+  ["mood", "心情值"], ["health", "健康度"], ["price", "价格(金币)"],
 ];
 const PETSHOP_TYPES = ["食物", "饮料", "药物", "玩具"];
 const PETSHOP_TYPE_ICONS = { 食物: "🍖", 饮料: "🥤", 药物: "💊", 玩具: "🧸" };
