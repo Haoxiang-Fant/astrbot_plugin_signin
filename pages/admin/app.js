@@ -43,8 +43,8 @@ const CROP_FIELDS = [
   ["grow_minutes", "成熟(分钟)"],
 ];
 const FERT_FIELDS = [
-  ["price", "价格"], ["time_reduce", "减时%"], ["yield_add", "增产%"],
-  ["max_uses", "最大次数(-1不限)"],
+  ["price", "价格/时"], ["yield_add", "增产%/次"],
+  ["max_accel", "可加速次数(-1不限)"],
 ];
 // 贷款套餐：代码（3~10）+ 5 个数值列
 const LOAN_FIELDS = [

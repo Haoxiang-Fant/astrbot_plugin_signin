@@ -67,7 +67,7 @@
               </div>
             </details>
           </div>
-          <p class="hint">1.7.7 起农场商店同样改为表格编辑（一并存于 game_items.json，旧版 作物.txt / 肥料.txt 自动迁移）。作物列：种子价格 / 种子卖价 / 产量 / 成熟售价 / 收获经验 / 需要农场等级 / 成熟时间(分钟)；肥料列：价格 / 减时% / 增产% / 最大使用次数（-1 不限）。保存后立即生效。</p>
+          <p class="hint">1.7.7 起农场商店同样改为表格编辑（一并存于 game_items.json，旧版 作物.txt / 肥料.txt 自动迁移）。作物列：种子价格 / 种子卖价 / 产量 / 成熟售价 / 收获经验 / 需要农场等级 / 成熟时间(分钟)；肥料列（2.0.0）：价格(金币/小时) / 增产%/次 / 可加速次数（-1 不限，替代旧版最大使用次数）。化肥按「小时」购买、按「分钟」使用。保存后立即生效。</p>
         </details>
       </section>
 
@@ -209,7 +209,7 @@
         <p class="hint">导出会把 **用户存档（data.json）+ 数值配置（game_items.json：商店/打工/玩耍/作物/肥料/贷款套餐）** 打包为单个 JSON 文件下载；导入会用所选文件覆盖以上全部文件（兼容旧版 txt 备份，导入后自动迁移为 game_items.json；建议先导出备份）。</p>
       </section>
 
-      <footer class="page-foot">签到娱乐系统 · 1.7.9</footer>
+      <footer class="page-foot">签到娱乐系统 · 2.0.0</footer>
     </div>
 
     <script type="module" src="./app.js"></script>

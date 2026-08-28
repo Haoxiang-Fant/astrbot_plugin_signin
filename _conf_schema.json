@@ -63,5 +63,35 @@
     "description": "捡到钱了每个周期最多触发次数",
     "type": "int",
     "default": 2
+  },
+  "min_fav": {
+    "description": "每日签到最少增加的好感度",
+    "type": "float",
+    "default": 0.01
+  },
+  "max_fav": {
+    "description": "每日签到最多增加的好感度",
+    "type": "float",
+    "default": 1.0
+  },
+  "signin_no_reward_chance": {
+    "description": "签到额外奖励池·无奖品概率（0~1，三项总和超过 1 时自动归一）",
+    "type": "float",
+    "default": 0.4
+  },
+  "signin_pill_chance": {
+    "description": "签到额外奖励池·属性丸概率（0~1）",
+    "type": "float",
+    "default": 0.3
+  },
+  "signin_ball_chance": {
+    "description": "签到额外奖励池·农场经验球概率（0~1）",
+    "type": "float",
+    "default": 0.3
+  },
+  "pet_settle_ranges": {
+    "description": "宠物每日结算各档位属性变化范围（H1/H2/H3=按健康度分档，T1~T4=按饱食/口渴/心情最差档；格式：档位=属性最低~最高，逗号分隔，竖线分隔各档）",
+    "type": "string",
+    "default": "H1=饱食-15~-10,口渴-15~-10,体力100~120,心情3~7,健康0~0|H2=饱食-20~-15,口渴-20~-15,体力80~120,心情1~2.5,健康0~0|H3=饱食-25~-20,口渴-25~-20,体力40~60,心情-5~-2,健康-8~-1|T1=健康5~10|T2=健康0.1~6|T3=健康-10~-4|T4=健康-15~-8"
   }
 }
