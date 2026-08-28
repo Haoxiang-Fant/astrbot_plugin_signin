@@ -1,0 +1,38 @@
+{
+  "migrations": {
+    "txt_desc_v176": true
+  },
+  "users": {},
+  "roulette": {},
+  "pets": {},
+  "bank": {},
+  "farms": {},
+  "loans": {},
+  "ledger": {},
+  "activities": {},
+  "activity_config": {},
+  "params": {},
+  "group_members": {},
+  "group_names": {},
+  "lan": {},
+  "redpackets": [],
+  "alias_cmds": {
+    "打卡": "签到",
+    "我的宠物": "宠物",
+    "宠物状态": "宠物",
+    "工作": "打工",
+    "钱袋": "背包",
+    "我的背包": "背包",
+    "存金币": "存款",
+    "取金币": "取款",
+    "今日流水": "查询流水",
+    "发红包": "金币红包",
+    "财富榜": "金币排行",
+    "宠物榜": "宠物排行",
+    "农场榜": "农场排行",
+    "治疗": "治疗宠物",
+    "赌博": "装弹",
+    "查看帮助": "游戏帮助"
+  },
+  "_migrated_cross_group": true
+}
