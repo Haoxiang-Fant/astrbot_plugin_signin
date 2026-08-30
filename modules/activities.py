@@ -92,7 +92,7 @@ class ActivityMixin:
 
         img = Image.new("RGB", (width, height), (255, 255, 255))
         d = ImageDraw.Draw(img)
-        d.text((pad, pad), "🎯 活动中心", font=title_font, fill=(20, 20, 20))
+        _dtext(d, (pad, pad), "🎯 活动中心", font=title_font, fill=(20, 20, 20))
         y = pad + title_h
 
         for rows, ch in card_plans:
@@ -100,7 +100,7 @@ class ActivityMixin:
             d.rectangle([pad, y, width - pad, y + ch], outline=(200, 200, 200), width=2)
             yy = y + inner
             for text, font, color, is_name in rows:
-                d.text((pad + inner, yy), text, font=font, fill=color)
+                _dtext(d, (pad + inner, yy), text, font=font, fill=color)
                 yy += name_h if is_name else line_h
             y += ch + card_gap
 

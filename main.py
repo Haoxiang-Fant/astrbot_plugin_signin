@@ -32,7 +32,7 @@ from .modules.webui import WebUIMixin
 _register_runtime_module(_sys.modules[__name__])
 
 
-@register("astrbot_plugin_signin", "sishijiu", "群签到 + 左轮手枪 + 宠物养成 + 金币银行 + 农场", "2.0.0")
+@register("astrbot_plugin_signin", "sishijiu", "群签到 + 左轮手枪 + 宠物养成 + 金币银行 + 农场", "2.0.1")
 class SignInPlugin(Star, FarmMixin, PetMixin, BankMixin, RedpacketMixin, ActivityMixin, LoanMixin, RouletteMixin, RankMixin, LanMixin, WebUIMixin, CoreMixin):
     def __init__(self, context: Context, config: dict = None):
         super().__init__(context)
@@ -76,6 +76,7 @@ class SignInPlugin(Star, FarmMixin, PetMixin, BankMixin, RedpacketMixin, Activit
             ("signin_pill_chance", "signin_pill_chance", SIGNIN_PILL_CHANCE, _FLOAT),
             ("signin_ball_chance", "signin_ball_chance", SIGNIN_BALL_CHANCE, _FLOAT),
             ("pet_settle_ranges", "pet_settle_ranges", "", str),
+            ("pet_settle_tiers", "pet_settle_tiers", "", str),
             ("loan_special_rate", "loan_special_rate", LOAN_SPECIAL_RATE, _FLOAT),
             ("loan_special_days", "loan_special_days", LOAN_SPECIAL_DAYS, _INT),
             ("rain_amount", "rain_amount", RAIN_AMOUNT, _INT),
@@ -548,28 +549,34 @@ class SignInPlugin(Star, FarmMixin, PetMixin, BankMixin, RedpacketMixin, Activit
             lvl_msg = self._apply_exp(pet)
             lines.append(f"🐾 宠物经验：+{exp_got:.1f}{lvl_msg}")
 
-            # 额外奖励池（互斥）：概率在 WebUI 可编辑，总和恒为 1
-            r = random.random()
-            if r < no_ch:
-                pass  # 不送任何东西
-            elif r < no_ch + pill_ch:
+        # 额外奖励池（互斥）：概率在 WebUI 可编辑，总和恒为 1。
+        # 2.0.1 归属：属性丸=宠物特殊道具（需解锁宠物）；农场经验球=农场特殊道具（需开通农场）。
+        farm = data.get("farms", {}).get(key)
+        r = random.random()
+        if r < no_ch:
+            pass  # 不送任何东西
+        elif r < no_ch + pill_ch:
+            if pet:
                 pills = random.randint(self.pill_drop_min, self.pill_drop_max)
                 inv = pet.setdefault("inventory", {})
                 inv[PILL_NAME] = int(inv.get(PILL_NAME, 0)) + pills
                 lines.append(f"💊 运气不错，获得 {pills} 个属性丸（发送「使用 属性丸」使用）！")
             else:
-                balls = random.randint(self.pill_drop_min, self.pill_drop_max)
-                inv = pet.setdefault("inventory", {})
-                inv[EXP_BALL_NAME] = int(inv.get(EXP_BALL_NAME, 0)) + balls
-                lines.append(f"🏵️ 运气不错，获得 {balls} 个农场经验球（发送「使用 {EXP_BALL_NAME}」使用）！")
-        else:
-            # 未解锁宠物：额外奖励自动转为金币（每个 10 金币）
-            r = random.random()
-            if r >= no_ch:
                 cnt = random.randint(self.pill_drop_min, self.pill_drop_max)
                 gain = cnt * ITEM_TO_COIN
                 self._add_coins(data, key, gain, "签到奖励转金币")
-                lines.append(f"🔄 抽到道具奖励 ×{cnt}（未解锁宠物，自动转为 {gain} 金币）")
+                lines.append(f"🔄 抽到属性丸 ×{cnt}（未解锁宠物，自动转为 {gain} 金币）")
+        else:
+            if farm:
+                balls = random.randint(self.pill_drop_min, self.pill_drop_max)
+                tools = farm.setdefault("tools", {})
+                tools[EXP_BALL_NAME] = int(tools.get(EXP_BALL_NAME, 0)) + balls
+                lines.append(f"🏵️ 运气不错，获得 {balls} 个农场经验球（发送「使用 {EXP_BALL_NAME}」使用）！")
+            else:
+                cnt = random.randint(self.pill_drop_min, self.pill_drop_max)
+                gain = cnt * ITEM_TO_COIN
+                self._add_coins(data, key, gain, "签到奖励转金币")
+                lines.append(f"🔄 抽到农场经验球 ×{cnt}（未开通农场，自动转为 {gain} 金币）")
 
         return lines
 

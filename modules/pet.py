@@ -11,21 +11,19 @@ _register_runtime_module(_sys.modules[__name__])
 
 class PetMixin:
     _SETTLE_ATTR_MAP = {"饱食": "satiety", "口渴": "thirst", "体力": "stamina", "心情": "mood", "健康": "health"}
+    # 2.0.1：宠物状态结算固定四档（T1~T4，按饱食/口渴/心情最差档），每档定义全部五属性变化范围
     _SETTLE_DEFAULT_RANGES = {
-        "H1": {"饱食": (-15.0, -10.0), "口渴": (-15.0, -10.0), "体力": (100.0, 120.0), "心情": (3.0, 7.0), "健康": (0.0, 0.0)},
-        "H2": {"饱食": (-20.0, -15.0), "口渴": (-20.0, -15.0), "体力": (80.0, 120.0), "心情": (1.0, 2.5), "健康": (0.0, 0.0)},
-        "H3": {"饱食": (-25.0, -20.0), "口渴": (-25.0, -20.0), "体力": (40.0, 60.0), "心情": (-5.0, -2.0), "健康": (-8.0, -1.0)},
-        "T1": {"健康": (5.0, 10.0)},
-        "T2": {"健康": (0.1, 6.0)},
-        "T3": {"健康": (-10.0, -4.0)},
-        "T4": {"健康": (-15.0, -8.0)},
+        "T1": {"饱食": (-15.0, -10.0), "口渴": (-15.0, -10.0), "体力": (100.0, 120.0), "心情": (3.0, 7.0), "健康": (5.0, 10.0)},
+        "T2": {"饱食": (-15.0, -10.0), "口渴": (-15.0, -10.0), "体力": (100.0, 120.0), "心情": (3.0, 7.0), "健康": (0.1, 6.0)},
+        "T3": {"饱食": (-20.0, -15.0), "口渴": (-20.0, -15.0), "体力": (80.0, 120.0), "心情": (1.0, 2.5), "健康": (-10.0, -4.0)},
+        "T4": {"饱食": (-25.0, -20.0), "口渴": (-25.0, -20.0), "体力": (40.0, 60.0), "心情": (-5.0, -2.0), "健康": (-15.0, -8.0)},
     }
 
     def _settle_ranges(self):
         """解析 PET_SETTLE_RANGES（WebUI「设置 → 签到 → 宠物结算范围」可编辑）。
-        格式：H1=饱食-15~-10,口渴-15~-10,体力100~120,心情3~7,健康0~0|H2=…|T1=健康5~10|…
-        H1/H2/H3 = 按宠物健康度分档（≥100 / 40-99 / 0-39）；T1~T4 = 按饱食/口渴/心情最差档分档。
-        返回 {"H1": {属性: (lo, hi)}, …, "T4": {…}}；解析失败回退默认值。"""
+        2.0.1：固定四档 T1~T4（按饱食/口渴/心情最差档），每档定义全部五属性变化范围。
+        格式：T1=饱食-15~-10,口渴-15~-10,体力100~120,心情3~7,健康5~10|T2=…|T3=…|T4=…
+        返回 {"T1": {属性: (lo, hi)}, …, "T4": {…}}；解析失败回退默认值。"""
         raw = getattr(self, "pet_settle_ranges", None)
         if not raw or not str(raw).strip():
             raw = globals().get("PET_SETTLE_RANGES", "")
@@ -38,7 +36,7 @@ class PetMixin:
                 continue
             key, body = seg.split("=", 1)
             key = key.strip().upper()
-            if key not in ("H1", "H2", "H3", "T1", "T2", "T3", "T4"):
+            if key not in ("T1", "T2", "T3", "T4"):
                 continue
             attrs = {}
             for item in body.split(","):
@@ -78,44 +76,82 @@ class PetMixin:
         pet["mood"] = round(self._clamp(pet["mood"], 0, mood_max), 2)
         pet["health"] = round(self._clamp(pet["health"], 0, PET_MAX_HEALTH), 2)
 
-    @staticmethod
-    def _worst_tier(satiety: float, thirst: float, mood: float) -> int:
-        """饱食/口渴/心情对健康的影响档位（1.7.6 四档），每个属性单独定档后取最差档（4 最差）：
-        一档：≥120 / ≥120 / ≥80；二档：50-119 / 70-119 / 50-79；
-        三档：30-49 / 30-59 / 30-39；四档：<30 / <30 / <30。"""
-        t_sat = 1 if satiety >= 120 else (2 if satiety >= 50 else (3 if satiety >= 30 else 4))
-        t_thr = 1 if thirst >= 120 else (2 if thirst >= 70 else (3 if thirst >= 30 else 4))
-        t_mood = 1 if mood >= 80 else (2 if mood >= 50 else (3 if mood >= 30 else 4))
+    # 2.0.1：档位判定阈值（默认：饱食≥120/50/30、口渴≥120/70/30、心情≥80/50/30）
+    _SETTLE_DEFAULT_TIERS = {
+        "饱食": (120.0, 50.0, 30.0),
+        "口渴": (120.0, 70.0, 30.0),
+        "心情": (80.0, 50.0, 30.0),
+    }
+
+    def _settle_tier_bounds(self):
+        """解析 PET_SETTLE_TIERS（WebUI 可编辑的「档位数值」）：
+        每属性三个边界：一档下限、二档下限、三档下限（从高到低）。
+        属性值 ≥ 一档下限 → 1 档；≥ 二档下限 → 2 档；≥ 三档下限 → 3 档；否则 4 档。
+        格式：饱食=120,50,30|口渴=120,70,30|心情=80,50,30。解析失败回退默认。"""
+        raw = getattr(self, "pet_settle_tiers", None)
+        if not raw or not str(raw).strip():
+            raw = globals().get("PET_SETTLE_TIERS", "")
+        if not isinstance(raw, str) or not str(raw).strip():
+            return dict(self._SETTLE_DEFAULT_TIERS)
+        out = {}
+        for seg in str(raw).replace("；", "|").replace(";", "|").split("|"):
+            seg = seg.strip()
+            if not seg or "=" not in seg:
+                continue
+            name, body = seg.split("=", 1)
+            name = name.strip()
+            if name not in ("饱食", "口渴", "心情"):
+                continue
+            nums = []
+            for x in body.replace("，", ",").split(","):
+                try:
+                    nums.append(float(x.strip()))
+                except (TypeError, ValueError):
+                    nums = []
+                    break
+            if len(nums) == 3:
+                # 一档下限 ≥ 二档下限 ≥ 三档下限（不满足则按降序校正）
+                out[name] = tuple(sorted(nums, reverse=True))
+        if not out:
+            return dict(self._SETTLE_DEFAULT_TIERS)
+        return out
+
+    def _worst_tier(self, satiety: float, thirst: float, mood: float) -> int:
+        """饱食/口渴/心情对健康的影响档位（2.0.1 四档，阈值可在 WebUI 编辑），
+        每个属性单独定档后取最差档（4 最差）。"""
+        tb = self._settle_tier_bounds()
+
+        def _t(val, bounds):
+            for i, b in enumerate(bounds):
+                if val >= b:
+                    return i + 1
+            return len(bounds) + 1
+
+        t_sat = _t(satiety, tb["饱食"])
+        t_thr = _t(thirst, tb["口渴"])
+        t_mood = _t(mood, tb["心情"])
         return max(t_sat, t_thr, t_mood)
 
     def _settle_once(self, pet: dict, settle_date: str) -> None:
-        """执行一次每日结算（2.0.0：各档位属性变化范围可在 WebUI「设置 → 签到 → 宠物结算范围」编辑）"""
+        """执行一次每日结算（2.0.1：固定四档 T1~T4，按饱食/口渴/心情最差档；
+        各档属性变化范围可在 WebUI「设置 → 签到 → 宠物结算范围」编辑）"""
         health = pet["health"]
         ranges = self._settle_ranges()
 
-        def _roll(hkey, name, default):
-            r = ranges.get(hkey, {}).get(name) or default
-            return random.uniform(r[0], r[1])
-
-        # 1. 基础结算（按健康档位）
-        if health >= 100:      # 100-200
-            hkey = "H1"
-        elif health >= 40:     # 40-99
-            hkey = "H2"
-        else:                  # 0-39
-            hkey = "H3"
-        sat_d = _roll(hkey, "饱食", self._SETTLE_DEFAULT_RANGES[hkey]["饱食"])
-        thr_d = _roll(hkey, "口渴", self._SETTLE_DEFAULT_RANGES[hkey]["口渴"])
-        sta_d = _roll(hkey, "体力", self._SETTLE_DEFAULT_RANGES[hkey]["体力"])
-        mood_d = _roll(hkey, "心情", self._SETTLE_DEFAULT_RANGES[hkey]["心情"])
-        health_base_d = _roll(hkey, "健康", self._SETTLE_DEFAULT_RANGES[hkey]["健康"])
-
-        # 2. 饱食/口渴/心情 四档对健康的影响（取最差档）
+        # 状态档位：饱食/口渴/心情 取最差档（1 最好 ~ 4 最差）
         tier = self._worst_tier(pet["satiety"], pet["thirst"], pet["mood"])
         tkey = f"T{tier}"
-        health_tier_d = _roll(tkey, "健康", self._SETTLE_DEFAULT_RANGES[tkey]["健康"])
 
-        health_d = health_base_d + health_tier_d
+        def _roll(name, default):
+            r = ranges.get(tkey, {}).get(name) or default
+            return random.uniform(r[0], r[1])
+
+        # 四档分别定义全部五属性的变化范围
+        sat_d = _roll("饱食", self._SETTLE_DEFAULT_RANGES[tkey]["饱食"])
+        thr_d = _roll("口渴", self._SETTLE_DEFAULT_RANGES[tkey]["口渴"])
+        sta_d = _roll("体力", self._SETTLE_DEFAULT_RANGES[tkey]["体力"])
+        mood_d = _roll("心情", self._SETTLE_DEFAULT_RANGES[tkey]["心情"])
+        health_d = _roll("健康", self._SETTLE_DEFAULT_RANGES[tkey]["健康"])
 
         # 3. 应用（先按当前健康度的上限 clamp 属性，再改健康度，最后统一 clamp）
         sat_max, thr_max, sta_max, mood_max = self._attr_max(health)
@@ -853,7 +889,7 @@ class PetMixin:
                 if row and row_w + w > max_w:
                     x = x0
                     for tt, cc in row:
-                        d.text((int(x), y), tt, font=font, fill=cc)
+                        _dtext(d, (int(x), y), tt, font=font, fill=cc)
                         x += tw(tt, font)
                     y += lh
                     row = []
@@ -863,7 +899,7 @@ class PetMixin:
             if row:
                 x = x0
                 for tt, cc in row:
-                    d.text((int(x), y), tt, font=font, fill=cc)
+                    _dtext(d, (int(x), y), tt, font=font, fill=cc)
                     x += tw(tt, font)
                 y += lh
             return y
@@ -913,23 +949,28 @@ class PetMixin:
         y = pad
 
         # 标题：<用户昵称>的宠物 + 右侧 宠物排行数据
+        # 2.0.1：用户名过长时用 … 截断，保证排行榜信息始终在同一行右对齐（避免错乱/换行）
         rank_text = self._pet_rank_text(uid, data) if data else ""
-        title_line = f"{name} 的宠物"
-        if rank_text and tw(title_line, title_font) + 24 + tw(rank_text, desc_font) <= content_w:
-            d.text((pad, y), title_line, font=title_font, fill=(20, 20, 20))
-            d.text((int(width - pad - tw(rank_text, desc_font)), y + 14), rank_text,
+        _rank_w = (24 + tw(rank_text, desc_font)) if rank_text else 0
+        _title_suffix = " 的宠物"
+        _name_max = content_w - tw(_title_suffix, title_font) - _rank_w
+        disp_name = name
+        if tw(disp_name, title_font) > max(20, _name_max):
+            cut = disp_name
+            while cut and tw(cut + "…", title_font) > max(20, _name_max):
+                cut = cut[:-1]
+            disp_name = (cut + "…") if cut else disp_name[:1] + "…"
+        title_line = f"{disp_name}{_title_suffix}"
+        _dtext(d, (pad, y), title_line, font=title_font, fill=(20, 20, 20))
+        if rank_text:
+            _dtext(d, (int(width - pad - tw(rank_text, desc_font)), y + 14), rank_text,
                    font=desc_font, fill=(90, 90, 90))
-        else:
-            d.text((pad, y), title_line, font=title_font, fill=(20, 20, 20))
-            if rank_text:
-                d.text((pad, y + 28), rank_text, font=desc_font, fill=(90, 90, 90))
-                title_h = max(title_h, 52 + 22)
         y += title_h
 
         # 预留位（红 #C00000）
         if slot_lines:
             for wl in slot_lines:
-                d.text((pad, y), wl, font=desc_font, fill=(192, 0, 0))
+                _dtext(d, (pad, y), wl, font=desc_font, fill=(192, 0, 0))
                 y += line_h
             y += 6
 
@@ -941,13 +982,13 @@ class PetMixin:
         d.rectangle([pad, y, width - pad, y + pet_card_h], outline=(205, 205, 205), width=1)
         yy = y + inner
         # 行1：宠物名称(大两号,左) + 状态(小一号,右)
-        d.text((int(pad + inner), yy), pet.get("name", "宠物"), font=pet_name_font, fill=(20, 20, 20))
-        d.text((int(width - pad - inner - tw(status, status_font)), yy + 10),
+        _dtext(d, (int(pad + inner), yy), pet.get("name", "宠物"), font=pet_name_font, fill=(20, 20, 20))
+        _dtext(d, (int(width - pad - inner - tw(status, status_font)), yy + 10),
                status, font=status_font, fill=(150, 150, 150))
         yy += name_row_h
         # 行2：等级(左) + 经验(右,小两号)
-        d.text((int(pad + inner), yy), f"Lv.{lv}", font=lv_font, fill=(40, 40, 40))
-        d.text((int(width - pad - inner - tw(exp_text, exp_font)), yy + 6),
+        _dtext(d, (int(pad + inner), yy), f"Lv.{lv}", font=lv_font, fill=(40, 40, 40))
+        _dtext(d, (int(width - pad - inner - tw(exp_text, exp_font)), yy + 6),
                exp_text, font=exp_font, fill=(110, 110, 110))
         yy += lv_row_h
         # 行3：升级进度条（普通进度条高度，含百分比）
@@ -958,7 +999,7 @@ class PetMixin:
                          int(pad + inner + 1 + (content_w - 2 * inner - 2) * exp_ratio), bar_y + bar_h_px - 1],
                         fill=(52, 168, 83))
         pct_text = f"{int(exp_ratio * 100)}%"
-        d.text((int(width - pad - inner - tw(pct_text, exp_font) - 4), bar_y - 4),
+        _dtext(d, (int(width - pad - inner - tw(pct_text, exp_font) - 4), bar_y - 4),
                pct_text, font=exp_font, fill=(40, 40, 40))
         yy += bar_h
         # 行4+：宠物属性条区
@@ -966,7 +1007,7 @@ class PetMixin:
         for label, val, amax, hint in attrs:
             # 属性名 + 当前值/最大值
             t = f"{label} {val:.0f}/{amax:.0f}"
-            d.text((int(pad + inner), yy), t, font=attr_font, fill=(60, 60, 60))
+            _dtext(d, (int(pad + inner), yy), t, font=attr_font, fill=(60, 60, 60))
             yy += attr_label_h
             # 属性条颜色判定（1.7.6：饱/渴/心 采用第三档标准 = 状态低）
             if label == "饱食度":
@@ -992,7 +1033,7 @@ class PetMixin:
                             fill=bar_color)
             # 状态解释：仅红色时固定显示在整个属性条区域的右侧（不随填充比例移动）
             if red:
-                d.text((int(pad + inner + attr_w + 6), yy + 1), hint, font=hint_font, fill=(192, 0, 0))
+                _dtext(d, (int(pad + inner + attr_w + 6), yy + 1), hint, font=hint_font, fill=(192, 0, 0))
             yy += attr_bar_h
         y += pet_card_h
         y += bottom_gap  # 状态卡片与底部双卡保持间距
@@ -1007,7 +1048,7 @@ class PetMixin:
         yy = y + c1_inner
         yy = draw_segs(d, pad + c1_inner, yy, c1_avail, chg_segs, c1_chg_font, line_h)
         for wl, f in c1_reason_rows:
-            d.text((int(pad + c1_inner), yy), wl, font=f, fill=(110, 110, 110))
+            _dtext(d, (int(pad + c1_inner), yy), wl, font=f, fill=(110, 110, 110))
             yy += line_h
         # 打工/玩耍进度条（原模块）
         by = yy + (bar_h - bar_h_px) // 2
@@ -1020,13 +1061,13 @@ class PetMixin:
         yy += bar_h
         # 描述（左）+ 剩余时间（进度条右下方、进度条外部，右对齐）
         if remain_txt and remain_same_row:
-            d.text((int(pad + c1_inner), yy), desc, font=hint_font, fill=(90, 90, 90))
-            d.text((int(pad + card1_w - c1_inner - tw(remain_txt, hint_font)), yy),
+            _dtext(d, (int(pad + c1_inner), yy), desc, font=hint_font, fill=(90, 90, 90))
+            _dtext(d, (int(pad + card1_w - c1_inner - tw(remain_txt, hint_font)), yy),
                    remain_txt, font=hint_font, fill=(110, 110, 110))
         else:
-            d.text((int(pad + c1_inner), yy), desc, font=hint_font, fill=(90, 90, 90))
+            _dtext(d, (int(pad + c1_inner), yy), desc, font=hint_font, fill=(90, 90, 90))
             if remain_txt:
-                d.text((int(pad + card1_w - c1_inner - tw(remain_txt, hint_font)), yy + line_h),
+                _dtext(d, (int(pad + card1_w - c1_inner - tw(remain_txt, hint_font)), yy + line_h),
                        remain_txt, font=hint_font, fill=(110, 110, 110))
         # 卡片2：当前项目 + 金币/经验 + 预计完成时刻 + 状态档位
         # 高亮条件：本次响应发生了 打工/玩耍 变动
@@ -1036,16 +1077,16 @@ class PetMixin:
                     fill=c2_fill, outline=(205, 205, 205), width=1)
         yy = y + c1_inner
         for wl, f in c2_cur_rows:
-            d.text((int(c2_x + c1_inner), yy), wl, font=f, fill=(60, 60, 60))
+            _dtext(d, (int(c2_x + c1_inner), yy), wl, font=f, fill=(60, 60, 60))
             yy += line_h
         for wl, f in c2_reward_rows:
-            d.text((int(c2_x + c1_inner), yy), wl, font=f, fill=(150, 90, 0))
+            _dtext(d, (int(c2_x + c1_inner), yy), wl, font=f, fill=(150, 90, 0))
             yy += line_h
         for wl, f in c2_eta_rows:
-            d.text((int(c2_x + c1_inner), yy), wl, font=f, fill=(110, 110, 110))
+            _dtext(d, (int(c2_x + c1_inner), yy), wl, font=f, fill=(110, 110, 110))
             yy += line_h
         for wl, f in c2_tier_rows:
-            d.text((int(c2_x + c1_inner), yy), wl, font=f, fill=tier_color)
+            _dtext(d, (int(c2_x + c1_inner), yy), wl, font=f, fill=tier_color)
             yy += line_h
 
         return _save_temp_image(img, "_pet_", "宠物状态")
@@ -1239,11 +1280,11 @@ class PetMixin:
         y = pad
 
         # 标题：<用户名称>
-        d.text((pad, y), name, font=title_font, fill=(20, 20, 20))
+        _dtext(d, (pad, y), name, font=title_font, fill=(20, 20, 20))
         y += title_h
         # 1.7.6：标题下方金币余额
         if coins is not None:
-            d.text((pad, y), f"💰 金币余额：{coins}", font=attr_font, fill=(140, 90, 0))
+            _dtext(d, (pad, y), f"💰 金币余额：{coins}", font=attr_font, fill=(140, 90, 0))
             y += coin_h
 
         # ---------- 宠物信息卡片（横跨整行） ----------
@@ -1251,14 +1292,14 @@ class PetMixin:
         yy = y + inner
         # 行1：宠物名称(大两号,左) + 状态(小一号,右)
         pet_disp = pet.get("name", "宠物") if has_pet else "还没有宠物"
-        d.text((int(pad + inner), yy), pet_disp, font=pet_name_font, fill=(20, 20, 20))
-        d.text((int(pad + pet_w - inner - tw(status, status_font)), yy + 10),
+        _dtext(d, (int(pad + inner), yy), pet_disp, font=pet_name_font, fill=(20, 20, 20))
+        _dtext(d, (int(pad + pet_w - inner - tw(status, status_font)), yy + 10),
                status, font=status_font, fill=(150, 150, 150))
         yy += name_row_h
         if has_pet:
             # 行2：等级(左) + 经验值(小两号,右)，两端对齐（本行宽 = 内容宽）
-            d.text((int(pad + inner), yy), f"Lv.{pet['level']}", font=lv_font, fill=(40, 40, 40))
-            d.text((int(pad + pet_w - inner - tw(exp_text, exp_font)), yy + 6),
+            _dtext(d, (int(pad + inner), yy), f"Lv.{pet['level']}", font=lv_font, fill=(40, 40, 40))
+            _dtext(d, (int(pad + pet_w - inner - tw(exp_text, exp_font)), yy + 6),
                    exp_text, font=exp_font, fill=(110, 110, 110))
             yy += lv_row_h
             # 行3：升级进度条（宽度与上一行相等 = 内容宽，含百分比）
@@ -1270,7 +1311,7 @@ class PetMixin:
                              int(pad + inner + 1 + (bar_w - 2) * exp_ratio), bar_y + 13],
                             fill=(52, 168, 83))
             pct_text = f"{int(exp_ratio * 100)}%"
-            d.text((int(pad + pet_w - inner - tw(pct_text, exp_font) - 4), bar_y - 4),
+            _dtext(d, (int(pad + pet_w - inner - tw(pct_text, exp_font) - 4), bar_y - 4),
                    pct_text, font=exp_font, fill=(40, 40, 40))
             yy += bar_h
             # 行4+：宠物属性（过低红色高亮）
@@ -1278,13 +1319,13 @@ class PetMixin:
                 gx = pad + inner
                 for an, av, amax, low in group:
                     t = f"{an} {av:.0f}/{amax:.0f}"
-                    d.text((int(gx), yy), t, font=attr_font,
+                    _dtext(d, (int(gx), yy), t, font=attr_font,
                            fill=(192, 0, 0) if low else (70, 70, 70))
                     gx += tw(t, attr_font) + 22
                 yy += attr_row_h
         else:
             # 无宠物：提示行
-            d.text((int(pad + inner), yy), "发送「解锁宠物」领养一只吧", font=lv_font, fill=(140, 90, 0))
+            _dtext(d, (int(pad + inner), yy), "发送「解锁宠物」领养一只吧", font=lv_font, fill=(140, 90, 0))
             yy += lv_row_h
         y += pet_card_h
 
@@ -1304,13 +1345,13 @@ class PetMixin:
                 for row in rows:
                     kind_row = row[0]
                     if kind_row == "pair":
-                        d.text((int(x0 + inner), yy), row[1], font=item_name_font, fill=(20, 20, 20))
-                        d.text((int(x0 + card_w - inner - tw(row[2], body_font)), yy + 12),
+                        _dtext(d, (int(x0 + inner), yy), row[1], font=item_name_font, fill=(20, 20, 20))
+                        _dtext(d, (int(x0 + card_w - inner - tw(row[2], body_font)), yy + 12),
                                row[2], font=body_font, fill=(150, 150, 150))
                         yy += item_name_h
                     elif kind_row == "plain":
                         for wl in wrap(row[1], body_font, card_w - inner * 2):
-                            d.text((int(x0 + inner), yy), wl, font=body_font, fill=(70, 70, 70))
+                            _dtext(d, (int(x0 + inner), yy), wl, font=body_font, fill=(70, 70, 70))
                             yy += line_h
                     elif kind_row == "rule":
                         yy += rule_card_h // 2
@@ -1318,7 +1359,7 @@ class PetMixin:
                         yy += rule_card_h // 2
                     elif kind_row == "price":
                         py = y + gh - n_pad - price_h
-                        d.text((int(x0 + card_w - inner - tw(row[1], price_font)), py),
+                        _dtext(d, (int(x0 + card_w - inner - tw(row[1], price_font)), py),
                                row[1], font=price_font, fill=(192, 0, 0))
                         break
             y += gh + gap
@@ -1363,7 +1404,7 @@ class PetMixin:
                 lines.append(ln)
         _no, _pill_p, _ball_p = self._signin_reward_chances()
         lines.append(f"· {PILL_NAME}（特殊）：随机 2 个属性 +5~20（每日最多 {self.pill_daily_limit} 次，签到 {_pill_p * 100:.0f}% 概率获得）")
-        lines.append(f"· {EXP_BALL_NAME}（特殊）：获得升级经验 5%~20%（每日最多 {self.exp_ball_daily_limit} 次，签到 {_ball_p * 100:.0f}% 概率获得）")
+        lines.append(f"· {EXP_BALL_NAME}（农场特殊道具）：获得升级经验 5%~20%（每日最多 {self.exp_ball_daily_limit} 次，签到 {_ball_p * 100:.0f}% 概率获得）")
         return "\n".join(lines)
 
     def _render_shop_image(self, name, categories, inventory, coins=None):
@@ -1448,7 +1489,7 @@ class PetMixin:
                 height -= gap  # 去掉最后一组后的多余间距
         _no, _pill_p, _ball_p = self._signin_reward_chances()
         pill_txt = f"· {PILL_NAME}（特殊）：随机 2 个属性 +5~20（每日最多 {self.pill_daily_limit} 次，签到 {_pill_p * 100:.0f}% 概率获得）"
-        ball_txt = f"· {EXP_BALL_NAME}（特殊）：获得升级经验 5%~20%（每日最多 {self.exp_ball_daily_limit} 次，签到 {_ball_p * 100:.0f}% 概率获得）"
+        ball_txt = f"· {EXP_BALL_NAME}（农场特殊道具）：获得升级经验 5%~20%（每日最多 {self.exp_ball_daily_limit} 次，签到 {_ball_p * 100:.0f}% 概率获得）"
         foot_max_w = width - pad * 2
 
         def wrap_foot(text, font):
@@ -1471,17 +1512,17 @@ class PetMixin:
         img = Image.new("RGB", (width, height), (255, 255, 255))
         d = ImageDraw.Draw(img)
         y = pad
-        d.text((pad, y), f"{name} 的宠物商店", font=title_font, fill=(20, 20, 20))
+        _dtext(d, (pad, y), f"{name} 的宠物商店", font=title_font, fill=(20, 20, 20))
         y += title_h
         # 1.7.6：标题下方金币余额
         if coins is not None:
-            d.text((pad, y), f"💰 金币余额：{coins}", font=body_font, fill=(140, 90, 0))
+            _dtext(d, (pad, y), f"💰 金币余额：{coins}", font=body_font, fill=(140, 90, 0))
             y += coin_h
 
         for typ, item_plans in cat_plans:
             # 类别名（居中；坐标必须转 int）
             cx = int(pad + (width - 2 * pad - tw(typ, cat_font)) / 2)
-            d.text((cx, y), typ, font=cat_font, fill=(60, 60, 60))
+            _dtext(d, (cx, y), typ, font=cat_font, fill=(60, 60, 60))
             y += cat_h
             # 分隔线（居中）
             d.line([(pad + 20, y), (width - pad - 20, y)], fill=(200, 200, 200), width=2)
@@ -1498,19 +1539,19 @@ class PetMixin:
                     for row in rows:
                         kind = row[0]
                         if kind == "pair":
-                            d.text((int(x0 + inner), yy), row[1], font=name_font, fill=(20, 20, 20))
-                            d.text((int(x0 + card_w - inner - tw(row[2], body_font)), yy + 4),
+                            _dtext(d, (int(x0 + inner), yy), row[1], font=name_font, fill=(20, 20, 20))
+                            _dtext(d, (int(x0 + card_w - inner - tw(row[2], body_font)), yy + 4),
                                    row[2], font=body_font, fill=(140, 90, 0))
                             yy += name_h
                         elif kind == "plain":
                             for wl in wrap(row[1], body_font):
-                                d.text((int(x0 + inner), yy), wl, font=body_font, fill=(70, 70, 70))
+                                _dtext(d, (int(x0 + inner), yy), wl, font=body_font, fill=(70, 70, 70))
                                 yy += line_h
                         elif kind == "rule":
                             rule_y = price_y - n_pad  # 分割线固定在价格上方 N 距离
                         elif kind == "price":
                             # 价格贴底边 N
-                            d.text((int(x0 + card_w - inner - tw(row[1], price_font)), price_y),
+                            _dtext(d, (int(x0 + card_w - inner - tw(row[1], price_font)), price_y),
                                    row[1], font=price_font, fill=(192, 0, 0))
                             break
                     if rule_y is not None:
@@ -1520,7 +1561,7 @@ class PetMixin:
         # 底部：特殊道具提示（自动换行，不溢出图片）
         y += 8
         for ln in foot_lines:
-            d.text((pad, y), ln, font=body_font, fill=(120, 120, 120))
+            _dtext(d, (pad, y), ln, font=body_font, fill=(120, 120, 120))
             y += 26
 
         return _save_temp_image(img, "_shop_", "商店")
@@ -1585,6 +1626,59 @@ class PetMixin:
                 return f"{name} 还没有农场，发送「解锁农场」开通后再使用化肥。"
             return self._apply_fert_use(data, key, name, farm, fert, qty)
 
+        # 农场经验球（2.0.1 改属农场特殊道具：需开通农场，使用时显示农场响应内容）
+        if item_name == EXP_BALL_NAME:
+            farm = data.get("farms", {}).get(key)
+            pet0 = data.get("pets", {}).get(key)
+            legacy = int(((pet0.get("inventory", {}) or {}) if pet0 else {}).get(EXP_BALL_NAME, 0) or 0)
+            if not farm:
+                if legacy <= 0:
+                    return f"{EXP_BALL_NAME}不足：需要 {qty} 个，当前 0 个（签到有几率获得，需开通农场后使用）。"
+                # 无农场（旧数据遗留）→ 自动转为金币（每个 10 金币）
+                gain = qty * ITEM_TO_COIN
+                pet0["inventory"][EXP_BALL_NAME] = legacy - qty
+                if pet0["inventory"][EXP_BALL_NAME] <= 0:
+                    pet0["inventory"].pop(EXP_BALL_NAME, None)
+                self._add_coins(data, key, gain, "道具自动转金币")
+                self._save(data)
+                return (f"🔄 {name} 还没有农场，「{EXP_BALL_NAME}」×{qty} 自动转换为 {gain} 金币。\n"
+                        f"{self._coin_line(data, key)}")
+            if legacy > 0:
+                # 旧版存于宠物背包 → 迁移到农场
+                tools = farm.setdefault("tools", {})
+                tools[EXP_BALL_NAME] = int(tools.get(EXP_BALL_NAME, 0)) + legacy
+                pet0["inventory"].pop(EXP_BALL_NAME, None)
+            today = date.today().isoformat()
+            if farm.get("ball_used_date") != today:
+                farm["ball_used_date"] = today
+                farm["ball_used_count"] = 0
+            used = int(farm.get("ball_used_count", 0))
+            if used + qty > self.exp_ball_daily_limit:
+                return f"{EXP_BALL_NAME}每天最多使用 {self.exp_ball_daily_limit} 次（今天已用 {used} 次）。"
+            tools = farm.setdefault("tools", {})
+            have = int(tools.get(EXP_BALL_NAME, 0))
+            if have < qty:
+                return f"{EXP_BALL_NAME}不足：需要 {qty} 个，当前 {have} 个（签到有几率获得）。"
+            need = FARM_EXP_BASE * (int(farm.get("level", 0)) + 1)  # 升级所需总经验
+            total = 0.0
+            for _ in range(qty):
+                total += round(need * random.uniform(self.exp_ball_min_pct, self.exp_ball_max_pct), 2)
+            lvl_msg = self._farm_gain_exp(farm, total)
+            tools[EXP_BALL_NAME] = have - qty
+            if tools[EXP_BALL_NAME] <= 0:
+                tools.pop(EXP_BALL_NAME, None)
+            farm["ball_used_count"] = used + qty
+            self._save(data)
+            text = (f"🏵️ {name} 使用了农场经验球×{qty}：农场经验 +{total:.1f}{lvl_msg}\n"
+                    f"（今日已用 {farm['ball_used_count']}/{self.exp_ball_daily_limit} 次）\n"
+                    f"{self._farm_state_snippet(farm)}")
+            # 2.0.1：显示农场响应内容（农场总览图，底部大卡片展示使用信息）
+            img = self._render_plot_status(
+                name, key, data, farm, self._load_crops(), self._load_fertilizers(),
+                actions=[f"🏵️ 使用 {EXP_BALL_NAME} ×{qty}：农场经验 +{total:.1f}{lvl_msg}",
+                         f"（今日已用 {farm['ball_used_count']}/{self.exp_ball_daily_limit} 次）"])
+            return img if img is not None else text
+
         pet = data.get("pets", {}).get(key)
         if not pet:
             return f"{name} 还没有宠物，发送「解锁宠物」领养一只吧。"
@@ -1639,64 +1733,6 @@ class PetMixin:
                 changes=changes, reason=f"使用「属性丸」×{qty}",
                 coins_delta=None, exp_delta=None,
                 changes_fresh=bool(changes), card2_hl=False)
-            if pet.get("last_activity"):
-                pet["last_activity"]["shown"] = True
-                self._save(data)
-            return img if img is not None else text
-
-        # 农场经验球（特殊道具：获得升级所需总经验的 5%~20%，每日最多 3 次）
-        if item_name == EXP_BALL_NAME:
-            farm = data.get("farms", {}).get(key)
-            if not farm:
-                # 未解锁农场 → 自动转换为金币（每个 10 金币）
-                have = int(inv.get(EXP_BALL_NAME, 0))
-                if have < qty:
-                    return f"{EXP_BALL_NAME}不足：需要 {qty} 个，当前 {have} 个。"
-                gain = qty * ITEM_TO_COIN
-                inv[EXP_BALL_NAME] = have - qty
-                if inv[EXP_BALL_NAME] <= 0:
-                    inv.pop(EXP_BALL_NAME, None)
-                self._add_coins(data, key, gain, "道具自动转金币")
-                self._save(data)
-                return (f"🔄 {name} 还没有农场，「{EXP_BALL_NAME}」×{qty} 自动转换为 {gain} 金币。\n"
-                        f"{self._coin_line(data, key)}")
-            today = date.today().isoformat()
-            if farm.get("ball_used_date") != today:
-                farm["ball_used_date"] = today
-                farm["ball_used_count"] = 0
-            used = int(farm.get("ball_used_count", 0))
-            if used + qty > self.exp_ball_daily_limit:
-                return f"{EXP_BALL_NAME}每天最多使用 {self.exp_ball_daily_limit} 次（今天已用 {used} 次）。"
-            have = int(inv.get(EXP_BALL_NAME, 0))
-            if have < qty:
-                return f"{EXP_BALL_NAME}不足：需要 {qty} 个，当前 {have} 个（签到有几率获得）。"
-            need = FARM_EXP_BASE * (int(farm.get("level", 0)) + 1)  # 升级所需总经验
-            total = 0.0
-            for _ in range(qty):
-                total += round(need * random.uniform(self.exp_ball_min_pct, self.exp_ball_max_pct), 2)
-            lvl_msg = self._farm_gain_exp(farm, total)
-            inv[EXP_BALL_NAME] = have - qty
-            if inv[EXP_BALL_NAME] <= 0:
-                inv.pop(EXP_BALL_NAME, None)
-            farm["ball_used_count"] = used + qty
-            msg = f"{pet['name']} 使用「{EXP_BALL_NAME}」×{qty} 成功！农场经验 +{total:.1f}{lvl_msg}"
-            pet["last_activity"] = {"msg": msg, "changes": {},
-                                    "reason": f"使用「{EXP_BALL_NAME}」×{qty}",
-                                    "coins": 0, "exp": 0, "act": "使用",
-                                    "ts": datetime.now().timestamp(),
-                                    "shown": False}
-            self._save(data)
-            text = (f"🏵️ {name} 使用了农场经验球×{qty}：农场经验 +{total:.1f}{lvl_msg}\n"
-                    f"（今日已用 {farm['ball_used_count']}/{self.exp_ball_daily_limit} 次）\n"
-                    f"{self._farm_state_snippet(farm)}")
-            # 2.0.0 消息合并：使用道具结果合入宠物指令图片的预留位（即时消息显示一次）
-            # 无属性变化 → 卡片1不高亮；无工作/玩耍变动 → 卡片2不高亮
-            img = self._safe_render_pet(
-                name, key, data, pet,
-                slot_msg=f"{msg}（今日已用 {farm['ball_used_count']}/{self.exp_ball_daily_limit} 次）",
-                changes={}, reason=f"使用「{EXP_BALL_NAME}」×{qty}",
-                coins_delta=None, exp_delta=None,
-                changes_fresh=False, card2_hl=False)
             if pet.get("last_activity"):
                 pet["last_activity"]["shown"] = True
                 self._save(data)
@@ -1801,10 +1837,6 @@ class PetMixin:
                     by_type["特殊"].append({"name": nm, "count": cnt, "desc": "随机提升宠物属性",
                                             "effect": f"随机{int(self.pill_attr_count or 2)}属性 +{self.pill_boost_min:.0f}~{self.pill_boost_max:.0f}（每日{self.pill_daily_limit}次）",
                                             "sell_unit": None})
-                elif nm == EXP_BALL_NAME:
-                    by_type["特殊"].append({"name": nm, "count": cnt, "desc": "提升农场经验",
-                                            "effect": f"获得升级经验 {EXP_BALL_MIN_PCT * 100:.0f}%~{EXP_BALL_MAX_PCT * 100:.0f}%（每日{self.exp_ball_daily_limit}次）",
-                                            "sell_unit": None})
                 else:
                     other.append({"name": nm, "count": cnt, "desc": "", "effect": "", "sell_unit": None})
             subs = [(t, by_type[t]) for t in ("食物", "饮料", "玩具", "药物", "特殊") if by_type[t]]
@@ -1835,6 +1867,14 @@ class PetMixin:
                                    "desc": f.get("desc", "") if f else "",
                                    "effect": effect,
                                    "sell_unit": None})
+            # 2.0.1：农场特殊道具（如 农场经验球）
+            tool_cards = []
+            for nm, cnt in (farm.get("tools") or {}).items():
+                effect = ""
+                if nm == EXP_BALL_NAME:
+                    effect = f"获得升级经验 {EXP_BALL_MIN_PCT * 100:.0f}%~{EXP_BALL_MAX_PCT * 100:.0f}%（每日{self.exp_ball_daily_limit}次）"
+                tool_cards.append({"name": nm, "count": int(cnt), "desc": "提升农场经验" if nm == EXP_BALL_NAME else "",
+                                   "effect": effect, "sell_unit": None})
             subs = []
             if seed_cards:
                 subs.append(("种子", seed_cards))
@@ -1842,6 +1882,8 @@ class PetMixin:
                 subs.append(("收获物", crop_cards))
             if fert_cards:
                 subs.append(("化肥", fert_cards))
+            if tool_cards:
+                subs.append(("特殊", tool_cards))
             if subs:
                 groups.append(("农场道具", subs))
         if not groups:
@@ -2063,53 +2105,53 @@ class PetMixin:
         y = pad
 
         # ---- 标题区 ----
-        d.text((pad, y), f"{name} 的背包", font=title_font, fill=(20, 20, 20))
+        _dtext(d, (pad, y), f"{name} 的背包", font=title_font, fill=(20, 20, 20))
         fav_txt = f"好感 Lv.{header['fav_lv']}"
-        d.text((int(width - pad - tw(fav_txt, info_font)), y + 10), fav_txt,
+        _dtext(d, (int(width - pad - tw(fav_txt, info_font)), y + 10), fav_txt,
                font=info_font, fill=(140, 90, 0))
         y += title_h
         # 金币 + 负债
         x = pad
         coin_txt = f"金币 {header['coins']}"
-        d.text((x, y), coin_txt, font=info_font, fill=(20, 20, 20))
+        _dtext(d, (x, y), coin_txt, font=info_font, fill=(20, 20, 20))
         x += int(tw(coin_txt, info_font))
         if header["debt"] > 0:
             debt_txt = f"｜负债 {header['debt']}"
-            d.text((x, y), debt_txt, font=info_font, fill=DEBT_COLOR)
+            _dtext(d, (x, y), debt_txt, font=info_font, fill=DEBT_COLOR)
         y += info_h
         # 宠物行
         if header["pet"]:
             p = header["pet"]
             pet_txt = f"宠物 {p['name']} Lv.{p['level']}"
-            d.text((pad, y), pet_txt, font=info_font, fill=(20, 20, 20))
+            _dtext(d, (pad, y), pet_txt, font=info_font, fill=(20, 20, 20))
             st_txt = "异常" if p["abnormal"] else "正常"
             st_color = DEBT_COLOR if p["abnormal"] else (90, 160, 60)
-            d.text((pad + int(tw(pet_txt, info_font)) + 10, y), st_txt, font=info_font, fill=st_color)
+            _dtext(d, (pad + int(tw(pet_txt, info_font)) + 10, y), st_txt, font=info_font, fill=st_color)
         else:
-            d.text((pad, y), "未领养宠物", font=info_font, fill=(120, 120, 120))
+            _dtext(d, (pad, y), "未领养宠物", font=info_font, fill=(120, 120, 120))
         y += info_h
         # 农场行
         if header["farm"]:
             f = header["farm"]
-            d.text((pad, y),
+            _dtext(d, (pad, y),
                    f"农场 Lv.{f['level']}　空闲 {f['idle']} 块｜占用 {f['occupied']} 块｜成熟 {f['mature']} 块",
                    font=info_font, fill=(20, 20, 20))
         else:
-            d.text((pad, y), "未解锁农场", font=info_font, fill=(120, 120, 120))
+            _dtext(d, (pad, y), "未解锁农场", font=info_font, fill=(120, 120, 120))
         y += info_h + head_gap
 
         # ---- 内容区（两级分类） ----
         for l1, sub_plans in group_plans:
             # 一级分类名（居中）+ 分割线（居中）
             cx = int(pad + (page_w - tw(l1, l1_font)) / 2)
-            d.text((cx, y), l1, font=l1_font, fill=(30, 30, 30))
+            _dtext(d, (cx, y), l1, font=l1_font, fill=(30, 30, 30))
             y += l1_h
             d.line([(pad, y), (width - pad, y)], fill=(120, 120, 120), width=2)
             y += l1_rule_h
             for l2, plans in sub_plans:
                 # 二级分类名（居中）+ 分割线（居中，更细更浅）
                 cx = int(pad + (page_w - tw(l2, l2_font)) / 2)
-                d.text((cx, y), l2, font=l2_font, fill=(90, 90, 90))
+                _dtext(d, (cx, y), l2, font=l2_font, fill=(90, 90, 90))
                 y += l2_h
                 d.line([(pad + 20, y), (width - pad - 20, y)], fill=(210, 210, 210), width=1)
                 y += l2_rule_h
@@ -2123,22 +2165,22 @@ class PetMixin:
                         for row in rows:
                             kind = row[0]
                             if kind == "pair":
-                                d.text((int(x0 + inner), yy), row[1], font=name_font, fill=(20, 20, 20))
-                                d.text((int(x0 + card_w - inner - tw(row[2], body_font)), yy + 4),
+                                _dtext(d, (int(x0 + inner), yy), row[1], font=name_font, fill=(20, 20, 20))
+                                _dtext(d, (int(x0 + card_w - inner - tw(row[2], body_font)), yy + 4),
                                        row[2], font=body_font, fill=(140, 90, 0))
                                 yy += name_h
                             elif kind == "plain_name":
-                                d.text((int(x0 + inner), yy), row[1], font=name_font, fill=(20, 20, 20))
+                                _dtext(d, (int(x0 + inner), yy), row[1], font=name_font, fill=(20, 20, 20))
                                 yy += name_h - 4
                             elif kind == "plain":
-                                d.text((int(x0 + inner), yy), row[1], font=body_font, fill=(70, 70, 70))
+                                _dtext(d, (int(x0 + inner), yy), row[1], font=body_font, fill=(70, 70, 70))
                                 yy += line_h
                             elif kind == "rule":
                                 yy += n_pad
                                 d.line([(x0 + 8, yy), (x0 + card_w - 8, yy)], fill=(200, 200, 200), width=1)
                                 yy += 1
                             elif kind == "sell":
-                                d.text((int(x0 + card_w - inner - tw(row[1], info_font)), yy + 2),
+                                _dtext(d, (int(x0 + card_w - inner - tw(row[1], info_font)), yy + 2),
                                        row[1], font=info_font, fill=SELL_COLOR)
                                 yy += sell_h
                     y += gh + gap
@@ -2149,11 +2191,11 @@ class PetMixin:
         d.rectangle([pad, y, pad + page_w, y + foot_h], outline=(160, 160, 160), width=2)
         yy = y + inner
         total_txt = f"仓库总价值 {footer['wh_total']}"
-        d.text((pad + inner, yy), total_txt, font=big_font, fill=(20, 20, 20))
+        _dtext(d, (pad + inner, yy), total_txt, font=big_font, fill=(20, 20, 20))
         net = footer["net"]
         net_txt = f"｜今日净收益 {'+' if net >= 0 else ''}{net}"
         net_color = DEBT_COLOR if net < 0 else (70, 70, 70)
-        d.text((pad + inner + int(tw(total_txt, big_font)) + 8, yy + 6), net_txt,
+        _dtext(d, (pad + inner + int(tw(total_txt, big_font)) + 8, yy + 6), net_txt,
                font=body_font, fill=net_color)
         yy += 36 + 6
 
@@ -2161,6 +2203,6 @@ class PetMixin:
             return f"第{r}名" if r else "未上榜"
         rank_txt = (f"金币排行 {_rk(footer['coins_rank'])}｜宠物排行 {_rk(footer['pet_rank'])}"
                     f"｜农场排行 {_rk(footer['farm_rank'])}")
-        d.text((pad + inner, yy), rank_txt, font=info_font, fill=(70, 70, 70))
+        _dtext(d, (pad + inner, yy), rank_txt, font=info_font, fill=(70, 70, 70))
 
         return _save_temp_image(img, "_bag_", "背包")
