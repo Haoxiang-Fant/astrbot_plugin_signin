@@ -10,21 +10,76 @@
     <div class="container">
       <header class="page-head">
         <h1>🐾 签到娱乐系统<span class="accent">后台管理</span></h1>
-        <p class="page-sub">商店 / 打工玩耍 / 贷款 / 功能开关 / 设置 / 活动 / 同义口令 / 数据</p>
+        <p class="page-sub">卡片导航 · 点击进入对应管理页面并自动加载</p>
       </header>
 
       <div id="debug-bar" class="debug-bar hidden"></div>
 
-      <div class="tabs">
-        <button class="tab active" data-tab="shopedit">商店编辑</button>
-        <button class="tab" data-tab="config">打工玩耍</button>
-        <button class="tab" data-tab="loanpkgs">贷款套餐</button>
-        <button class="tab" data-tab="features">功能开关</button>
-        <button class="tab" data-tab="params">设置</button>
-        <button class="tab" data-tab="activities">活动中心</button>
-        <button class="tab" data-tab="aliases">同义口令</button>
-        <button class="tab" data-tab="data">数据导入导出</button>
+      <!-- 首页：卡片导航（校园导览风） -->
+      <div id="home-view" class="home-view">
+        <div class="cards">
+          <button class="card card-gold" data-feature="shopedit">
+            <span class="card-icon">商</span>
+            <span class="card-title">商店编辑</span>
+            <span class="card-desc">宠物商店 / 农场商店（种子 · 肥料）</span>
+            <span class="card-tag">表格编辑</span>
+            <span class="card-arrow">→</span>
+          </button>
+          <button class="card card-green" data-feature="config">
+            <span class="card-icon">工</span>
+            <span class="card-title">打工玩耍</span>
+            <span class="card-desc">打工 / 玩耍项目的数值与要求</span>
+            <span class="card-tag">数值配置</span>
+            <span class="card-arrow">→</span>
+          </button>
+          <button class="card card-gold" data-feature="loanpkgs">
+            <span class="card-icon">贷</span>
+            <span class="card-title">贷款套餐</span>
+            <span class="card-desc">银行贷款套餐与利率配置</span>
+            <span class="card-tag">利率配置</span>
+            <span class="card-arrow">→</span>
+          </button>
+          <button class="card card-green" data-feature="features">
+            <span class="card-icon">开</span>
+            <span class="card-title">功能开关</span>
+            <span class="card-desc">偷菜 / 闹鬼 / 红包雨 / 看家等开关</span>
+            <span class="card-tag">开关</span>
+            <span class="card-arrow">→</span>
+          </button>
+          <button class="card card-gold" data-feature="params">
+            <span class="card-icon">设</span>
+            <span class="card-title">设置</span>
+            <span class="card-desc">签到 / 农场 / 宠物 / 银行等运行参数</span>
+            <span class="card-tag">运行参数</span>
+            <span class="card-arrow">→</span>
+          </button>
+          <button class="card card-green" data-feature="activities">
+            <span class="card-icon">活</span>
+            <span class="card-title">活动中心</span>
+            <span class="card-desc">双倍签到 / 红包雨等活动配置</span>
+            <span class="card-tag">活动配置</span>
+            <span class="card-arrow">→</span>
+          </button>
+          <button class="card card-gold" data-feature="aliases">
+            <span class="card-icon">令</span>
+            <span class="card-title">同义口令</span>
+            <span class="card-desc">指令别名设置</span>
+            <span class="card-tag">指令</span>
+            <span class="card-arrow">→</span>
+          </button>
+          <button class="card card-green" data-feature="data">
+            <span class="card-icon">数</span>
+            <span class="card-title">数据导入导出</span>
+            <span class="card-desc">备份 / 恢复 / 一键恢复默认数值</span>
+            <span class="card-tag">数据</span>
+            <span class="card-arrow">→</span>
+          </button>
+        </div>
       </div>
+
+      <!-- 返回首页 -->
+      <button id="btn-back-home" class="back-btn hidden">← 返回首页</button>
+      <h2 id="panel-title" class="panel-title hidden"></h2>
 
       <!-- 商店编辑：宠物商店（表格）/ 农场商店（种子、肥料） -->
       <section id="panel-shopedit" class="panel">
@@ -209,7 +264,7 @@
         <p class="hint">导出会把 **用户存档（data.json）+ 数值配置（game_items.json：商店/打工/玩耍/作物/肥料/贷款套餐）** 打包为单个 JSON 文件下载；导入会用所选文件覆盖以上全部文件（兼容旧版 txt 备份，导入后自动迁移为 game_items.json；建议先导出备份）。</p>
       </section>
 
-      <footer class="page-foot">签到娱乐系统 · 2.0.0</footer>
+      <footer class="page-foot">签到娱乐系统 · 2.0.1</footer>
     </div>
 
     <script type="module" src="./app.js"></script>

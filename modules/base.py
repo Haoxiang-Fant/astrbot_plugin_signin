@@ -11,6 +11,7 @@ import json
 import math
 import os
 import random
+import re
 import secrets
 import shutil
 import socket
@@ -531,6 +532,10 @@ RUNTIME_PARAMS = [
      "desc": "每位玩家每天最多发送金币红包的次数", "default": 4, "min": 1, "max": 50},
     {"key": "REDPACKET_TTL", "label": "红包有效期（秒）", "type": "int", "group": "金币红包", "subgroup": "有效期",
      "desc": "红包发出后多少秒内有效，超时剩余自动退回", "default": 600, "min": 60, "max": 86400},
+    {"key": "WEAK_HEAL_COST", "label": "治疗虚弱宠物费用", "type": "int", "group": "宠物", "subgroup": "虚弱治疗",
+     "desc": "发送「治疗宠物」使虚弱宠物恢复所需金币", "default": 500, "min": 0, "max": 100000},
+    {"key": "AUTO_STEAL_TARGETS", "label": "自动偷菜目标数", "type": "int", "group": "偷菜", "subgroup": "自动偷菜",
+     "desc": "「自动偷菜」每次随机抽取的目标用户数量", "default": 4, "min": 1, "max": 10},
     # ---- 农场 ----
     {"key": "FARM_UNLOCK_COST", "label": "解锁农场价格", "type": "int", "group": "农场", "subgroup": "价格",
      "desc": "解锁农场所需金币（赠送 2 块地）", "default": 1500, "min": 0, "max": 1000000},
@@ -548,27 +553,49 @@ RUNTIME_PARAMS = [
      "desc": "使用农场经验球获得升级所需总经验的最小百分比（0.05 = 5%）", "default": 0.05, "min": 0, "max": 1, "attr": "exp_ball_min_pct"},
     {"key": "EXP_BALL_MAX_PCT", "label": "经验球增加百分比上限", "type": "float", "group": "农场", "subgroup": "农场经验球",
      "desc": "使用农场经验球获得升级所需总经验的最大百分比（0.20 = 20%）", "default": 0.20, "min": 0, "max": 2, "attr": "exp_ball_max_pct"},
-    # ---- 偷菜 ----
+    # ---- 偷菜（2.0.1 重做） ----
     {"key": "STEAL_ENABLED", "label": "偷菜功能开关", "type": "bool", "group": "偷菜", "subgroup": "通用",
      "desc": "全局总开关：关闭后「偷菜」指令提示功能未开启", "default": True},
-    {"key": "STEAL_LOSS_MIN", "label": "偷菜损失比例下限", "type": "float", "group": "偷菜", "subgroup": "规则",
-     "desc": "每次偷菜被偷方损失的当前产量比例下限（0.10 = 10%）", "default": 0.10, "min": 0.01, "max": 1},
-    {"key": "STEAL_LOSS_MAX", "label": "偷菜损失比例上限", "type": "float", "group": "偷菜", "subgroup": "规则",
-     "desc": "每次偷菜被偷方损失的当前产量比例上限（0.20 = 20%）", "default": 0.20, "min": 0.01, "max": 1},
-    {"key": "STEAL_GUARD_HEALTH", "label": "看家宠物最低健康度", "type": "float", "group": "偷菜", "subgroup": "宠物防护",
-     "desc": "宠物健康度高于该值才可开启/生效看家防护", "default": 60, "min": 1, "max": 200},
-    {"key": "STEAL_GUARD_REDUCE_MIN", "label": "看家额外减免下限", "type": "float", "group": "偷菜", "subgroup": "宠物防护",
-     "desc": "看家生效时偷菜成功额外减少的损失比例下限（0.02 = 2%）", "default": 0.02, "min": 0, "max": 1},
-    {"key": "STEAL_GUARD_REDUCE_MAX", "label": "看家额外减免上限", "type": "float", "group": "偷菜", "subgroup": "宠物防护",
-     "desc": "看家生效时偷菜成功额外减少的损失比例上限（0.06 = 6%）", "default": 0.06, "min": 0, "max": 1},
+    {"key": "STEAL_LOSS_MIN", "label": "偷菜收益比例下限", "type": "float", "group": "偷菜", "subgroup": "规则",
+     "desc": "偷菜成功获得地块当前产量收益的比例下限（0.05 = 5%），农场主损失对应收益", "default": 0.05, "min": 0.01, "max": 1},
+    {"key": "STEAL_LOSS_MAX", "label": "偷菜收益比例上限", "type": "float", "group": "偷菜", "subgroup": "规则",
+     "desc": "偷菜成功获得地块当前产量收益的比例上限（0.20 = 20%）", "default": 0.20, "min": 0.01, "max": 1},
+    {"key": "STEAL_PROTECT_RATIO", "label": "保护地块产量阈值", "type": "float", "group": "偷菜", "subgroup": "规则",
+     "desc": "地块当前产量低于原有产量该比例（0.5 = 50%）即进入保护状态，剩余作物不可再被偷（提示「被偷完了」）", "default": 0.5, "min": 0.1, "max": 1},
+    {"key": "STEAL_LEVEL_GAP", "label": "农场等级差限制", "type": "int", "group": "偷菜", "subgroup": "规则",
+     "desc": "偷菜者无法向农场等级高于自己该级数的农场主发起偷菜", "default": 10, "min": 1, "max": 100},
+    # ---- 宠物加护 ----
+    {"key": "STEAL_GUARD_CATCH", "label": "加护·抓到你了概率", "type": "float", "group": "偷菜", "subgroup": "宠物加护",
+     "desc": "宠物激活且空闲、状态档位1-2时，偷菜触发「抓到你了」（偷菜失败+气味记忆24h+主人宠物体力-2~5）的概率（0.1 = 10%）", "default": 0.10, "min": 0, "max": 1},
+    {"key": "STEAL_GUARD_STOP", "label": "加护·给我站住概率", "type": "float", "group": "偷菜", "subgroup": "宠物加护",
+     "desc": "触发「给我站住」（农场主损失减半+体力-3~6+等级压制失效12h+偷菜者缴原金额110%罚款）的概率（0.2 = 20%）", "default": 0.20, "min": 0, "max": 1},
+    {"key": "STEAL_GUARD_CATCH_STAMINA_MIN", "label": "抓到你了·主人体力下降下限", "type": "float", "group": "偷菜", "subgroup": "宠物加护",
+     "desc": "触发「抓到你了」时农场主宠物体力随机下降的最小值", "default": 2, "min": 0, "max": 200},
+    {"key": "STEAL_GUARD_CATCH_STAMINA_MAX", "label": "抓到你了·主人体力下降上限", "type": "float", "group": "偷菜", "subgroup": "宠物加护",
+     "desc": "触发「抓到你了」时农场主宠物体力随机下降的最大值", "default": 5, "min": 0, "max": 200},
+    {"key": "STEAL_GUARD_STOP_STAMINA_MIN", "label": "给我站住·主人体力下降下限", "type": "float", "group": "偷菜", "subgroup": "宠物加护",
+     "desc": "触发「给我站住」时农场主宠物体力随机下降的最小值", "default": 3, "min": 0, "max": 200},
+    {"key": "STEAL_GUARD_STOP_STAMINA_MAX", "label": "给我站住·主人体力下降上限", "type": "float", "group": "偷菜", "subgroup": "宠物加护",
+     "desc": "触发「给我站住」时农场主宠物体力随机下降的最大值", "default": 6, "min": 0, "max": 200},
+    {"key": "STEAL_FINE_RATIO", "label": "给我站住·罚款比例", "type": "float", "group": "偷菜", "subgroup": "宠物加护",
+     "desc": "触发「给我站住」时偷菜者需缴纳的罚款为偷菜原金额的比例（1.1 = 110%）", "default": 1.10, "min": 0.5, "max": 5},
+    {"key": "STEAL_SUPPRESS_HOURS", "label": "等级压制失效时长（小时）", "type": "float", "group": "偷菜", "subgroup": "宠物加护",
+     "desc": "触发「给我站住」后，等级压制失效的时长", "default": 12, "min": 0, "max": 168},
+    {"key": "STEAL_PET_GAP", "label": "宠物等级压制级差", "type": "int", "group": "偷菜", "subgroup": "宠物加护",
+     "desc": "偷菜者宠物等级比农场主宠物等级低该级数及以上时，宠物加护触发概率减半", "default": 10, "min": 1, "max": 100},
+    {"key": "STEAL_PET_GAP_DIV", "label": "等级压制概率除数", "type": "float", "group": "偷菜", "subgroup": "宠物加护",
+     "desc": "等级压制生效时宠物加护触发概率除以该值（2 = 减半）", "default": 2.0, "min": 1.1, "max": 10},
+    {"key": "STEAL_GUARD_TIER_MAX", "label": "加护失效状态档位", "type": "int", "group": "偷菜", "subgroup": "宠物加护",
+     "desc": "宠物状态档位达到该档及以上时宠物加护失效（3 = 三、四档失效）", "default": 3, "min": 2, "max": 4},
+    # ---- 气味记忆 ----
+    {"key": "STEAL_SCENT_CONSEC", "label": "气味记忆·连续成功次数", "type": "int", "group": "偷菜", "subgroup": "气味记忆",
+     "desc": "24小时内同一偷菜者对同一农场主连续成功偷菜达到该次数即被施加气味记忆", "default": 3, "min": 1, "max": 50},
+    {"key": "STEAL_SCENT_HOURS", "label": "气味记忆·持续时长（小时）", "type": "float", "group": "偷菜", "subgroup": "气味记忆",
+     "desc": "气味记忆效果的持续时长", "default": 24, "min": 1, "max": 168},
+    {"key": "STEAL_SCENT_MULT", "label": "气味记忆·加护概率倍数", "type": "float", "group": "偷菜", "subgroup": "气味记忆",
+     "desc": "生效时偷菜者偷取施加者触发宠物加护的概率倍数（3 = 3倍；不受等级压制影响）", "default": 3.0, "min": 1, "max": 20},
     {"key": "AUTO_STEAL_DAILY_LIMIT", "label": "自动偷菜每日成功次数", "type": "int", "group": "偷菜", "subgroup": "自动偷菜",
      "desc": "自动偷菜每天最多成功次数（失败不消耗次数；被宠物抓到则当天锁定）", "default": 5, "min": 1, "max": 20},
-    {"key": "STEAL_SCENT_THRESHOLD", "label": "气味记忆触发次数", "type": "int", "group": "偷菜", "subgroup": "气味记忆",
-     "desc": "同一偷菜者24小时内尝试偷菜超过该次数，对方获得「气味记忆」", "default": 4, "min": 1, "max": 50},
-    {"key": "STEAL_SCENT_HOURS_MIN", "label": "气味记忆时长下限（小时）", "type": "int", "group": "偷菜", "subgroup": "气味记忆",
-     "desc": "气味记忆持续时间下限（小时）", "default": 12, "min": 1, "max": 168},
-    {"key": "STEAL_SCENT_HOURS_MAX", "label": "气味记忆时长上限（小时）", "type": "int", "group": "偷菜", "subgroup": "气味记忆",
-     "desc": "气味记忆持续时间上限（小时）", "default": 24, "min": 1, "max": 168},
     # ---- 左轮手枪 ----
     {"key": "ROULETTE_JOIN_TIMEOUT", "label": "左轮加入超时（秒）", "type": "int", "group": "左轮手枪", "subgroup": "规则",
      "desc": "左轮手枪开局后等待加入的超时秒数", "default": 30, "min": 10, "max": 300},
@@ -589,9 +616,13 @@ RUNTIME_PARAMS = [
      "desc": "好感度每满该值提升一级", "default": 10.0, "min": 1, "max": 1000, "attr": "level_step"},
     # ---- 签到（补充）2.0.0：宠物结算各属性值档位变化范围 ----
     {"key": "PET_SETTLE_RANGES", "label": "宠物结算·各档位属性变化范围", "type": "string", "group": "签到", "subgroup": "宠物结算范围",
-     "desc": "每日结算时宠物各属性按档位随机变化。每行一档：H1/H2/H3=按宠物健康度分档（≥100 / 40-99 / 0-39），T1~T4=按饱食/口渴/心情最差档分档。格式：档位=属性最低~最高，逗号分隔。属性名：饱食/口渴/体力/心情/健康。示例：H1=饱食-15~-10,口渴-15~-10,体力100~120,心情3~7,健康0~0|H2=饱食-20~-15,口渴-20~-15,体力80~120,心情1~2.5,健康0~0|H3=饱食-25~-20,口渴-25~-20,体力40~60,心情-5~-2,健康-8~-1|T1=健康5~10|T2=健康0.1~6|T3=健康-10~-4|T4=健康-15~-8",
-     "default": "H1=饱食-15~-10,口渴-15~-10,体力100~120,心情3~7,健康0~0|H2=饱食-20~-15,口渴-20~-15,体力80~120,心情1~2.5,健康0~0|H3=饱食-25~-20,口渴-25~-20,体力40~60,心情-5~-2,健康-8~-1|T1=健康5~10|T2=健康0.1~6|T3=健康-10~-4|T4=健康-15~-8",
+     "desc": "每日结算时宠物各属性按状态档位随机变化。2.0.1 固定四档 T1~T4（按饱食/口渴/心情最差档：1 最好 ~ 4 最差），每档定义全部五属性变化范围。格式：档位=属性最低~最高，逗号分隔；属性名：饱食/口渴/体力/心情/健康。示例：T1=饱食-15~-10,口渴-15~-10,体力100~120,心情3~7,健康5~10|T2=饱食-15~-10,口渴-15~-10,体力100~120,心情3~7,健康0.1~6|T3=饱食-20~-15,口渴-20~-15,体力80~120,心情1~2.5,健康-10~-4|T4=饱食-25~-20,口渴-25~-20,体力40~60,心情-5~-2,健康-15~-8",
+     "default": "T1=饱食-15~-10,口渴-15~-10,体力100~120,心情3~7,健康5~10|T2=饱食-15~-10,口渴-15~-10,体力100~120,心情3~7,健康0.1~6|T3=饱食-20~-15,口渴-20~-15,体力80~120,心情1~2.5,健康-10~-4|T4=饱食-25~-20,口渴-25~-20,体力40~60,心情-5~-2,健康-15~-8",
      "attr": "pet_settle_ranges"},
+    {"key": "PET_SETTLE_TIERS", "label": "宠物结算·档位数值（各档判定阈值）", "type": "string", "group": "签到", "subgroup": "宠物结算范围",
+     "desc": "四档判定阈值（一档下限,二档下限,三档下限，从高到低）：属性值 ≥一档下限→1档；≥二档下限→2档；≥三档下限→3档；否则4档。格式：饱食=120,50,30|口渴=120,70,30|心情=80,50,30",
+     "default": "饱食=120,50,30|口渴=120,70,30|心情=80,50,30",
+     "attr": "pet_settle_tiers"},
     # ---- 左轮手枪（补充） ----
     {"key": "ROULETTE_MAGAZINES", "label": "弹匣数量", "type": "int", "group": "左轮手枪", "subgroup": "规则",
      "desc": "左轮手枪弹匣容量", "default": 7, "min": 3, "max": 20},
@@ -1179,7 +1210,7 @@ def _make_wrapper(tw, default_width, mode="fill"):
                             lines.append(cur)
                     else:
                         lines.append(word)
-            return lines or [""]
+            return [s for s in (_clean_img_text(x) for x in lines) if s] or [""]
 
         return wrap
 
@@ -1225,7 +1256,7 @@ def _make_wrapper(tw, default_width, mode="fill"):
             cur = ch
         if cur:
             lines.append(cur)
-        return lines or [""]
+        return [s for s in (_clean_img_text(x) for x in lines) if s] or [""]
 
     return wrap
 
@@ -1249,6 +1280,30 @@ def _save_temp_image(img, prefix: str, kind: str):
     except Exception:
         pass
     return ("image", path)
+
+
+# ============ 去 Emoji：响应图片不出现 Emoji（直接删除，不替换为标志） ============
+# 渲染到图片里的文本一律经 _clean_img_text 处理：把各类 Emoji 代码点直接移除，
+# 输出干净纯文本（不填充任何极简标志；OPPOSans 无 emoji 字形，避免豆腐块）。
+_EMOJI_STRIP_RX = None
+
+
+def _clean_img_text(text):
+    """移除图片文本中的各类 Emoji（2.0.1 响应图片去 Emoji → 直接删除，保留纯文本）。"""
+    if not text:
+        return text
+    global _EMOJI_STRIP_RX
+    if _EMOJI_STRIP_RX is None:
+        # 覆盖 Emoji、杂项符号、补充符号、部首/变体选择符等常见表情区
+        _EMOJI_STRIP_RX = re.compile(
+            "[\U0001F000-\U0001FAFF\u2600-\u27BF\u2B00-\u2BFF\uFE0F\u2300-\u23FF]"
+        )
+    return _EMOJI_STRIP_RX.sub("", str(text))
+
+
+def _dtext(d, xy, text, **kw):
+    """绘制图片文本前统一移除 Emoji（2.0.1 响应图片去 Emoji）。"""
+    return d.text(xy, _clean_img_text(text), **kw)
 
 
 def _parse_item_qty(message_str):
@@ -1623,14 +1678,14 @@ class CoreMixin:
 
         img = Image.new("RGB", (width, height), (255, 255, 255))
         d = ImageDraw.Draw(img)
-        d.text((pad, pad), title, font=title_font, fill=(20, 20, 20))
+        _dtext(d, (pad, pad), title, font=title_font, fill=(20, 20, 20))
         y = pad + title_h
         for r in rows:
             x = pad
             for seg in r:
                 text, color, strike = seg
                 # 坐标必须转 int（Pillow 对非整 float 报 TypeError）
-                d.text((int(x), y), text, font=body_font, fill=color)
+                _dtext(d, (int(x), y), text, font=body_font, fill=color)
                 if strike:
                     bb = d.textbbox((int(x), y), text, font=body_font)
                     midy = (int(bb[1]) + int(bb[3])) // 2
@@ -1875,4 +1930,6 @@ __all__ = [
     "_Plain",
     "_Image",
     "_MessageChain",
+    "_clean_img_text",
+    "_dtext",
 ]

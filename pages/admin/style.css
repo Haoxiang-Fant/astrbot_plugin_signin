@@ -6,41 +6,44 @@
    ===================================================================== */
 
 :root {
-  /* 中性色阶（冷灰，全页统一） */
-  --bg: #f4f6f8;            /* 页面背景（浅灰，衬托卡片层级） */
+  /* 中性色阶（校园导览 · 米白暖色编辑感） */
+  --bg: #f6f4ec;            /* 页面背景（米白暖色） */
   --surface: #ffffff;        /* 卡片 / 面板 / 表格 / 输入 */
-  --surface-2: #f6f8fa;      /* 次级表面（狭窄装饰、选中底） */
-  --text: #1f2328;           /* 主文本 */
-  --text-2: #424a53;         /* 次级文本 */
-  --muted: #6e7781;          /* 说明 / 占位 */
-  --border: #d8dee4;         /* 常规描边 */
-  --border-2: #afbac5;       /* 强调描边（hover / 分隔） */
+  --surface-2: #fbfaf5;      /* 次级表面（狭窄装饰、选中底） */
+  --text: #22322a;           /* 主文本（深林绿黑） */
+  --text-2: #3f4a40;         /* 次级文本 */
+  --muted: #65715f;          /* 说明 / 占位 */
+  --border: #e6e2d2;         /* 常规描边（米金） */
+  --border-2: #d9d3bf;       /* 强调描边（hover / 分隔） */
 
-  /* 色彩：唯一强调色（蓝）+ 语义色（危险红） */
-  --accent: #0969da;
-  --accent-strong: #0550ae;
-  --accent-soft: rgba(9, 105, 218, 0.08);
-  --accent-soft-2: rgba(9, 105, 218, 0.14);
-  --danger: #cf222e;
-  --danger-strong: #a40e26;
-  --danger-soft: rgba(207, 34, 46, 0.08);
-  --success: #1a7f37;
+  /* 色彩：主色深林绿 + 校徽金强调 + 语义色（危险红） */
+  --accent: #1f5f3e;
+  --accent-strong: #16472c;
+  --accent-soft: rgba(31, 95, 62, 0.08);
+  --accent-soft-2: rgba(31, 95, 62, 0.14);
+  --gold: #d6a11a;           /* 校徽金（强调/徽章） */
+  --gold-2: #e2b02a;
+  --danger: #b3392e;
+  --danger-strong: #8f2b22;
+  --danger-soft: rgba(179, 57, 46, 0.08);
+  --success: #2c7a50;
 
-  /* 形状（统一圆角节奏：按钮/输入 小、卡片 中、弹窗 大） */
-  --radius-sm: 6px;
-  --radius: 8px;
-  --radius-lg: 12px;
+  /* 形状（块状编辑风：无圆角） */
+  --radius-sm: 0;
+  --radius: 0;
+  --radius-lg: 0;
 
-  /* 阴影（随主题底色染色的细腻投影，不用纯黑） */
-  --shadow-1: 0 1px 2px rgba(31, 35, 40, 0.05), 0 1px 3px rgba(31, 35, 40, 0.06);
-  --shadow-2: 0 4px 14px rgba(31, 35, 40, 0.1);
-  --shadow-modal: 0 18px 50px rgba(31, 35, 40, 0.28);
+  /* 阴影（极浅，扁平为主） */
+  --shadow-1: 0 1px 2px rgba(30, 30, 30, 0.04), 0 1px 3px rgba(30, 30, 30, 0.06);
+  --shadow-2: 0 4px 14px rgba(30, 30, 30, 0.08);
+  --shadow-modal: 0 18px 50px rgba(30, 30, 30, 0.16);
 
   /* 聚焦环（WCAG 可见） */
-  --ring-accent: 0 0 0 3px rgba(9, 105, 218, 0.32);
-  --ring-danger: 0 0 0 3px rgba(207, 34, 46, 0.28);
+  --ring-accent: 0 0 0 3px rgba(31, 95, 62, 0.28);
+  --ring-danger: 0 0 0 3px rgba(179, 57, 46, 0.26);
 
-  --font: -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", "Helvetica Neue", sans-serif;
+  --font: "OPPOSans", -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", "Helvetica Neue", sans-serif;
+  --font-display: Georgia, "Noto Serif SC", "Songti SC", "PingFang SC", SimSun, serif;
   --mono: ui-monospace, "SF Mono", "Cascadia Code", Consolas, "Courier New", monospace;
 
   /* 节奏 */
@@ -55,30 +58,32 @@
 /* 暗色模式（同时兼容挂在 html[data-theme] 或任意祖先上） */
 [data-theme="dark"],
 :root[data-theme="dark"] {
-  --bg: #0d1117;
-  --surface: #161b22;
-  --surface-2: #1c2128;
-  --text: #e6edf3;
-  --text-2: #c9d1d9;
-  --muted: #8b949e;
-  --border: #30363d;
-  --border-2: #4b5563;
+  --bg: #14160f;
+  --surface: #1c1d16;
+  --surface-2: #23241c;
+  --text: #e9ede4;
+  --text-2: #c9cfc0;
+  --muted: #94a08b;
+  --border: #3a3d2f;
+  --border-2: #50543f;
 
-  --accent: #4c8dff;
-  --accent-strong: #79b8ff;
-  --accent-soft: rgba(76, 141, 255, 0.12);
-  --accent-soft-2: rgba(76, 141, 255, 0.2);
-  --danger: #ff7b72;
-  --danger-strong: #ffa198;
-  --danger-soft: rgba(255, 123, 114, 0.12);
-  --success: #3fb950;
+  --accent: #4c8a66;
+  --accent-strong: #6aa582;
+  --accent-soft: rgba(76, 138, 102, 0.14);
+  --accent-soft-2: rgba(76, 138, 102, 0.22);
+  --gold: #d6a11a;
+  --gold-2: #e2b02a;
+  --danger: #e06d5e;
+  --danger-strong: #f08a7c;
+  --danger-soft: rgba(224, 109, 94, 0.14);
+  --success: #4c9a6a;
 
   --shadow-1: 0 1px 2px rgba(1, 4, 9, 0.4), 0 1px 3px rgba(1, 4, 9, 0.5);
   --shadow-2: 0 4px 14px rgba(1, 4, 9, 0.5);
   --shadow-modal: 0 18px 50px rgba(1, 4, 9, 0.6);
 
-  --ring-accent: 0 0 0 3px rgba(76, 141, 255, 0.35);
-  --ring-danger: 0 0 0 3px rgba(255, 123, 114, 0.3);
+  --ring-accent: 0 0 0 3px rgba(76, 138, 102, 0.35);
+  --ring-danger: 0 0 0 3px rgba(224, 109, 94, 0.3);
 
   color-scheme: dark;
 }
@@ -86,6 +91,11 @@
 /* ---------- 基础 ---------- */
 * {
   box-sizing: border-box;
+}
+
+/* 全局隐藏（供 JS 切换 首页/管理页 视图——点击卡片后隐藏主页、只显示新界面） */
+.hidden {
+  display: none !important;
 }
 
 html {
@@ -139,19 +149,20 @@ body {
   gap: var(--space-3);
   margin-bottom: var(--space-4);
   padding-bottom: var(--space-3);
-  border-bottom: 1px solid var(--border);
+  border-bottom: 2px solid var(--accent);
 }
 
 h1 {
-  font-size: 20px;
+  font-size: 22px;
   font-weight: 700;
   letter-spacing: -0.01em;
   margin: 0;
   color: var(--text);
+  font-family: var(--font-display);
 }
 
 h1 .accent {
-  color: var(--accent);
+  color: var(--gold);
 }
 
 .page-sub {
@@ -160,7 +171,145 @@ h1 .accent {
   color: var(--muted);
 }
 
-/* ---------- 选项卡（分段式） ---------- */
+/* ---------- 首页：卡片导航（校园导览参考图样式） ---------- */
+.home-view {
+  display: block;
+}
+
+.cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: var(--space-4);
+}
+
+.card {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+  text-align: left;
+  padding: 24px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  box-shadow: var(--shadow-1);
+  cursor: pointer;
+  transition: transform 0.18s cubic-bezier(0.25, 1, 0.5, 1), box-shadow 0.2s, border-color 0.2s;
+}
+.card:hover {
+  transform: translateY(-3px);
+  box-shadow: var(--shadow-2);
+  border-color: var(--border-2);
+}
+.card:active {
+  transform: translateY(0) scale(0.99);
+}
+
+/* 彩色图标块：金 / 绿 交替，白色极简字形 */
+.card-icon {
+  width: 48px;
+  height: 48px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--gold);
+  color: #fff;
+  font-size: 22px;
+  font-weight: 700;
+  border-radius: 2px;
+  line-height: 1;
+}
+.card-green .card-icon {
+  background: var(--accent);
+}
+
+.card-title {
+  font-size: 19px;
+  font-weight: 700;
+  font-family: var(--font-display);
+  color: var(--text);
+  letter-spacing: -0.01em;
+}
+
+.card-desc {
+  font-size: 13px;
+  color: var(--muted);
+  line-height: 1.5;
+}
+
+/* 标签徽章 */
+.card-tag {
+  display: inline-block;
+  margin-top: 4px;
+  padding: 3px 10px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--gold);
+  background: rgba(214, 161, 26, 0.1);
+  border: 1px solid rgba(214, 161, 26, 0.25);
+  border-radius: 3px;
+}
+.card-green .card-tag {
+  color: var(--accent);
+  background: var(--accent-soft);
+  border-color: var(--accent-soft-2);
+}
+
+/* 右下角箭头 */
+.card-arrow {
+  position: absolute;
+  right: 18px;
+  bottom: 14px;
+  color: var(--gold);
+  font-size: 18px;
+  line-height: 1;
+}
+.card-green .card-arrow {
+  color: var(--accent);
+}
+
+/* 返回首页 */
+.back-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin-bottom: var(--space-4);
+  padding: 8px 16px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+  color: var(--accent);
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  box-shadow: var(--shadow-1);
+  transition: background 0.15s, color 0.15s, transform 0.15s;
+}
+.back-btn:hover {
+  transform: translateX(-2px);
+  background: var(--accent-soft);
+}
+.back-btn.hidden {
+  display: none;
+}
+
+/* 管理页标题 */
+.panel-title {
+  margin: 0 0 var(--space-4);
+  font-size: 18px;
+  font-weight: 700;
+  font-family: var(--font-display);
+  color: var(--text);
+  padding-left: var(--space-3);
+  border-left: 4px solid var(--gold);
+  letter-spacing: -0.01em;
+}
+.panel-title.hidden {
+  display: none;
+}
+
+/* ---------- 选项卡（分段式，兼容旧结构） ---------- */
 .tabs {
   display: flex;
   gap: 4px;
@@ -337,7 +486,9 @@ button:disabled {
   border: 1px solid var(--border);
   border-radius: var(--radius);
   background: var(--surface);
-  overflow: hidden;
+  /* 2.0.1：overflow: clip —— 保留圆角裁剪，但不创建滚动容器，
+     使表头吸顶为「相对视口」且有界于所在集合，集合底部滑出屏幕时表头退出 */
+  overflow: clip;
   box-shadow: var(--shadow-1);
 }
 
@@ -451,6 +602,11 @@ button:disabled {
   color: var(--text);
 }
 
+/* 文本框/切换/下拉一律矩形（无圆角，块状编辑风） */
+input, select, textarea {
+  border-radius: 0 !important;
+}
+
 .param-item input[type="number"],
 .param-item input[type="text"] {
   width: 100%;
@@ -468,6 +624,89 @@ button:disabled {
   outline: none;
   border-color: var(--accent);
   box-shadow: var(--ring-accent);
+}
+
+/* 宠物结算范围（2.0.1）：表格样式编辑——块式堆叠 */
+.param-item-block {
+  display: block;
+  padding: 12px;
+}
+.param-item-block .param-label {
+  display: block;
+  margin-bottom: 8px;
+}
+.param-item-block small {
+  display: block;
+  margin-top: 8px;
+}
+
+.settle-wrap {
+  margin-top: 4px;
+}
+.settle-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+.settle-table th,
+.settle-table td {
+  border: 1px solid var(--border);
+  padding: 4px 6px;
+  text-align: center;
+  vertical-align: middle;
+}
+.settle-table thead th {
+  background: var(--surface-2);
+  color: var(--text-2);
+  font-weight: 600;
+  white-space: nowrap;
+  position: static !important; /* 结算表格无需吸顶 */
+}
+.settle-tier {
+  font-weight: 600;
+  color: var(--text);
+  white-space: nowrap;
+  text-align: left !important;
+}
+.settle-cell {
+  width: 100%;
+  min-width: 76px;
+  padding: 4px 6px;
+  border: 1px solid var(--border);
+  border-radius: 0 !important;
+  background: var(--surface);
+  color: var(--text);
+  font-size: 12px;
+  text-align: center;
+}
+.settle-cell:focus-visible {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: var(--ring-accent);
+}
+.settle-cell.invalid {
+  border-color: var(--danger);
+}
+
+/* 档位数值（四档判定阈值）输入框 */
+.tier-cell {
+  width: 100%;
+  min-width: 76px;
+  padding: 4px 6px;
+  border: 1px solid var(--border);
+  border-radius: 0 !important;
+  background: var(--surface);
+  color: var(--text);
+  font-size: 12px;
+  text-align: center;
+}
+.tier-cell:focus-visible {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: var(--ring-accent);
+}
+.tier-cell.invalid {
+  border-color: var(--danger);
 }
 
 .param-item input.invalid {
@@ -722,8 +961,9 @@ input[type="file"] {
 
 /* ================= 数值表格编辑器 ================= */
 .table-wrap {
-  overflow: auto;
-  max-height: 65vh;
+  /* 2.0.1：改为「页面滚动 + 表头相对视口吸顶」——
+     表头最多吸到视口顶部，所在集合（表格）底部滑出屏幕时随之退出 */
+  overflow: visible;
   margin-bottom: var(--space-2);
   border: 1px solid var(--border);
   border-radius: var(--radius);

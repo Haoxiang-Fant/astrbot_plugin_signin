@@ -102,6 +102,7 @@ class FarmMixin:
         return data.setdefault("farms", {}).setdefault(key, {
             "level": 0, "exp": 0.0, "plots": [],
             "warehouse": {"crops": {}, "seeds": {}, "fertilizers": {}},
+            "tools": {},          # 农场特殊道具（如 农场经验球 2.0.1 改属农场）
             "total_profit": 0,
             "steal_infos": [], "steal_log": {}, "scent_memory": {},
         })
@@ -585,16 +586,16 @@ class FarmMixin:
         img = Image.new("RGB", (width, height), (255, 255, 255))
         d = ImageDraw.Draw(img)
         y = pad
-        d.text((pad, y), f"{name} 的农场商店", font=title_font, fill=(20, 20, 20))
+        _dtext(d, (pad, y), f"{name} 的农场商店", font=title_font, fill=(20, 20, 20))
         y += title_h
         if subtitle:
-            d.text((pad, y), subtitle, font=body_font, fill=(150, 100, 0))
+            _dtext(d, (pad, y), subtitle, font=body_font, fill=(150, 100, 0))
             y += 26
 
         for title, plans in (("🌱 种子", seed_plans), ("🧪 化肥", fert_plans)):
             # 类别名（居中）
             cx = int(pad + (width - 2 * pad - tw(title, cat_font)) / 2)
-            d.text((cx, y), title, font=cat_font, fill=(60, 60, 60))
+            _dtext(d, (cx, y), title, font=cat_font, fill=(60, 60, 60))
             y += cat_h
             # 居中分隔线
             d.line([(pad + 20, y), (width - pad - 20, y)], fill=(200, 200, 200), width=2)
@@ -615,27 +616,27 @@ class FarmMixin:
                     for r in rows:
                         kind = r[0]
                         if kind == "pair":
-                            d.text((int(x0 + inner), yy), r[1], font=name_font, fill=(20, 20, 20))
-                            d.text((int(x0 + card_w - inner - tw(r[2], body_font)), yy + 4),
+                            _dtext(d, (int(x0 + inner), yy), r[1], font=name_font, fill=(20, 20, 20))
+                            _dtext(d, (int(x0 + card_w - inner - tw(r[2], body_font)), yy + 4),
                                    r[2], font=body_font, fill=(140, 90, 0))
                             yy += name_h
                         elif kind == "pair2":
                             # 左 + 右 两列文字（等级条件+成熟时间 / 售价+经验）
                             if r[1]:
-                                d.text((int(x0 + inner), yy), r[1], font=body_font, fill=(70, 70, 70))
+                                _dtext(d, (int(x0 + inner), yy), r[1], font=body_font, fill=(70, 70, 70))
                             if r[2]:
-                                d.text((int(x0 + card_w - inner - tw(r[2], body_font)), yy + 2),
+                                _dtext(d, (int(x0 + card_w - inner - tw(r[2], body_font)), yy + 2),
                                        r[2], font=body_font, fill=(90, 90, 90))
                             yy += line_h
                         elif kind == "plain":
                             for wl in wrap(r[1], body_font):
-                                d.text((int(x0 + inner), yy), wl, font=body_font, fill=(70, 70, 70))
+                                _dtext(d, (int(x0 + inner), yy), wl, font=body_font, fill=(70, 70, 70))
                                 yy += line_h
                         elif kind == "rule":
                             rule_y = price_y - n_pad  # 分割线固定在价格上方 N 距离
                         elif kind == "price":
                             # 价格贴底边 N
-                            d.text((int(x0 + card_w - inner - tw(r[1], price_font)), price_y),
+                            _dtext(d, (int(x0 + card_w - inner - tw(r[1], price_font)), price_y),
                                    r[1], font=price_font, fill=(192, 0, 0))
                             break
                     if rule_y is not None:
@@ -744,13 +745,16 @@ class FarmMixin:
                 adv_min = ""
                 g = self._plot_growth(plot, c, now) if c else None
                 if g is not None and g["advance_sec"] > 60:
-                    adv_min = f" · 加速{int(g['advance_sec'] // 60)}分"
+                    adv_min = f"加速{int(g['advance_sec'] // 60)}分"
+                # 2.0.1：加速信息独立一行，位于「剩余时间 / 预计收入」之下
                 lines = [
                     f"#{num} {gname} {state}",
                     crop_name,
-                    f"剩余 {remain} 预计 {income}金{adv_min}",
-                    upgrade,
+                    f"剩余 {remain} 预计 {income}金",
                 ]
+                if adv_min:
+                    lines.append(adv_min)
+                lines.append(upgrade)
             cards.append((lines, color))
 
         # ---------- 布局参数 ----------
@@ -829,13 +833,13 @@ class FarmMixin:
         rank_text = self._farm_rank_text(uid, data) if data else ""
         title_line = f"{name} 的农场"
         if rank_text and tw(title_line, title_font) + 24 + tw(rank_text, small_font) <= width - pad * 2:
-            d.text((pad, y), title_line, font=title_font, fill=(20, 20, 20))
-            d.text((int(width - pad - tw(rank_text, small_font)), y + 14), rank_text,
+            _dtext(d, (pad, y), title_line, font=title_font, fill=(20, 20, 20))
+            _dtext(d, (int(width - pad - tw(rank_text, small_font)), y + 14), rank_text,
                    font=small_font, fill=(90, 90, 90))
         else:
-            d.text((pad, y), title_line, font=title_font, fill=(20, 20, 20))
+            _dtext(d, (pad, y), title_line, font=title_font, fill=(20, 20, 20))
             if rank_text:
-                d.text((pad, y + 28), rank_text, font=small_font, fill=(90, 90, 90))
+                _dtext(d, (pad, y + 28), rank_text, font=small_font, fill=(90, 90, 90))
                 title_h = max(title_h, 52 + 22)
         y += title_h
 
@@ -844,13 +848,13 @@ class FarmMixin:
         if profit_delta:
             psign = "+" if profit_delta > 0 else ""
             profit_txt += f"　（本次 {psign}{int(profit_delta)}）"
-        d.text((pad, y), profit_txt, font=small_font, fill=(90, 90, 90))
+        _dtext(d, (pad, y), profit_txt, font=small_font, fill=(90, 90, 90))
         y += profit_h
 
         # 等级行：Lv.X（左）+ 经验 Y/Z（右，字号小两号）
-        d.text((pad, y), f"Lv.{level}", font=lv_font, fill=(20, 20, 20))
+        _dtext(d, (pad, y), f"Lv.{level}", font=lv_font, fill=(20, 20, 20))
         exp_text = f"经验 {exp:.0f}/{need:.0f}" if need > 0 else "已满级"
-        d.text((int(pad + bar_w - tw(exp_text, exp_font)), y + 6), exp_text, font=exp_font, fill=(70, 70, 70))
+        _dtext(d, (int(pad + bar_w - tw(exp_text, exp_font)), y + 6), exp_text, font=exp_font, fill=(70, 70, 70))
         y += lv_row_h
 
         # 升级进度条（宽度与等级行相同，含百分比）
@@ -860,7 +864,7 @@ class FarmMixin:
         if ratio > 0:
             d.rectangle([pad + 1, bar_y + 1, int(pad + 1 + (bar_w - 2) * ratio), bar_y + 13], fill=(52, 168, 83))
         pct_text = f"{int(ratio * 100)}%"
-        d.text((int(pad + bar_w - tw(pct_text, small_font) - 4), bar_y - 3), pct_text, font=small_font, fill=(40, 40, 40))
+        _dtext(d, (int(pad + bar_w - tw(pct_text, small_font) - 4), bar_y - 3), pct_text, font=small_font, fill=(40, 40, 40))
         y += bar_h
 
         # 分割线
@@ -878,7 +882,7 @@ class FarmMixin:
                 d.rectangle([x0, y, x0 + card_w, y + gh], fill=color, outline=(205, 205, 205), width=1)
                 yy = y + inner
                 for ln in rows:
-                    d.text((int(x0 + inner), yy), ln, font=small_font, fill=(40, 40, 40))
+                    _dtext(d, (int(x0 + inner), yy), ln, font=small_font, fill=(40, 40, 40))
                     yy += line_h
             y += gh + gap
 
@@ -887,7 +891,7 @@ class FarmMixin:
             d.line([(pad, y), (width - pad, y)], fill=(200, 200, 200), width=1)
             y += 8
             title_line = steal_lines[0] if steal_lines else ""
-            d.text((pad, y), title_line, font=small_font, fill=(120, 120, 120))
+            _dtext(d, (pad, y), title_line, font=small_font, fill=(120, 120, 120))
             y += line_h
             self._draw_steal_table(d, steal_table, pad, y, width - pad, small_font)
             y += steal_h - (8 + line_h)
@@ -900,7 +904,7 @@ class FarmMixin:
                         fill=(243, 246, 250), outline=(205, 210, 218), width=1)
             yy = big_y0 + big_pad
             for ln in big_wrapped:
-                d.text((int(pad + 12), yy), ln, font=small_font, fill=(60, 60, 60))
+                _dtext(d, (int(pad + 12), yy), ln, font=small_font, fill=(60, 60, 60))
                 yy += line_h
 
         return _save_temp_image(img, "_farm_", "土地状态")
@@ -951,10 +955,10 @@ class FarmMixin:
             else:
                 color = (192, 0, 0)
             for k, crop_line in enumerate(crop_lines):
-                d.text((int(x0), y), name if k == 0 else "", font=font, fill=color)
-                d.text((int(x0 + 90), y), crop_line, font=font, fill=color)
-                d.text((int(x0 + 90 + 160), y), loss if k == 0 else "", font=font, fill=color)
-                d.text((int(x0 + 90 + 160 + 90), y), status if k == 0 else "", font=font, fill=color)
+                _dtext(d, (int(x0), y), name if k == 0 else "", font=font, fill=color)
+                _dtext(d, (int(x0 + 90), y), crop_line, font=font, fill=color)
+                _dtext(d, (int(x0 + 90 + 160), y), loss if k == 0 else "", font=font, fill=color)
+                _dtext(d, (int(x0 + 90 + 160 + 90), y), status if k == 0 else "", font=font, fill=color)
                 y += line_h
 
     # ---- 农场指令 ----
@@ -1234,11 +1238,13 @@ class FarmMixin:
         plot["fert"] = {}
         plot["fert_advance"] = 0.0
         plot["fert_accel"] = {}
+        plot["orig_yield"] = 0
 
     @staticmethod
     def _plant_plot(plot, crop, now):
         """把作物种到一块空闲地块（字段赋值，不落盘）。
-        2.0.0：记录 stage_count / stage_sec（按贫瘠总时间均分）与化肥推进字段。"""
+        2.0.0：记录 stage_count / stage_sec（按贫瘠总时间均分）与化肥推进字段。
+        2.0.1：记录 orig_yield（原始产量，用于偷菜「保护地块」判定）。"""
         gname, gy, gt = FarmMixin._plot_grade(int(plot.get("grade", 0)))
         base_sec = crop["grow_minutes"] * 60
         plot["crop"] = crop["name"]
@@ -1246,6 +1252,7 @@ class FarmMixin:
         plot["plant_ts"] = now
         plot["base_time"] = base_sec
         plot["yield"] = int(crop["yield"] * (1 + gy))
+        plot["orig_yield"] = plot["yield"]
         plot["mature_ts"] = now + base_sec * (1 - gt)
         plot["fert_time"] = 0.0
         plot["fert_yield"] = 0.0
@@ -1792,7 +1799,8 @@ class FarmMixin:
         return None
 
     def _handle_guard(self, event):
-        """看家 <开/关>：开启/关闭宠物看家防护"""
+        """看家 <开/关>：开启/关闭宠物看家（2.0.1 宠物加护改为自动生效：
+        宠物激活且空闲、状态档位1-2 时自动保护，本开关仅作偏好标记）"""
         name = event.get_sender_name()
         key = self._user_key(event)
         parts = event.message_str.split(maxsplit=1)
@@ -1801,15 +1809,11 @@ class FarmMixin:
         data = self._load()
         pet = data.get("pets", {}).get(key)
         if not pet:
-            return f"{name} 还没有宠物，无法开启看家防护。"
-        on = parts[1].strip() == "开"
-        if on:
-            health_req = float(globals().get("STEAL_GUARD_HEALTH", 60))
-            if pet["health"] <= health_req:
-                return f"{name} 的宠物健康度 {pet['health']:.0f} 不满足看家要求（需 > {health_req:.0f}），先照顾好它吧。"
-        pet["guard"] = on
+            return f"{name} 还没有宠物，无法开启看家。"
+        pet["guard"] = parts[1].strip() == "开"
         self._save(data)
-        return f"✅ 看家防护已{'开启' if on else '关闭'}：宠物将守护你的农场（偷菜时可触发护卫）。"
+        return (f"✅ 看家已{'开启' if pet['guard'] else '关闭'}。"
+                f"（宠物加护在宠物激活且空闲、状态档位 1-2 时自动生效，不受本开关限制）")
 
     def _handle_steal(self, event):
         """偷菜 <@目标>：一键偷走目标所有已成熟地块的一部分作物"""
@@ -1841,192 +1845,235 @@ class FarmMixin:
         return self._steal_summary(name, key, r)
 
     def _do_steal(self, data, key, name, tkey, now_ts, crops):
-        """对单个目标执行偷菜核心（不落盘，调用方统一 _save）。
-        返回 None（对方无可偷成熟作物）或 dict：
-        {gain, events, guard, fine, tname}——gain=偷菜方金币收益；guard=宠物效果(catch/return/slack/None)；
+        """对单个目标执行偷菜核心（2.0.1 重做，不落盘，调用方统一 _save）。
+        返回 None 或 dict：
+        {gain, events, guard, fine, tname, status}——
+        gain=偷菜方金币收益；guard=宠物加护效果(catch/stop/None)；
+        status=special：farm_level_fail 农场等级差限制 / stolen_out 保护地块无可偷 / catch 被抓到；
         events=结果明细（被偷方视角）；fine=罚款。"""
         tdata_farm = self._farm_of(data, tkey)
         if not tdata_farm:
             return None
+        key_farm = self._farm_of(data, key)
+        farm = key_farm or {"level": 0, "plots": []}
+        tname = self._user_name(data, tkey) or "对方"
+
+        # 农场等级差限制：无法向农场等级高于自己 STEAL_LEVEL_GAP 级的农场主偷菜
+        level_gap = int(globals().get("STEAL_LEVEL_GAP", 10))
+        if int(tdata_farm.get("level", 0)) - int(farm.get("level", 0)) >= level_gap:
+            return {"gain": 0, "events": [], "guard": None, "fine": 0,
+                    "tname": tname, "status": "farm_level_fail"}
+
         tplots = tdata_farm.get("plots", [])
-        # 目标已成熟地块（未收割）
         ripe = [(i, p) for i, p in enumerate(tplots)
                 if p.get("crop") is not None and now_ts >= p.get("mature_ts", 0)]
         if not ripe:
             return None
-        key_farm = self._farm_of(data, key)
-        farm = key_farm or {"level": 0, "plots": []}
 
-        # 基本防御：目标作物最低等级 > 偷菜者农场等级 + 5 → 无法偷该作物
-        # 逐地块尝试偷菜（每个成熟地块独立判定）
-        events = []   # 本次偷菜结果明细（被偷方视角）
-        my_gain = 0   # 偷菜方金币收益（成功偷走的作物按售价折算）
-        thief_pet = data.get("pets", {}).get(key)
-        thief_pet_lv = int(thief_pet.get("level", 0)) if thief_pet else 0
-
-        # 气味记忆检查（偷菜者身上记着对目标的记忆 → 必被宠物发现）
-        thief_scent = data.get("farms", {}).get(key, {}).get("scent_memory", {}) if data.get("farms", {}).get(key) else {}
-        has_scent = float(thief_scent.get(tkey, 0) or 0) > now_ts
-
-        # 被偷方宠物看家判定
-        tpet = data.get("pets", {}).get(tkey)
-        guard_on = bool(tpet and tpet.get("guard"))
-        guard_health_ok = bool(tpet and tpet["health"] > float(globals().get("STEAL_GUARD_HEALTH", 60)))
-        guard_effective = guard_on and guard_health_ok
-
-        # 被偷方看家时：同一偷菜者 24h 内尝试次数累计
-        t_steal_log = tdata_farm.setdefault("steal_log", {})
-        t_steal_log.setdefault(key, {"ts": 0, "count": 0})
-        log_entry = t_steal_log[key]
-        if now_ts - log_entry["ts"] > 86400:
-            log_entry["ts"] = now_ts
-            log_entry["count"] = 0
-        log_entry["count"] += 1
-        # 气味记忆：被偷方获得针对偷菜者的记忆（记在偷菜者身上）
-        thief_farm = data.setdefault("farms", {}).setdefault(key, {})
-        thief_scent = thief_farm.setdefault("scent_memory", {})
-        threshold = int(globals().get("STEAL_SCENT_THRESHOLD", 4))
-        if log_entry["count"] > threshold:
-            h_min = int(globals().get("STEAL_SCENT_HOURS_MIN", 12))
-            h_max = int(globals().get("STEAL_SCENT_HOURS_MAX", 24))
-            thief_scent[tkey] = now_ts + random.randint(h_min, h_max) * 3600
-
-        # 随机护卫效果（被偷方宠物体力 > 40 且未忙碌）
-        pet_guard_effect = None  # "catch"(抓到你了) / "return"(给我站住) / "slack"(摸鱼)
-        tpet_busy = bool(tpet and now_ts < self._pet_busy_until(tpet))
-        if guard_effective and tpet is not None and not tpet_busy and tpet["stamina"] > 40:
-            rnd = random.random()
-            if rnd < 0.30:
-                pet_guard_effect = "return"   # 给我站住：追回 40-60%
-            elif rnd < 0.50:
-                pet_guard_effect = "catch"    # 抓到你了：偷菜失败 + 罚款 + 气味记忆
-            else:
-                pet_guard_effect = "slack"    # 摸鱼：偷菜方溜之大吉
-        elif guard_effective and tpet is not None and tpet_busy:
-            pet_guard_effect = "slack"        # 忙碌 100% 摸鱼
-
-        # 气味记忆 → 必被宠物发现（若看家生效）
-        if guard_effective and has_scent:
-            pet_guard_effect = "catch"
-
-        # 宠物压制：偷菜者宠物等级比被偷者高 5 级 → 偷菜惩罚降低 30-70%
-        suppress = 1.0
-        if tpet is not None and thief_pet_lv - int(tpet.get("level", 0)) >= 5:
-            suppress = random.uniform(0.3, 0.7)
-
-        loss_min = float(globals().get("STEAL_LOSS_MIN", 0.10))
+        # ---- 参数（全部 WebUI 可编辑） ----
+        loss_min = float(globals().get("STEAL_LOSS_MIN", 0.05))
         loss_max = float(globals().get("STEAL_LOSS_MAX", 0.20))
+        protect_ratio = float(globals().get("STEAL_PROTECT_RATIO", 0.5))
+        guard_catch = float(globals().get("STEAL_GUARD_CATCH", 0.10))
+        guard_stop = float(globals().get("STEAL_GUARD_STOP", 0.20))
+        pet_gap = int(globals().get("STEAL_PET_GAP", 10))
+        pet_gap_div = float(globals().get("STEAL_PET_GAP_DIV", 2.0))
+        guard_tier_max = int(globals().get("STEAL_GUARD_TIER_MAX", 3))
+        scent_mult = float(globals().get("STEAL_SCENT_MULT", 3.0))
+        scent_hours = float(globals().get("STEAL_SCENT_HOURS", 24))
+        scent_consec = int(globals().get("STEAL_SCENT_CONSEC", 3))
+        suppress_hours = float(globals().get("STEAL_SUPPRESS_HOURS", 12))
+        fine_ratio = float(globals().get("STEAL_FINE_RATIO", 1.10))
 
-        for i, plot in ripe:
+        # ---- 可偷地块（跳过 保护地块 / 产量0 / 作物等级不够） ----
+        events = []
+        stealable = []   # (plot, crop)
+        protected = False
+        for _, plot in ripe:
             crop_name = plot.get("crop", "")
             c = self._find_item(crops, crop_name)
             if c is None:
                 continue
-            # 基本防御
             if int(c.get("min_level", 0)) > int(farm.get("level", 0)) + 5:
                 events.append({"ts": now_ts, "thief_uid": key, "thief_name": name,
-                               "crop": crop_name, "qty": 0, "loss": 0,
-                               "status": "level_fail"})
+                               "crop": crop_name, "qty": 0, "loss": 0, "status": "level_fail"})
                 continue
             yield_now = int(plot.get("yield", 0))
             if yield_now <= 0:
                 continue
-            # 偷走比例 10-20%
-            pct = random.uniform(loss_min, loss_max)
-            # 看家额外减免 2-6%（偷菜成功固定减少损失）
-            if guard_effective:
-                r_min = float(globals().get("STEAL_GUARD_REDUCE_MIN", 0.02))
-                r_max = float(globals().get("STEAL_GUARD_REDUCE_MAX", 0.06))
-                pct *= (1.0 - random.uniform(r_min, r_max))
-            qty = max(1, int(yield_now * pct))
-            # 「抓到你了」：偷菜失败，qty 追回
-            if pet_guard_effect == "catch":
+            orig = int(plot.get("orig_yield", 0) or yield_now)
+            if yield_now < orig * protect_ratio:
+                # 保护地块：当前产量低于原先 protect_ratio → 剩余作物不可再被偷
+                protected = True
                 events.append({"ts": now_ts, "thief_uid": key, "thief_name": name,
-                               "crop": crop_name, "qty": 0, "loss": 0, "status": "pet_catch"})
+                               "crop": crop_name, "qty": 0, "loss": 0, "status": "protected"})
                 continue
-            # 「给我站住」：追回 40-60%（转金币给宠物主人）
-            if pet_guard_effect == "return":
-                back_pct = random.uniform(0.4, 0.6) * suppress
-                back = max(1, int(qty * back_pct))
-                kept = qty - back
-                if kept > 0:
-                    plot["yield"] = max(0, yield_now - kept)
-                    gain = int(round(kept * float(c["crop_price"])))
-                    self._add_coins(data, key, gain, f"偷菜·{crop_name}")
-                    my_gain += gain
-                    events.append({"ts": now_ts, "thief_uid": key, "thief_name": name,
-                                   "crop": crop_name, "qty": kept, "loss": gain,
-                                   "status": "pet_return"})
+            stealable.append((plot, c))
+        if not stealable:
+            # 无可偷地块（全为保护地块或等级不够）→ 被偷完了
+            return {"gain": 0, "events": events, "guard": None, "fine": 0,
+                    "tname": tname, "status": "stolen_out"}
+
+        # ---- 宠物加护判定（农场主宠物激活 + 空闲 + 状态档位 1~2） ----
+        tpet = data.get("pets", {}).get(tkey)
+        guard_effective = False
+        if tpet is not None and not (now_ts < self._pet_busy_until(tpet)):
+            try:
+                pet_tier = self._worst_tier(tpet["satiety"], tpet["thirst"], tpet["mood"])
+            except Exception:
+                pet_tier = 1
+            guard_effective = pet_tier < guard_tier_max
+
+        # 气味记忆（记在偷菜者身上、针对本农场主；触发概率 ×scent_mult，不受等级压制影响）
+        thief_farm = data.setdefault("farms", {}).setdefault(key, {})
+        thief_scent = thief_farm.setdefault("scent_memory", {})
+        has_scent = float(thief_scent.get(tkey, 0) or 0) > now_ts
+
+        # 等级压制：偷菜者宠物等级比农场主低 pet_gap 级及以上 → 概率减半
+        # （「给我站住」触发后 suppress_hours 内失效）
+        thief_pet = data.get("pets", {}).get(key)
+        thief_pet_lv = int(thief_pet.get("level", 0)) if thief_pet else 0
+        suppress_until = float(tdata_farm.get("guard_suppress_until", 0) or 0)
+        suppressed = bool(tpet) and (int(tpet.get("level", 0)) - thief_pet_lv >= pet_gap) \
+            and now_ts >= suppress_until
+
+        # 加护触发
+        guard_effect = None
+        if guard_effective:
+            p_catch, p_stop = guard_catch, guard_stop
+            if has_scent:
+                # 气味记忆：概率 ×scent_mult（不受等级压制影响）
+                p_catch *= scent_mult
+                p_stop *= scent_mult
+            elif suppressed:
+                p_catch /= pet_gap_div
+                p_stop /= pet_gap_div
+            rnd = random.random()
+            if rnd < p_catch:
+                guard_effect = "catch"
+            elif rnd < p_catch + p_stop:
+                guard_effect = "stop"
+
+        # ---- 连续成功计数（被偷方记录，气味记忆来源） ----
+        consec = tdata_farm.setdefault("steal_consec", {})
+        ce = consec.setdefault(key, {"ts": now_ts, "count": 0})
+        if now_ts - ce["ts"] > 86400:
+            ce["ts"] = now_ts
+            ce["count"] = 0
+
+        def _record_batch():
+            t_events = tdata_farm.setdefault("steal_infos", [])
+            t_events.append({
+                "ts": now_ts,
+                "thief_uid": key,
+                "thief_name": name,
+                "items": [
+                    {"crop": e["crop"], "qty": e["qty"], "loss": e["loss"], "status": e["status"]}
+                    for e in events
+                ],
+                "harvest_ts": None,
+            })
+            if len(t_events) > 50:
+                del t_events[:len(t_events) - 50]
+
+        def _apply_scent():
+            thief_scent[tkey] = now_ts + scent_hours * 3600
+
+        # ---- 抓到你了：偷菜失败 + 气味记忆24h + 主人体力-2~5 ----
+        if guard_effect == "catch":
+            for plot, _c in stealable:
+                events.append({"ts": now_ts, "thief_uid": key, "thief_name": name,
+                               "crop": plot.get("crop", ""), "qty": 0, "loss": 0,
+                               "status": "pet_catch"})
+            ce["count"] = 0  # 失败 → 连续成功清零
+            if tpet is not None:
+                c_min = float(globals().get("STEAL_GUARD_CATCH_STAMINA_MIN", 2))
+                c_max = float(globals().get("STEAL_GUARD_CATCH_STAMINA_MAX", 5))
+                tpet["stamina"] = round(max(0.0, tpet["stamina"] - random.randint(int(c_min), int(c_max))), 2)
+            _apply_scent()
+            _record_batch()
+            return {"gain": 0, "events": events, "guard": "catch", "fine": 0,
+                    "tname": tname, "status": "catch"}
+
+        # ---- 给我站住：损失减半 + 罚款(原金额110%) + 体力-3~6 + 等级压制失效 ----
+        if guard_effect == "stop":
+            my_gain = 0
+            orig_value = 0
+            for plot, c in stealable:
+                yield_now = int(plot.get("yield", 0))
+                qty = max(1, int(yield_now * random.uniform(loss_min, loss_max)))
+                actual = max(1, int(qty / 2))   # 农场主损失减半
+                orig_value += qty * float(c["crop_price"])
+                plot["yield"] = max(0, yield_now - actual)
+                gain = int(round(actual * float(c["crop_price"])))
+                self._add_coins(data, key, gain, f"偷菜·{plot['crop']}")
+                my_gain += gain
+                events.append({"ts": now_ts, "thief_uid": key, "thief_name": name,
+                               "crop": plot.get("crop", ""), "qty": actual, "loss": gain,
+                               "status": "pet_stop"})
+            fine = int(round(orig_value * fine_ratio))
+            if fine > 0:
+                pay = min(fine, self._coins_of(data, key))
+                if pay > 0:
+                    self._add_coins(data, key, -pay, "偷菜被抓罚款")
+                    self._add_coins(data, tkey, pay, "偷菜罚款赔偿")
+                    fine = pay
                 else:
-                    events.append({"ts": now_ts, "thief_uid": key, "thief_name": name,
-                                   "crop": crop_name, "qty": 0, "loss": 0, "status": "pet_return"})
-                continue
-            # 成功（含摸鱼）
+                    fine = 0
+            if tpet is not None:
+                s_min = float(globals().get("STEAL_GUARD_STOP_STAMINA_MIN", 3))
+                s_max = float(globals().get("STEAL_GUARD_STOP_STAMINA_MAX", 6))
+                tpet["stamina"] = round(max(0.0, tpet["stamina"] - random.randint(int(s_min), int(s_max))), 2)
+            tdata_farm["guard_suppress_until"] = now_ts + suppress_hours * 3600  # 等级压制失效
+            if my_gain > 0:
+                ce["count"] += 1
+                if ce["count"] >= scent_consec:
+                    _apply_scent()
+            _record_batch()
+            return {"gain": my_gain, "events": events, "guard": "stop", "fine": fine,
+                    "tname": tname, "status": "stop"}
+
+        # ---- 正常成功：偷走 5%-20% ----
+        my_gain = 0
+        for plot, c in stealable:
+            yield_now = int(plot.get("yield", 0))
+            qty = max(1, int(yield_now * random.uniform(loss_min, loss_max)))
             plot["yield"] = max(0, yield_now - qty)
             gain = int(round(qty * float(c["crop_price"])))
-            self._add_coins(data, key, gain, f"偷菜·{crop_name}")
+            self._add_coins(data, key, gain, f"偷菜·{plot['crop']}")
             my_gain += gain
             events.append({"ts": now_ts, "thief_uid": key, "thief_name": name,
-                           "crop": crop_name, "qty": qty, "loss": gain,
+                           "crop": plot.get("crop", ""), "qty": qty, "loss": gain,
                            "status": "success"})
-
-        if not events:
-            return None
-
-        # 记录被偷事件（含本次批次收割时间戳，24h 有效期）
-        t_events = tdata_farm.setdefault("steal_infos", [])
-        t_events.append({
-            "ts": now_ts,
-            "thief_uid": key,
-            "thief_name": name,
-            "items": [
-                {"crop": e["crop"], "qty": e["qty"], "loss": e["loss"], "status": e["status"]}
-                for e in events
-            ],
-            "harvest_ts": None,   # 被偷批次收割时填充；显示条件：now - harvest_ts <= 24h
-        })
-        if len(t_events) > 50:
-            del t_events[:len(t_events) - 50]
-
-        # 宠物消耗与罚款
-        fine = 0
-        if pet_guard_effect == "catch" and tpet is not None:
-            # 抓到你了：罚款偷菜金额 10-20%（压制降低）
-            fine_pct = random.uniform(0.10, 0.20) * suppress
-            fine = int(round(max(0, my_gain) * fine_pct)) if my_gain > 0 else int(round(100 * fine_pct))
-            if fine > 0 and self._coins_of(data, key) >= fine:
-                self._add_coins(data, key, -fine, "偷菜被抓罚款")
-                self._add_coins(data, tkey, fine, "偷菜罚款赔偿")
-            # 体力消耗 1-3
-            tpet["stamina"] = round(max(0.0, tpet["stamina"] - random.randint(1, 3)), 2)
-        elif pet_guard_effect == "return" and tpet is not None:
-            # 给我站住：体力消耗 2-5
-            tpet["stamina"] = round(max(0.0, tpet["stamina"] - random.randint(2, 5)), 2)
-
-        return {
-            "gain": my_gain,
-            "events": events,
-            "guard": pet_guard_effect,
-            "fine": fine,
-            "tname": self._user_name(data, tkey) or "对方",
-        }
+        if my_gain > 0:
+            ce["count"] += 1
+            if ce["count"] >= scent_consec:
+                _apply_scent()
+        _record_batch()
+        return {"gain": my_gain, "events": events, "guard": None, "fine": 0,
+                "tname": tname, "status": "success" if my_gain > 0 else "stolen_out"}
 
     def _steal_summary(self, name, key, r):
-        """偷菜方视角摘要（单个目标的结果 r）"""
+        """偷菜方视角摘要（单个目标的结果 r，2.0.1）"""
+        tname = r.get("tname", "对方")
+        status = r.get("status")
+        if status == "farm_level_fail":
+            gap = int(globals().get("STEAL_LEVEL_GAP", 10))
+            return f"🥬 {name} 想偷 {tname} 的农场，但对方农场等级高出自己 {gap} 级及以上，无法发起偷菜。"
+        if status == "stolen_out":
+            return (f"🥬 {name} 尝试偷取 {tname} 的农场：地块产量已低于原有 50%，进入保护状态——"
+                    f"被偷完了，剩余作物无法再被偷取。")
         events = r["events"]
-        ok_count = sum(1 for e in events if e["status"] in ("success", "pet_return"))
-        fail_count = sum(1 for e in events if e["status"] in ("level_fail", "pet_catch"))
-        lines = [f"🥬 {name} 对 {r['tname']} 的农场进行了偷菜："]
+        fail_count = sum(1 for e in events if e["status"] in ("level_fail", "pet_catch", "protected"))
+        lines = [f"🥬 {name} 对 {tname} 的农场进行了偷菜："]
         if r["gain"] > 0:
             lines.append(f"💰 偷得作物折合 {r['gain']} 金币！")
         if fail_count:
-            lines.append(f"🛡️ {fail_count} 个地块防御成功（等级不足/被宠物发现）")
-        if r["guard"] == "return":
-            lines.append("🐾 对方的宠物触发了「给我站住」，追回了部分作物！")
+            lines.append(f"🛡️ {fail_count} 个地块未偷成（等级不足/保护地块/被宠物发现）")
+        if r["guard"] == "stop":
+            lines.append(f"🐾 对方宠物触发「给我站住」：损失减半，你被罚款 {r['fine']} 金币！")
         elif r["guard"] == "catch":
-            lines.append(f"🐾 对方的宠物触发了「抓到你了」，偷菜失败！罚款 {r['fine']} 金币！")
-        elif r["guard"] == "slack":
-            lines.append("🐾 对方的宠物摸鱼了，溜之大吉～")
+            lines.append("🐾 对方宠物触发「抓到你了」：偷菜失败！")
         return "\n".join(lines)
 
     def _handle_auto_steal(self, event):
@@ -2099,8 +2146,8 @@ class FarmMixin:
             self._save(data)
             lines = [f"🥬 {name} 自动偷菜成功！偷了 {len(results)} 位用户，共获得 {total_gain} 金币。"]
             for r in results:
-                if r["guard"] == "return":
-                    lines.append(f"· {r['tname']}：+{r['gain']} 金币（宠物追回部分）")
+                if r["guard"] == "stop":
+                    lines.append(f"· {r['tname']}：+{r['gain']} 金币（对方宠物拦下一半）")
                 else:
                     lines.append(f"· {r['tname']}：+{r['gain']} 金币")
             lines.append(f"今日剩余自动偷菜次数：{limit - used - 1} 次")
@@ -2143,11 +2190,14 @@ class FarmMixin:
                 if status == "level_fail":
                     st = "失败：对方等级过低"
                     color = "#7F7F7F"
+                elif status == "protected":
+                    st = "保护地块"
+                    color = "#7F7F7F"
                 elif status == "pet_catch":
                     st = "失败：宠物发现"
                     color = "#BF9000"
-                elif status == "pet_return":
-                    st = "成功（宠物追回部分）"
+                elif status == "pet_stop":
+                    st = "成功（损失减半）"
                     color = "#BF9000"
                 else:
                     st = "成功"

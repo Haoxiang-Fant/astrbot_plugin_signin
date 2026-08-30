@@ -277,7 +277,7 @@ class RankMixin:
 
         img = Image.new("RGB", (width, height), (255, 255, 255))
         d = ImageDraw.Draw(img)
-        d.text((int(pad), int(pad)), title, font=title_font, fill=(20, 20, 20))
+        _dtext(d, (int(pad), int(pad)), title, font=title_font, fill=(20, 20, 20))
         y = pad + title_h
         hl = self._parse_hex_color(hl_color)
         bar_w = bar_x1 - bar_x0
@@ -290,15 +290,15 @@ class RankMixin:
             else:
                 text_color = text_color_s
             bar_color = self._lighten_color(text_color, lighten)
-            d.text((int(pad), int(y)), str(rank), font=body_font, fill=text_color)
-            d.text((int(name_x), int(y)), disp, font=body_font, fill=text_color)
+            _dtext(d, (int(pad), int(y)), str(rank), font=body_font, fill=text_color)
+            _dtext(d, (int(name_x), int(y)), disp, font=body_font, fill=text_color)
             # 进度条：轨道浅灰 + 填充色（文字浅 20%，高亮行即高亮色浅 20%）
             bar_y = y + (line_h - bar_h) // 2
             d.rectangle([bar_x0, bar_y, bar_x1, bar_y + bar_h], fill=(238, 238, 238), outline=(205, 205, 205))
             fill_w = int(bar_w * max(0.0, min(1.0, ratio)))
             if fill_w > 0:
                 d.rectangle([bar_x0 + 1, bar_y + 1, bar_x0 + fill_w, bar_y + bar_h - 1], fill=bar_color)
-            d.text((int(score_x - tw(score_str, body_font)), int(y)), score_str, font=body_font, fill=text_color)
+            _dtext(d, (int(score_x - tw(score_str, body_font)), int(y)), score_str, font=body_font, fill=text_color)
             y += line_h
             # 行间分割线（仅 用户名 → 积分 范围）：高度 = 行高 × RANK_ROW_SEP_PCT（默认 3%），
             # 紧跟文字行底，文字与分割线间距对所有行一致

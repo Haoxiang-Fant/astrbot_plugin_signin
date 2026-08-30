@@ -625,12 +625,115 @@ async function loadParams() {
   }
 }
 
+// ================= 宠物结算范围（2.0.1：固定四档表格编辑） =================
+const SETTLE_TIERS = [
+  { t: "T1", label: "T1 · 状态最佳档" },
+  { t: "T2", label: "T2 · 状态良好档" },
+  { t: "T3", label: "T3 · 状态偏低档" },
+  { t: "T4", label: "T4 · 状态最差档" },
+];
+const SETTLE_ATTRS = ["饱食", "口渴", "体力", "心情", "健康"];
+
+// ================= 档位数值（四档判定阈值） =================
+const SETTLE_TIER_ATTRS = ["饱食", "口渴", "心情"];
+const SETTLE_TIER_COLS = ["一档下限", "二档下限", "三档下限"];
+
+function tierCell(str, attr, idx) {
+  // 从 PET_SETTLE_TIERS 取某属性的第 idx 个边界值
+  const seg = (str || "").split("|").find((s) => {
+    const eq = s.indexOf("=");
+    return eq >= 0 && s.slice(0, eq).trim() === attr;
+  });
+  if (!seg) return "";
+  const nums = seg
+    .slice(seg.indexOf("=") + 1)
+    .replace(/，/g, ",")
+    .split(",")
+    .map((x) => x.trim())
+    .filter(Boolean);
+  return nums[idx] != null ? nums[idx] : "";
+}
+
+function renderTierTable(p) {
+  const rows = SETTLE_TIER_ATTRS.map(
+    (a) => `<tr>
+      <td class="settle-tier">${a}</td>
+      ${SETTLE_TIER_COLS.map(
+        (c, i) => `<td><input class="tier-cell" type="number" step="any" data-a="${a}" data-i="${i}"
+          value="${esc(tierCell(p.value, a, i))}" placeholder="0" /></td>`,
+      ).join("")}
+    </tr>`,
+  ).join("");
+  return `<div class="settle-wrap">
+    <table class="item-table settle-table">
+      <thead><tr><th>属性</th>${SETTLE_TIER_COLS.map((c) => `<th>${c}</th>`).join("")}</tr></thead>
+      <tbody>${rows}</tbody>
+    </table>
+    <p class="hint">属性值 ≥ 一档下限 → 1档；≥ 二档下限 → 2档；≥ 三档下限 → 3档；否则 4档。留空则使用默认。</p>
+  </div>`;
+}
+
+function settleCell(str, tier, attr) {
+  // 从 PET_SETTLE_RANGES 字符串取某档某属性的 "最低~最高"
+  const seg = (str || "").split("|").find((s) => {
+    const eq = s.indexOf("=");
+    return eq >= 0 && s.slice(0, eq).trim().toUpperCase() === tier;
+  });
+  if (!seg) return "";
+  const body = seg.slice(seg.indexOf("=") + 1);
+  for (const item of body.split(",")) {
+    const tilde = item.indexOf("~");
+    if (tilde < 0) continue;
+    const left = item.slice(0, tilde);
+    const m = left.match(/^(.*?)(-?\d+(?:\.\d+)?)$/);
+    if (m && m[1].trim() === attr) {
+      return left.slice(m[1].length) + "~" + item.slice(tilde + 1);
+    }
+  }
+  return "";
+}
+
+function renderSettleTable(p) {
+  const rows = SETTLE_TIERS.map(
+    (t) => `<tr data-tier="${t.t}">
+      <td class="settle-tier">${t.label}</td>
+      ${SETTLE_ATTRS.map(
+        (a) => `<td><input class="settle-cell" type="text" data-t="${t.t}" data-a="${a}"
+          value="${esc(settleCell(p.value, t.t, a))}" placeholder="${a}" /></td>`,
+      ).join("")}
+    </tr>`,
+  ).join("");
+  return `<div class="settle-wrap">
+    <table class="item-table settle-table">
+      <thead><tr><th>档位</th>${SETTLE_ATTRS.map((a) => `<th>${a}</th>`).join("")}</tr></thead>
+      <tbody>${rows}</tbody>
+    </table>
+    <p class="hint">每格填写该档该属性的「最低~最高」变化值（如 -15~-10）；留空表示该档不变化该属性。</p>
+  </div>`;
+}
+
 function renderParamItem(p) {
   const min = p.min != null ? `min="${p.min}" ` : "";
   const max = p.max != null ? `max="${p.max}" ` : "";
   let displayVal = p.value;
   if (p.type === "list" && Array.isArray(p.value)) {
     displayVal = p.value.join(",");
+  }
+  // 2.0.1：宠物结算范围 → 表格样式编辑
+  if (p.key === "PET_SETTLE_RANGES") {
+    return `<div class="param-item param-item-block">
+      <span class="param-label">${p.label}</span>
+      ${renderSettleTable(p)}
+      <small>${p.desc || ""}</small>
+    </div>`;
+  }
+  // 2.0.1：档位数值（四档判定阈值） → 表格样式编辑
+  if (p.key === "PET_SETTLE_TIERS") {
+    return `<div class="param-item param-item-block">
+      <span class="param-label">${p.label}</span>
+      ${renderTierTable(p)}
+      <small>${p.desc || ""}</small>
+    </div>`;
   }
   const input =
     p.type === "int" || p.type === "float"
@@ -681,6 +784,54 @@ async function saveParams() {
       params[key] = el.value;
     }
   });
+  // 2.0.1：宠物结算范围表格 → 序列化回格式串（空格合法，空表示未设置）
+  const settleCells = document.querySelectorAll("#params-list .settle-cell");
+  if (settleCells.length) {
+    const map = {};
+    settleCells.forEach((el) => {
+      const t = el.dataset.t;
+      const a = el.dataset.a;
+      const v = el.value.trim();
+      if (!v) return;
+      if (v.indexOf("~") < 0) {
+        clientErrors.push(`「${t}·${a}」需为 最低~最高（如 -15~-10）`);
+        el.classList.add("invalid");
+        return;
+      }
+      (map[t] = map[t] || {})[a] = v;
+    });
+    const parts = [];
+    SETTLE_TIERS.forEach(({ t }) => {
+      const attrs = map[t] || {};
+      const body = SETTLE_ATTRS.map((a) => (attrs[a] ? `${a}${attrs[a]}` : "")).filter(Boolean);
+      if (body.length) parts.push(`${t}=${body.join(",")}`);
+    });
+    if (parts.length || settleCells.length) params["PET_SETTLE_RANGES"] = parts.join("|");
+  }
+  // 2.0.1：档位数值表格 → 序列化回格式串（留空表示使用默认）
+  const tierCells = document.querySelectorAll("#params-list .tier-cell");
+  if (tierCells.length) {
+    const tmap = {};
+    tierCells.forEach((el) => {
+      const a = el.dataset.a;
+      const v = el.value.trim();
+      if (v === "") return;
+      if (isNaN(Number(v))) {
+        clientErrors.push(`「${a}·${SETTLE_TIER_COLS[Number(el.dataset.i)]}」必须是数字`);
+        el.classList.add("invalid");
+        return;
+      }
+      (tmap[a] = tmap[a] || [])[Number(el.dataset.i)] = v;
+    });
+    const tparts = [];
+    SETTLE_TIER_ATTRS.forEach((a) => {
+      const nums = tmap[a] || [];
+      if (!nums.length) return;
+      const body = SETTLE_TIER_COLS.map((_, i) => nums[i] || "").join(",");
+      tparts.push(`${a}=${body}`);
+    });
+    if (tparts.length) params["PET_SETTLE_TIERS"] = tparts.join("|");
+  }
   if (clientErrors.length) {
     setStatus("status-params", "❌ " + clientErrors.join("；"));
     return;
@@ -746,31 +897,61 @@ async function saveFeatures() {
 }
 
 function switchTab(name) {
-  document
-    .querySelectorAll(".tab")
-    .forEach((b) => b.classList.toggle("active", b.dataset.tab === name));
-  $("panel-shopedit").classList.toggle("hidden", name !== "shopedit");
-  $("panel-config").classList.toggle("hidden", name !== "config");
-  $("panel-loanpkgs").classList.toggle("hidden", name !== "loanpkgs");
-  $("panel-features").classList.toggle("hidden", name !== "features");
-  $("panel-params").classList.toggle("hidden", name !== "params");
-  $("panel-activities").classList.toggle("hidden", name !== "activities");
-  $("panel-aliases").classList.toggle("hidden", name !== "aliases");
-  $("panel-data").classList.toggle("hidden", name !== "data");
+  // 兼容旧调用：直接进入对应管理页
+  openFeature(name);
+}
+
+function openFeature(name) {
+  // 进入某个管理页：隐藏首页卡片、显示该面板并自动加载其数据
+  $("home-view").classList.add("hidden");
+  $("btn-back-home").classList.remove("hidden");
+  $("panel-title").classList.remove("hidden");
+  const titles = {
+    shopedit: "商店编辑",
+    config: "打工玩耍",
+    loanpkgs: "贷款套餐",
+    features: "功能开关",
+    params: "设置",
+    activities: "活动中心",
+    aliases: "同义口令",
+    data: "数据导入导出",
+  };
+  $("panel-title").textContent = titles[name] || "";
+  document.querySelectorAll(".panel").forEach((p) => p.classList.add("hidden"));
+  const panel = $("panel-" + name);
+  if (panel) panel.classList.remove("hidden");
   if (name === "shopedit") {
     loadPetShop();
     loadCrops();
     loadFerts();
   }
+  if (name === "config") loadConfig();
+  if (name === "loanpkgs") loadLoanPkgs();
   if (name === "features") loadFeatures();
   if (name === "params") loadParams();
   if (name === "activities") loadActivities();
   if (name === "aliases") loadAliases();
+  window.scrollTo(0, 0);
 }
 
-document.querySelectorAll(".tab").forEach((b) =>
-  b.addEventListener("click", () => switchTab(b.dataset.tab)),
+function goHome() {
+  // 返回首页卡片导航
+  document.querySelectorAll(".panel").forEach((p) => p.classList.add("hidden"));
+  $("btn-back-home").classList.add("hidden");
+  $("panel-title").classList.add("hidden");
+  $("panel-title").textContent = "";
+  $("home-view").classList.remove("hidden");
+  window.scrollTo(0, 0);
+}
+
+document.querySelectorAll(".card[data-feature]").forEach((c) =>
+  c.addEventListener("click", () => openFeature(c.dataset.feature)),
 );
+$("btn-back-home").addEventListener("click", goHome);
+
+// 初始：显示首页卡片导航（所有面板隐藏）
+goHome();
+
 $("btn-load-config").addEventListener("click", loadConfig);
 $("btn-save-config").addEventListener("click", saveConfig);
 $("btn-jobs-add").addEventListener("click", () => {
