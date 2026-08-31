@@ -8,6 +8,40 @@ import sys as _sys
 
 _register_runtime_module(_sys.modules[__name__])
 
+# 宠物属性上限：解析 PET_ATTR_MAX_RANGES（WebUI「设置 → 宠物 → 属性」可编辑）。
+# 格式：健康值下限=饱食,口渴,体力,心情，竖线分隔（如 140=200,200,200,120|80=120,120,120,100|40=100,100,100,100|0=80,80,60,80）。
+# 返回 {健康下限: (饱食, 口渴, 体力, 心情)}；解析失败回退默认四档。
+def _parse_attr_max_ranges():
+    raw = globals().get("PET_ATTR_MAX_RANGES", "") or ""
+    if not isinstance(raw, str) or not raw.strip():
+        return {140: (200.0, 200.0, 200.0, 120.0),
+                80: (120.0, 120.0, 120.0, 100.0),
+                40: (100.0, 100.0, 100.0, 100.0),
+                0: (80.0, 80.0, 60.0, 80.0)}
+    out = {}
+    for seg in str(raw).replace("；", "|").replace(";", "|").split("|"):
+        seg = seg.strip()
+        if not seg or "=" not in seg:
+            continue
+        floor_s, body = seg.split("=", 1)
+        try:
+            floor = float(floor_s.strip())
+        except (TypeError, ValueError):
+            continue
+        nums = []
+        for x in body.replace("，", ",").split(","):
+            try:
+                nums.append(float(x.strip()))
+            except (TypeError, ValueError):
+                nums = []
+                break
+        if len(nums) == 4:
+            out[floor] = (nums[0], nums[1], nums[2], nums[3])
+    return out or {140: (200.0, 200.0, 200.0, 120.0),
+                   80: (120.0, 120.0, 120.0, 100.0),
+                   40: (100.0, 100.0, 100.0, 100.0),
+                   0: (80.0, 80.0, 60.0, 80.0)}
+
 
 class PetMixin:
     _SETTLE_ATTR_MAP = {"饱食": "satiety", "口渴": "thirst", "体力": "stamina", "心情": "mood", "健康": "health"}
@@ -57,16 +91,15 @@ class PetMixin:
 
     @staticmethod
     def _attr_max(health: float):
-        """返回 (饱食上限, 口渴上限, 体力上限, 心情上限)，由健康度决定（1.7.6 新规则）：
-        健康 140-200 → 200/200/200/120；80-139 → 120/120/120/100；
+        """返回 (饱食上限, 口渴上限, 体力上限, 心情上限)，由健康度决定（2.0.2：阈值可在 WebUI 编辑）。
+        默认规则：健康 140-200 → 200/200/200/120；80-139 → 120/120/120/100；
         40-79 → 100/100/100/100；0-39 → 80/80/60/80。健康度最大值 200（PET_MAX_HEALTH）。"""
-        if health >= 140:
-            return 200.0, 200.0, 200.0, 120.0
-        if health >= 80:
-            return 120.0, 120.0, 120.0, 100.0
-        if health >= 40:
-            return 100.0, 100.0, 100.0, 100.0
-        return 80.0, 80.0, 60.0, 80.0
+        ranges = _parse_attr_max_ranges()
+        # 按健康值下限从高到低匹配（健康 >= 下限 即命中）
+        for floor in sorted(ranges, reverse=True):
+            if health >= floor:
+                return ranges[floor]
+        return (80.0, 80.0, 60.0, 80.0)
 
     def _clamp_attrs(self, pet: dict) -> None:
         sat_max, thr_max, sta_max, mood_max = self._attr_max(pet["health"])
@@ -131,6 +164,30 @@ class PetMixin:
         t_thr = _t(thirst, tb["口渴"])
         t_mood = _t(mood, tb["心情"])
         return max(t_sat, t_thr, t_mood)
+
+    def _attr_is_red(self, label: str, val) -> bool:
+        """属性值是否应标红（2.0.2：进入第 3/4 档位时属性条用红色 #C00000 表示）。
+        档位按 WebUI 可编辑的「档位数值」（各属性 一档/二档/三档下限）判定：
+        Tier1 = 值≥一档下限；Tier2 = ≥二档下限；Tier3 = ≥三档下限；否则 Tier4。
+        值 < 二档下限 即落入第3/4档 → 标红。
+        体力/健康 无档位定义，沿用固定阈值（体力<20 / 健康<40）。
+        兼容「饱食度/口渴值/心情值/体力值/健康度」与「饱食/口渴/心情/体力/健康」两种标签。"""
+        try:
+            val = float(val)
+        except (TypeError, ValueError):
+            return False
+        tb = self._settle_tier_bounds()
+        if label in ("饱食", "饱食度"):
+            return val < tb["饱食"][1]
+        if label in ("口渴", "口渴值"):
+            return val < tb["口渴"][1]
+        if label in ("心情", "心情值"):
+            return val < tb["心情"][1]
+        if label in ("体力", "体力值"):
+            return val < 20
+        if label in ("健康", "健康度"):
+            return val < 40
+        return False
 
     def _settle_once(self, pet: dict, settle_date: str) -> None:
         """执行一次每日结算（2.0.1：固定四档 T1~T4，按饱食/口渴/心情最差档；
@@ -431,13 +488,15 @@ class PetMixin:
         parts = event.message_str.split(maxsplit=1)
 
         if len(parts) < 2:
-            return self._work_list(event)
+            return self._work_list(event)          # 策略一：可进行最高6 + 不可进行最低2
         job_name = parts[1].strip()
+        if job_name == "全部":
+            return self._work_list(event, mode="all")   # 策略二：全部显示
 
         cfg = self._load_config()
         job = next((j for j in cfg["jobs"] if j["name"] == job_name), None)
         if not job:
-            return f"没有名为「{job_name}」的打工，发送「打工」查看列表。"
+            return f"没有名为「{job_name}」的打工，发送「打工」或「打工 全部」查看列表。"
 
         data = self._load()
         pet = data.get("pets", {}).get(key)
@@ -517,7 +576,39 @@ class PetMixin:
             self._save(data)
         return img if img is not None else text
 
-    def _work_list(self, event=None):
+    def _item_can_do(self, pet, item, now_ts, busy):
+        """该项目当前是否可以进行（与列表灰卡判定一致：忙碌/等级/健康/心情/消耗不足均不可）"""
+        if pet is None:
+            return False
+        if busy:
+            return False
+        if pet["level"] < item["min_level"]:
+            return False
+        if pet["health"] < item["min_health"]:
+            return False
+        if pet["mood"] < item["min_mood"]:
+            return False
+        for attr, cost in item["cost"].items():
+            if cost > 0 and pet[attr] < cost:
+                return False
+        return True
+
+    def _select_work_play_items(self, kind, pet, items, now_ts):
+        """打工/玩耍列表·策略一（2.0.2）：可进行项目中等级要求最高的 doable_n 种
+        + 不可进行项目中等级要求最低的 locked_n 种，合并后按等级要求升序排列。
+        个数由 WebUI「设置 → 宠物 → 打工玩耍」参数控制。"""
+        doable_n = int(globals().get("WORK_SHOW_DOABLE" if kind == "打工" else "PLAY_SHOW_DOABLE", 6))
+        locked_n = int(globals().get("WORK_SHOW_LOCKED" if kind == "打工" else "PLAY_SHOW_LOCKED", 2))
+        doable_n = max(1, doable_n)
+        locked_n = max(0, locked_n)
+        busy = pet is not None and now_ts < self._pet_busy_until(pet)
+        doable = [it for it in items if self._item_can_do(pet, it, now_ts, busy)]
+        locked = [it for it in items if not self._item_can_do(pet, it, now_ts, busy)]
+        top = sorted(doable, key=lambda it: (it["min_level"], it["name"]), reverse=True)[:doable_n]
+        low = sorted(locked, key=lambda it: (it["min_level"], it["name"]))[:locked_n]
+        return sorted(top + low, key=lambda it: (it["min_level"], it["name"]))
+
+    def _work_list(self, event=None, mode="smart"):
         cfg = self._load_config()
         if not cfg["jobs"]:
             return "后台还没有配置打工项目（请管理员编辑 后台.txt）。"
@@ -528,11 +619,15 @@ class PetMixin:
             key = self._user_key(event)
             pet = data.get("pets", {}).get(key)
             coins = self._coins_of(data, key)
-        img = self._render_work_play_image("打工", event.get_sender_name(), pet, cfg["jobs"], coins)
+        # 2.0.2：属性为空 → 策略一（智能筛选）；属性=全部 → 策略二（全显）
+        items = cfg["jobs"]
+        if mode == "smart":
+            items = self._select_work_play_items("打工", pet, items, datetime.now().timestamp())
+        img = self._render_work_play_image("打工", event.get_sender_name(), pet, items, coins)
         if img is not None:
             return img
-        lines = ["发送「打工 <名称>」开始", ""]
-        for j in cfg["jobs"]:
+        lines = ["发送「打工 <名称>」开始（发送「打工 全部」查看全部）", ""]
+        for j in items:
             lines.append(f"· {j['name']}：{j['desc']}｜要求 Lv.{int(j['min_level'])}+ / 健康 {j['min_health']:.0f}+ / 心情 {j['min_mood']:.0f}+｜耗时 {j['time']:.0f}分｜金币 +{int(j['coins'])} 经验 +{j['exp']:.0f}")
         img = self._render_text_image("打工列表", lines)
         if img is not None:
@@ -545,13 +640,15 @@ class PetMixin:
         parts = event.message_str.split(maxsplit=1)
 
         if len(parts) < 2:
-            return self._play_list(event)
+            return self._play_list(event)          # 策略一：可进行最高6 + 不可进行最低2
         play_name = parts[1].strip()
+        if play_name == "全部":
+            return self._play_list(event, mode="all")   # 策略二：全部显示
 
         cfg = self._load_config()
         play = next((p for p in cfg["plays"] if p["name"] == play_name), None)
         if not play:
-            return f"没有名为「{play_name}」的玩耍项目，发送「玩耍」查看列表。"
+            return f"没有名为「{play_name}」的玩耍项目，发送「玩耍」或「玩耍 全部」查看列表。"
 
         data = self._load()
         pet = data.get("pets", {}).get(key)
@@ -648,7 +745,7 @@ class PetMixin:
             self._save(data)
         return img if img is not None else text
 
-    def _play_list(self, event=None):
+    def _play_list(self, event=None, mode="smart"):
         cfg = self._load_config()
         if not cfg["plays"]:
             return "后台还没有配置玩耍项目（请管理员编辑 后台.txt）。"
@@ -659,11 +756,15 @@ class PetMixin:
             key = self._user_key(event)
             pet = data.get("pets", {}).get(key)
             coins = self._coins_of(data, key)
-        img = self._render_work_play_image("玩耍", event.get_sender_name(), pet, cfg["plays"], coins)
+        # 2.0.2：属性为空 → 策略一（智能筛选）；属性=全部 → 策略二（全显）
+        items = cfg["plays"]
+        if mode == "smart":
+            items = self._select_work_play_items("玩耍", pet, items, datetime.now().timestamp())
+        img = self._render_work_play_image("玩耍", event.get_sender_name(), pet, items, coins)
         if img is not None:
             return img
-        lines = ["发送「玩耍 <名称>」开始", ""]
-        for p in cfg["plays"]:
+        lines = ["发送「玩耍 <名称>」开始（发送「玩耍 全部」查看全部）", ""]
+        for p in items:
             lines.append(f"· {p['name']}：{p['desc']}｜要求 Lv.{int(p['min_level'])}+ / 健康 {p['min_health']:.0f}+ / 心情 {p['min_mood']:.0f}+｜耗时 {p['time']:.0f}分｜经验 +{p['exp']:.0f} 心情 +{p['mood']:.0f}")
         img = self._render_text_image("玩耍列表", lines)
         if img is not None:
@@ -1009,17 +1110,8 @@ class PetMixin:
             t = f"{label} {val:.0f}/{amax:.0f}"
             _dtext(d, (int(pad + inner), yy), t, font=attr_font, fill=(60, 60, 60))
             yy += attr_label_h
-            # 属性条颜色判定（1.7.6：饱/渴/心 采用第三档标准 = 状态低）
-            if label == "饱食度":
-                red = val < 50
-            elif label == "口渴值":
-                red = val < 60
-            elif label == "心情值":
-                red = val < 40
-            elif label == "体力值":
-                red = val < 20
-            else:  # 健康度
-                red = val < 40
+            # 属性条颜色判定（2.0.2：饱/渴/心 进入第3/4档位 → 红 #C00000，档位阈值 WebUI 可编辑）
+            red = self._attr_is_red(label, val)
             green = (amax - val) < 20 and pet["health"] >= 41
             bar_color = (192, 0, 0) if red else ((146, 208, 80) if green else (51, 51, 51))
             # 属性条（高度 = 普通进度条的 30%）
@@ -1124,13 +1216,13 @@ class PetMixin:
             busy = now_ts < self._pet_busy_until(pet)
             status = "虚弱中" if pet.get("weak") else ("忙碌中" if busy else "空闲中")
             sat_max, thr_max, sta_max, mood_max = self._attr_max(pet["health"])
-            # 属性展示（过低红色高亮，与「宠物」指令属性条阈值一致，1.7.6 第三档标准）：饱食<50 / 口渴<60 / 体力<20 / 心情<40 / 健康<40
+            # 属性展示（过低红色高亮，与「宠物」指令属性条一致，2.0.2 档位阈值第3/4档）
             attrs = [
-                ("饱食", pet["satiety"], sat_max, pet["satiety"] < 50),
-                ("口渴", pet["thirst"], thr_max, pet["thirst"] < 60),
-                ("体力", pet["stamina"], sta_max, pet["stamina"] < 20),
-                ("心情", pet["mood"], mood_max, pet["mood"] < 40),
-                ("健康", pet["health"], PET_MAX_HEALTH, pet["health"] < 40),
+                ("饱食", pet["satiety"], sat_max, self._attr_is_red("饱食", pet["satiety"])),
+                ("口渴", pet["thirst"], thr_max, self._attr_is_red("口渴", pet["thirst"])),
+                ("体力", pet["stamina"], sta_max, self._attr_is_red("体力", pet["stamina"])),
+                ("心情", pet["mood"], mood_max, self._attr_is_red("心情", pet["mood"])),
+                ("健康", pet["health"], PET_MAX_HEALTH, self._attr_is_red("健康", pet["health"])),
             ]
         else:
             status = "未解锁"

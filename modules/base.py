@@ -288,6 +288,17 @@ SHOP_PRICE_PAD = 4
 BAG_CARD_COLS = 5
 # 农场商店：每行卡片数（WebUI 可改）
 FARM_SHOP_COLS = 4
+# 农场商店：默认展示的 可购种子 / 不可购灰卡 个数（WebUI「设置 → 商店」可改）
+FARM_SHOP_SHOW_BUY = 9
+FARM_SHOP_SHOW_LOCKED = 3
+# 打工/玩耍列表（策略一）：可进行项目中等级要求最高的 / 不可进行项目中等级要求最低的 显示个数（WebUI「设置 → 宠物」可改）
+WORK_SHOW_DOABLE = 6
+WORK_SHOW_LOCKED = 2
+PLAY_SHOW_DOABLE = 6
+PLAY_SHOW_LOCKED = 2
+# 宠物属性上限：不同健康值范围内的 饱食/口渴/体力/心情 上限（WebUI「设置 → 宠物 → 属性」可改）
+# 格式：健康值下限=饱食,口渴,体力,心情，竖线分隔，从高到低匹配
+PET_ATTR_MAX_RANGES = "140=200,200,200,120|80=120,120,120,100|40=100,100,100,100|0=80,80,60,80"
 MONEY_EVENT_CHANCE = 0.01   # 玩耍捡到钱概率（1%）
 MONEY_EVENT_GAIN = 100      # 捡到钱的金币
 MONEY_EVENT_MAX_PER_DAY = 2  # 每个周期最多触发次数
@@ -348,6 +359,35 @@ FARM_GRADES = [
 ]
 # 从当前 grade 升到 grade+1 的金币
 FARM_UPGRADE_COSTS = [1000, 1500, 2000, 3000]
+
+
+def _farm_grades(raw=None):
+    """解析 FARM_GRADES 参数（WebUI「设置 → 农场 → 土地」表格编辑）：
+    格式：等级名=产量加成%,时间减免%（竖线分隔，如 贫瘠土地=0,0|红土地=100,0|普通土地=200,10|肥沃土地=250,20|黑土地=400,35）。
+    返回 [(名称, 产量加成小数, 时间减免小数)]；解析失败回退默认。
+    raw 为 None 时读取本模块全局（未同步时即默认常量）；调用方（farm.py）应传入其模块中已同步的参数值。"""
+    if raw is None:
+        raw = globals().get("FARM_GRADES", "")
+    if not isinstance(raw, str) or not str(raw).strip():
+        return list(FARM_GRADES)
+    out = []
+    for seg in str(raw).replace("；", "|").replace(";", "|").split("|"):
+        seg = seg.strip()
+        if not seg or "=" not in seg:
+            continue
+        name, body = seg.split("=", 1)
+        nums = []
+        for x in body.replace("，", ",").split(","):
+            try:
+                nums.append(float(x.strip()))
+            except (TypeError, ValueError):
+                nums = []
+                break
+        if len(nums) == 2:
+            # UI 存百分比（如 100 = 100%），内部换算为小数
+            out.append((name.strip(), nums[0] / 100.0, nums[1] / 100.0))
+    return out or list(FARM_GRADES)
+
 # 2.0.0：作物等级（按贫瘠土地上的成熟分钟数划分）与各等级成长阶段数（WebUI「设置 → 农场 → 成长阶段」可改）
 # CROP_LEVEL_RANGES = 各等级上限（分钟）：0~240=一级 / 241~480=二级 / 481~720=三级 / 721~1440=四级
 CROP_LEVEL_RANGES = (0, 240, 480, 720, 1440)
@@ -517,11 +557,26 @@ RUNTIME_PARAMS = [
      "desc": "「玩耍」列表图片一行展示的卡片数量", "default": 2, "min": 1, "max": 4},
     {"key": "WORK_PLAY_CARD_WIDTH", "label": "打工玩耍卡片宽度", "type": "int", "group": "宠物", "subgroup": "打工玩耍",
      "desc": "「打工/玩耍」列表每张内容卡片的宽度（默认 522 = 原 290 的 180%）", "default": 522, "min": 290, "max": 800},
+    {"key": "WORK_SHOW_DOABLE", "label": "打工列表·可进行显示个数", "type": "int", "group": "宠物", "subgroup": "打工玩耍",
+     "desc": "「打工」（不带参数）策略一：可进行项目中等级要求最高的显示数量；「打工 全部」显示全部", "default": 6, "min": 1, "max": 50},
+    {"key": "WORK_SHOW_LOCKED", "label": "打工列表·不可进行显示个数", "type": "int", "group": "宠物", "subgroup": "打工玩耍",
+     "desc": "「打工」（不带参数）策略一：不可进行项目中等级要求最低的显示数量", "default": 2, "min": 0, "max": 50},
+    {"key": "PLAY_SHOW_DOABLE", "label": "玩耍列表·可进行显示个数", "type": "int", "group": "宠物", "subgroup": "打工玩耍",
+     "desc": "「玩耍」（不带参数）策略一：可进行项目中等级要求最高的显示数量；「玩耍 全部」显示全部", "default": 6, "min": 1, "max": 50},
+    {"key": "PLAY_SHOW_LOCKED", "label": "玩耍列表·不可进行显示个数", "type": "int", "group": "宠物", "subgroup": "打工玩耍",
+     "desc": "「玩耍」（不带参数）策略一：不可进行项目中等级要求最低的显示数量", "default": 2, "min": 0, "max": 50},
+    {"key": "PET_ATTR_MAX_RANGES", "label": "属性上限·健康值范围", "type": "string", "group": "宠物", "subgroup": "属性",
+     "desc": "不同健康值范围内 饱食/口渴/体力/心情 的属性上限；格式：健康值下限=饱食,口渴,体力,心情，竖线分隔、按健康值从高到低匹配（如 140=200,200,200,120|80=120,120,120,100|40=100,100,100,100|0=80,80,60,80）",
+     "default": "140=200,200,200,120|80=120,120,120,100|40=100,100,100,100|0=80,80,60,80"},
     # ---- 商店（独立折叠分组） ----
     {"key": "SHOP_CARD_COLS", "label": "宠物商店每行卡片数", "type": "int", "group": "商店", "subgroup": "宠物商店",
      "desc": "宠物商店（商店指令）一行展示的卡片数量", "default": 3, "min": 2, "max": 6},
     {"key": "FARM_SHOP_COLS", "label": "农场商店每行卡片数", "type": "int", "group": "商店", "subgroup": "农场商店",
      "desc": "农场商店一行展示的卡片数量", "default": 4, "min": 2, "max": 6},
+    {"key": "FARM_SHOP_SHOW_BUY", "label": "农场商店·可购种子显示个数", "type": "int", "group": "商店", "subgroup": "农场商店",
+     "desc": "「农场商店」（不带参数）默认展示的可以购买（等级足够）的种子数量", "default": 9, "min": 1, "max": 99},
+    {"key": "FARM_SHOP_SHOW_LOCKED", "label": "农场商店·不可购灰卡个数", "type": "int", "group": "商店", "subgroup": "农场商店",
+     "desc": "「农场商店」（不带参数）默认展示的不能购买（等级不足）的种子灰卡数量；「农场商店 全部」显示全部商品", "default": 3, "min": 0, "max": 99},
     {"key": "SHOP_PRICE_PAD", "label": "商店价格底边距（像素）", "type": "int", "group": "商店", "subgroup": "通用",
      "desc": "商店卡片价格与卡片底部/分割线的距离 N", "default": 4, "min": 0, "max": 30},
     # ---- 背包（独立折叠分组） ----
@@ -654,6 +709,9 @@ RUNTIME_PARAMS = [
      "desc": "升到 N 级需 1000×N 经验（此值即基数 1000）", "default": 1000.0, "min": 100, "max": 100000},
     {"key": "FARM_UPGRADE_COSTS", "label": "土地升级费用（逗号分隔）", "type": "list", "group": "农场", "subgroup": "土地",
      "desc": "土地从当前等级升到下一级的金币，依次为 贫瘠→红→普通→肥沃→黑", "default": "1000,1500,2000,3000"},
+    {"key": "FARM_GRADE_BONUSES", "label": "土地等级加成（表格）", "type": "string", "group": "农场", "subgroup": "土地",
+     "desc": "不同土地等级的 产量加成/时间减免（百分比）与升级价格（在「土地等级加成」表格中编辑，升级价格随表格一并保存到 FARM_UPGRADE_COSTS）；格式：等级名=产量%,时间%，竖线分隔",
+     "default": "贫瘠土地=0,0|红土地=100,0|普通土地=200,10|肥沃土地=250,20|黑土地=400,35"},
     # ---- 农场（补充）2.0.0：作物成长阶段 ----
     {"key": "CROP_LEVEL_RANGES", "label": "作物等级划分（分钟上限，逗号分隔）", "type": "list", "group": "农场", "subgroup": "成长阶段",
      "desc": "按贫瘠土地上的成熟分钟数划分作物等级：0~第1个数=一级，依此类推。如 0,240,480,720,1440 表示 0-240/241-480/481-720/721-1440", "default": "0,240,480,720,1440"},
@@ -1821,6 +1879,13 @@ __all__ = [
     "SHOP_PRICE_PAD",
     "BAG_CARD_COLS",
     "FARM_SHOP_COLS",
+    "FARM_SHOP_SHOW_BUY",
+    "FARM_SHOP_SHOW_LOCKED",
+    "WORK_SHOW_DOABLE",
+    "WORK_SHOW_LOCKED",
+    "PLAY_SHOW_DOABLE",
+    "PLAY_SHOW_LOCKED",
+    "PET_ATTR_MAX_RANGES",
     "MONEY_EVENT_CHANCE",
     "MONEY_EVENT_GAIN",
     "MONEY_EVENT_MAX_PER_DAY",
@@ -1907,6 +1972,7 @@ __all__ = [
     "ATTR_LABELS",
     "ATTR_SHORT",
     "TEMP_IMAGE_TTL",
+    "_farm_grades",
     "_parse_kv_sections",
     "_parse_kv_sections_text",
     "_parse_kv_text",

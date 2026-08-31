@@ -32,7 +32,7 @@ from .modules.webui import WebUIMixin
 _register_runtime_module(_sys.modules[__name__])
 
 
-@register("astrbot_plugin_signin", "sishijiu", "群签到 + 左轮手枪 + 宠物养成 + 金币银行 + 农场", "2.0.1")
+@register("astrbot_plugin_signin", "sishijiu", "群签到 + 左轮手枪 + 宠物养成 + 金币银行 + 农场", "2.0.2")
 class SignInPlugin(Star, FarmMixin, PetMixin, BankMixin, RedpacketMixin, ActivityMixin, LoanMixin, RouletteMixin, RankMixin, LanMixin, WebUIMixin, CoreMixin):
     def __init__(self, context: Context, config: dict = None):
         super().__init__(context)

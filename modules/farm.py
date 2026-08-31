@@ -114,7 +114,8 @@ class FarmMixin:
 
     @staticmethod
     def _plot_grade(grade):
-        return FARM_GRADES[grade] if 0 <= grade < len(FARM_GRADES) else FARM_GRADES[0]
+        grades = _farm_grades(globals().get("FARM_GRADE_BONUSES", ""))  # 2.0.2：WebUI「设置 → 农场 → 土地」表格可编辑
+        return grades[grade] if 0 <= grade < len(grades) else grades[0]
 
     @staticmethod
     def _plot_free(plot):
@@ -425,14 +426,39 @@ class FarmMixin:
                 rows.append([(f"{c['name']} {self._fmt_price(p)} 金币{lv_req}", (20, 20, 20), False)])
         return self._render_rich_image("种子商店", rows)
 
-    def _render_farm_shop(self, name, farm, crops, ferts, expanded=False, page=1):
+    def _farm_shop_seed_list(self, farm, crops, expanded=False, page=1, all_items=False):
+        """农场商店种子选择（2.0.2）：
+        全部（「农场商店 全部」）= 所有种子（可购 + 不可购）；
+        展开 = 全部可购种子按价格升序分页（每页 FARM_SHOP_SHOW_BUY 款）；
+        默认 = 可购等级最高的 FARM_SHOP_SHOW_BUY 款 + 不可购等级最低的 FARM_SHOP_SHOW_LOCKED 款灰卡。
+        统一按价格升序返回。"""
+        farm_lv = int(farm.get("level", 0))
+        mult = self._farm_seed_mult(farm)
+        price_of = lambda c: int(round(float(c["seed_price"]) * mult))
+        buy_n = int(globals().get("FARM_SHOP_SHOW_BUY", 9))
+        lock_n = int(globals().get("FARM_SHOP_SHOW_LOCKED", 3))
+        if all_items:
+            return sorted(crops, key=lambda c: (price_of(c), c["name"]))
+        buyable = [c for c in crops if c["min_level"] <= farm_lv]
+        if expanded:
+            sorted_buy = sorted(buyable, key=lambda c: (price_of(c), c["name"]))
+            per_page = max(1, buy_n)
+            total_pages = max(1, (len(sorted_buy) + per_page - 1) // per_page)
+            page = max(1, min(page, total_pages))
+            return sorted_buy[(page - 1) * per_page: page * per_page]
+        topN = sorted(buyable, key=lambda c: c["min_level"], reverse=True)[:max(1, buy_n)]
+        lowM = sorted((c for c in crops if c["min_level"] > farm_lv), key=lambda c: c["min_level"])[:max(0, lock_n)]
+        return sorted(topN + lowM, key=lambda c: (price_of(c), c["name"]))
+
+    def _render_farm_shop(self, name, farm, crops, ferts, expanded=False, page=1, all_items=False):
         """农场商店：种子（上）+ 化肥（下）分类卡片展示，完全套用商店卡片模板。
         图片排版：用户名 / 商品种类（居中）+ 居中分割线 / 商品卡片（每行 FARM_SHOP_COLS 张）。
         商品卡片：名称(大三号)+持有数(居右) / 等级条件(如有) / 效果(成熟售价+收割经验，空格优先换行) /
         卡片内分割线 / 价格(红 #C00000、居右、大一号、贴底边 N)；不可购买为灰卡 #D9D9D9。
         卡片高度自适应（同行取最高，低卡拉伸忽略分割线侧 N）；图片高度按绘制流程计算，文字不溢出。
-        默认：能买等级最大的 9 款种子 + 不能买等级最低的 3 款（灰卡）；化肥全部。
-        展开：按等级从高到低分页显示全部能购买的种子（每页 9 款）。"""
+        默认：能买等级最大的 FARM_SHOP_SHOW_BUY 款种子 + 不能买等级最低的 FARM_SHOP_SHOW_LOCKED 款（灰卡）；化肥全部。
+        展开：按等级从高到低分页显示全部能购买的种子（每页 FARM_SHOP_SHOW_BUY 款）。
+        全部（2.0.2「农场商店 全部」）：展示所有商品（全部种子 + 全部化肥）。"""
         Image, ImageDraw = _ensure_pillow()
         if Image is None:
             return None
@@ -468,19 +494,7 @@ class FarmMixin:
         ferts_have = farm.get("warehouse", {}).get("fertilizers", {})
 
         # ---- 种子选择 ----
-        # 展示顺序按价格升序（价格越高位置越靠后）；默认模式保留「能买 9 款 + 不能买 3 款灰卡」的选择
-        buyable = [c for c in crops if c["min_level"] <= farm_lv]
-        price_of = lambda c: int(round(float(c["seed_price"]) * mult))
-        if expanded:
-            sorted_buy = sorted(buyable, key=lambda c: (price_of(c), c["name"]))
-            per_page = 9
-            total_pages = max(1, (len(sorted_buy) + per_page - 1) // per_page)
-            page = max(1, min(page, total_pages))
-            seed_list = sorted_buy[(page - 1) * per_page: page * per_page]
-        else:
-            top9 = sorted(buyable, key=lambda c: c["min_level"], reverse=True)[:9]
-            low3 = sorted((c for c in crops if c["min_level"] > farm_lv), key=lambda c: c["min_level"])[:3]
-            seed_list = sorted(top9 + low3, key=lambda c: (price_of(c), c["name"]))
+        seed_list = self._farm_shop_seed_list(farm, crops, expanded, page, all_items)
 
         # ---- 卡片行规划（plain 行已按宽度换行展开，保证高度自适应） ----
         # 行类型：
@@ -578,6 +592,9 @@ class FarmMixin:
 
         subtitle = ""
         if expanded:
+            per_page = max(1, int(globals().get("FARM_SHOP_SHOW_BUY", 9)))
+            n_buy = sum(1 for c in crops if c["min_level"] <= int(farm.get("level", 0)))
+            total_pages = max(1, (n_buy + per_page - 1) // per_page)
             subtitle = f"（展开模式：全部可购种子 第 {page}/{total_pages} 页，发送「农场商店 展开 {page + 1}」翻页）"
         height = pad * 2 + title_h + (26 if subtitle else 0)
         for plans in (seed_plans, fert_plans):
@@ -1049,7 +1066,7 @@ class FarmMixin:
         # 盈利公式：升级土地计入成本
         farm["total_profit"] = int(farm.get("total_profit", 0)) - cost
         self._save(data)
-        ng = FARM_GRADES[grade + 1]
+        ng = self._plot_grade(grade + 1)
         # 2.0.0 纯图片回复：升级土地蓝色高亮（升级）+ 底部大卡片
         actions = [f"⬆️ {num} 号土地升级为 {ng[0]}（产量 +{int(ng[1] * 100)}%，时间 -{int(ng[2] * 100)}%）"]
         return self._safe_render_plot_status(
@@ -2368,19 +2385,25 @@ class FarmMixin:
             coins_delta=gain)
 
     def _handle_farm_shop(self, event):
-        """农场商店：种子（上）+ 化肥（下）合并展示。农场商店 [展开] [页码]"""
+        """农场商店：种子（上）+ 化肥（下）合并展示。
+        农场商店 [展开] [页码]：默认按规则展示（可购 N 款 + 不可购 M 款灰卡 + 全部化肥）；
+        农场商店 全部：展示所有商品（全部种子 + 全部化肥）。"""
         name = event.get_sender_name()
         key = self._user_key(event)
         parts = event.message_str.split()
         expanded = False
+        all_items = False
         page = 1
-        if len(parts) >= 2 and parts[1] == "展开":
-            expanded = True
-            if len(parts) >= 3:
-                try:
-                    page = max(1, int(parts[2]))
-                except ValueError:
-                    page = 1
+        if len(parts) >= 2:
+            if parts[1] == "全部":
+                all_items = True
+            elif parts[1] == "展开":
+                expanded = True
+                if len(parts) >= 3:
+                    try:
+                        page = max(1, int(parts[2]))
+                    except ValueError:
+                        page = 1
         data = self._load()
         err = self._farm_need(data, key, name)
         if err:
@@ -2390,13 +2413,14 @@ class FarmMixin:
         ferts = self._load_fertilizers()
         if not crops and not ferts:
             return "作物与肥料配置为空（请管理员在 WebUI 编辑 作物.txt / 肥料.txt）。"
-        img = self._render_farm_shop(name, farm, crops, ferts, expanded, page)
+        img = self._render_farm_shop(name, farm, crops, ferts, expanded, page, all_items)
         if img is not None:
             return img
         # 文本回退（同样按价格升序）
-        lines = [f"{name} 的农场商店（发送「农场商店 展开」查看全部种子）"]
+        lines = [f"{name} 的农场商店（发送「农场商店 展开」查看全部种子，发送「农场商店 全部」查看全部商品）"]
         mult = self._farm_seed_mult(farm)
-        for c in sorted(crops, key=lambda c: (int(round(c["seed_price"] * mult)), c["name"])):
+        seed_list = self._farm_shop_seed_list(farm, crops, expanded, page, all_items)
+        for c in sorted(seed_list, key=lambda c: (int(round(c["seed_price"] * mult)), c["name"])):
             p = int(round(c["seed_price"] * mult))
             lv = f"需Lv.{c['min_level']}" if c["min_level"] > 0 else "无等级"
             desc = f"（{c['desc']}）" if c.get("desc") else ""
