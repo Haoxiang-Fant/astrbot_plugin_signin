@@ -1566,3 +1566,207 @@ input[type="file"] {
     min-width: 0;
   }
 }
+
+/* =====================================================================
+   2.0.2 —— 子页面导航与参考图卡片（设置 / 商店 子页面）
+   导航：返回首页 / 返回上一级 + 页面标题；
+   子页面卡片：顶部绿色徽章 + 居中线条图标 + 底部图标/标题/右侧标签（参考图样式）。
+   ===================================================================== */
+
+/* 导航行（任何非首页视图显示） */
+.nav-bar {
+  margin-bottom: var(--space-4);
+}
+.nav-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  margin-bottom: var(--space-3);
+}
+
+/* 子页面容器 + 卡片网格 */
+.subpage-view {
+  display: block;
+}
+.sub-cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(348px, 1fr)); /* 2.0.2：卡片宽度 = 原 232px 的 150% */
+  gap: var(--space-4);
+}
+/* 商店编辑 / 打工玩耍 子页：每行 3 个卡片（窄屏自动降列） */
+.sub-cards.cols-3 {
+  grid-template-columns: repeat(3, 1fr);
+}
+@media (max-width: 860px) {
+  .sub-cards.cols-3 {
+    grid-template-columns: repeat(2, 1fr);
+  }
+}
+@media (max-width: 560px) {
+  .sub-cards.cols-3 {
+    grid-template-columns: 1fr;
+  }
+}
+/* 设置子页：每行 5 个卡片（窄屏自动降列） */
+.sub-cards.cols-5 {
+  grid-template-columns: repeat(5, 1fr);
+}
+@media (max-width: 860px) {
+  .sub-cards.cols-5 {
+    grid-template-columns: repeat(3, 1fr);
+  }
+}
+@media (max-width: 560px) {
+  .sub-cards.cols-5 {
+    grid-template-columns: repeat(2, 1fr);
+  }
+}
+
+/* 子页面主题色（浅↔深两态颜色互换）：背景与图标颜色在深浅两张图里互换
+   设置子页 = 深林绿 (31,95,62)；商店编辑子页 = 校徽金 (214,161,26) */
+.theme-shop {
+  --card-bg-light: #f7f0dd;
+  --card-icon-dark: #d6a11a;
+  --card-bg-dark: #d6a11a;
+  --card-icon-light: #f7f0dd;
+}
+.theme-settings {
+  --card-bg-light: #f3f1e6;
+  --card-icon-dark: #1f5f3e;
+  --card-bg-dark: #1f5f3e;
+  --card-icon-light: #f3f1e6;
+}
+
+/* 子页面卡片（矩形风格；深浅两态图标图 + 底部标题；图标居中不动、仅变色；无徽章无标签） */
+.sub-card {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  text-align: left;
+  padding: 0;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 0;
+  box-shadow: var(--shadow-1);
+  cursor: pointer;
+  overflow: hidden;
+  transition: transform 0.18s cubic-bezier(0.25, 1, 0.5, 1), box-shadow 0.2s, border-color 0.2s;
+}
+.sub-card:hover {
+  transform: translateY(-3px);
+  box-shadow: var(--shadow-2);
+  border-color: var(--border-2);
+}
+.sub-card:active {
+  transform: translateY(0) scale(0.99);
+}
+
+/* 图片区：浅底为基底；深色背景以「扫描」方式从左到右铺开/从右到左收起，
+   图标单独居中且始终不动，仅颜色随背景在深/浅两态间互换（2.0.2：卡片高度 +30%） */
+.sub-card-art {
+  position: relative;
+  height: 165px;
+  overflow: hidden;
+  background: var(--card-bg-light);
+}
+.sub-art-sweep {
+  position: absolute;
+  inset: 0;
+  background: var(--card-bg-dark);
+  transform: scaleX(0);
+  transform-origin: left;
+  transition: transform 0.34s cubic-bezier(0.65, 0, 0.35, 1);
+  will-change: transform;
+}
+.sub-card:hover .sub-art-sweep {
+  transform: scaleX(1);
+}
+.sub-card:active .sub-art-sweep {
+  transition-duration: 0.12s;
+}
+.sub-art-icon {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--card-icon-dark);
+  transition: color 0.34s cubic-bezier(0.65, 0, 0.35, 1);
+}
+.sub-card:hover .sub-art-icon {
+  color: var(--card-icon-light);
+}
+.sub-card:active .sub-art-icon {
+  transition-duration: 0.12s;
+}
+.sub-card-art svg {
+  width: 82px;
+  height: 82px;
+}
+
+/* 底部：小图标 + 标题（字体同步放大） */
+.sub-card-foot {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 14px;
+  background: var(--surface-2);
+  border-top: 1px solid var(--border);
+  color: var(--text);
+}
+.sub-foot-icon {
+  width: 24px;
+  height: 24px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--accent);
+  flex: 0 0 auto;
+}
+.sub-foot-icon svg {
+  width: 20px;
+  height: 20px;
+}
+.sub-foot-title {
+  flex: 1;
+  min-width: 0;
+  font-size: 17px;
+  font-weight: 700;
+  font-family: var(--font-display);
+  letter-spacing: -0.01em;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* 宽表（打工/玩耍编辑页 11~13 列）：内部滚动 + 表头在滚动盒内吸顶，避免向右溢出 */
+.table-wrap.wide {
+  overflow: auto;
+  max-height: 62vh;
+}
+.table-wrap.wide .item-table {
+  min-width: 1120px;
+}
+
+/* 全局矩形风格：首页卡片 / 图标块 / 标签统一去除圆角 */
+.card,
+.card-icon,
+.card-tag,
+.back-btn,
+.hint code,
+.expired-badge,
+.item-table .i-name,
+.item-table .i-desc,
+.item-table .i-num,
+.item-table .i-type {
+  border-radius: 0;
+}
+
+/* 工具栏：添加按钮右对齐（保存按钮右侧、居右） */
+.toolbar .add-row {
+  margin-left: auto;
+}
+.toolbar.tbl-actions {
+  justify-content: flex-end;
+  margin-top: var(--space-2);
+}
