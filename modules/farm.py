@@ -462,11 +462,11 @@ class FarmMixin:
         Image, ImageDraw = _ensure_pillow()
         if Image is None:
             return None
-        # 字号语义：标题 32 / 分类 26 / 名称 26（大三号）/ 正文 18 / 价格 20（大一号）
-        fonts = _load_fonts(32, 26, 26, 18, 20)
+        # 字号语义：标题 32 / 分类 26 / 名称 26（大三号）/ 正文 18 / 价格 20（大一号）/ 原价 14（小一号）
+        fonts = _load_fonts(32, 26, 26, 18, 20, 14)
         if fonts is None:
             return None
-        title_font, cat_font, name_font, body_font, price_font = fonts
+        title_font, cat_font, name_font, body_font, price_font, small_price_font = fonts
 
         pad = 20
         title_h = 52
@@ -492,6 +492,7 @@ class FarmMixin:
         mult = self._farm_seed_mult(farm)
         seeds_have = farm.get("warehouse", {}).get("seeds", {})
         ferts_have = farm.get("warehouse", {}).get("fertilizers", {})
+        disc_map = self._seed_discount_map(crops)  # 2.0.3：种子每日折扣（默认关闭）
 
         # ---- 种子选择 ----
         seed_list = self._farm_shop_seed_list(farm, crops, expanded, page, all_items)
@@ -527,8 +528,11 @@ class FarmMixin:
             sell_v = int(round(float(c["yield"]) * float(c["crop_price"])))
             rows.append(("pair2", f"售价 {sell_v} 金币", f"经验 {c['exp']}"))
             rows.append(("rule", "", ""))
-            price = int(round(float(c["seed_price"]) * mult))
-            rows.append(("price", f"{price} 金币", ""))
+            # 2.0.3：种子折扣 → 原价（灰小字）+ 折后价（红正常字）
+            disc = float(disc_map.get(c["name"], 1.0) or 1.0)
+            base_price = int(round(float(c["seed_price"]) * mult))
+            price = max(1, int(round(base_price * disc)))
+            rows.append(("price", f"{price} 金币", (f"{base_price} 金币" if disc < 1.0 else "")))
             return rows
 
         def fert_rows(f):
@@ -652,9 +656,14 @@ class FarmMixin:
                         elif kind == "rule":
                             rule_y = price_y - n_pad  # 分割线固定在价格上方 N 距离
                         elif kind == "price":
-                            # 价格贴底边 N
-                            _dtext(d, (int(x0 + card_w - inner - tw(r[1], price_font)), price_y),
-                                   r[1], font=price_font, fill=(192, 0, 0))
+                            # 价格贴底边 N（2.0.3：原价灰色小字 + 实时价红色正常字）
+                            real_text = r[1]
+                            orig_text = r[2] if len(r) > 2 else ""
+                            right_x = int(x0 + card_w - inner - tw(real_text, price_font))
+                            if orig_text:
+                                _dtext(d, (int(right_x - 6 - tw(orig_text, small_price_font)), price_y + 4),
+                                       orig_text, font=small_price_font, fill=(150, 150, 150))
+                            _dtext(d, (right_x, price_y), real_text, font=price_font, fill=(192, 0, 0))
                             break
                     if rule_y is not None:
                         d.line([(x0 + 8, rule_y), (x0 + card_w - 8, rule_y)], fill=(200, 200, 200), width=1)
@@ -957,9 +966,11 @@ class FarmMixin:
         return table, total
 
     def _draw_steal_table(self, d, table, x0, y0, x1, font):
-        """绘制偷菜表格：无框线，列宽自适应；失败 #7F7F7F / 成功 #C00000 / 宠物起作用 #BF9000"""
+        """绘制偷菜表格：无框线，列宽自适应；失败 #7F7F7F / 成功 #C00000 / 宠物起作用 #BF9000；
+        2.0.3：折叠次数 *N 用黄色 #FFC000 表示。"""
         line_h = 26
         y = y0
+        YELLOW = (255, 192, 0)
         for cells, crop_lines in table:
             name = cells[0]
             loss = cells[2]
@@ -973,7 +984,16 @@ class FarmMixin:
                 color = (192, 0, 0)
             for k, crop_line in enumerate(crop_lines):
                 _dtext(d, (int(x0), y), name if k == 0 else "", font=font, fill=color)
-                _dtext(d, (int(x0 + 90), y), crop_line, font=font, fill=color)
+                # 折叠次数 *N（行尾的 *数字）用黄色绘制
+                x_crop = int(x0 + 90)
+                m = re.match(r"^(.*?)(\*\d+)$", crop_line)
+                if m:
+                    _dtext(d, (x_crop, y), m.group(1), font=font, fill=color)
+                    star_w = d.textlength(m.group(2), font=font)
+                    _dtext(d, (int(x_crop + d.textlength(m.group(1), font=font)), y),
+                           m.group(2), font=font, fill=YELLOW)
+                else:
+                    _dtext(d, (x_crop, y), crop_line, font=font, fill=color)
                 _dtext(d, (int(x0 + 90 + 160), y), loss if k == 0 else "", font=font, fill=color)
                 _dtext(d, (int(x0 + 90 + 160 + 90), y), status if k == 0 else "", font=font, fill=color)
                 y += line_h
@@ -1076,9 +1096,31 @@ class FarmMixin:
             actions=actions,
             coins_delta=-cost)
 
+    def _seed_discount_map(self, crops):
+        """种子每日折扣（2.0.3，默认关闭）：每天有概率让 1~3 款种子打八折（肥料不受影响）。
+        按「当天」固定随机（同一天折扣款一致）；返回 {作物名: 倍率}（无折扣为空）。"""
+        out = {}
+        if not bool(globals().get("SEED_DISCOUNT_ENABLED", False)):
+            return out
+        today = date.today().isoformat()
+        rng = random.Random("seed_discount|" + today)
+        if rng.random() >= float(globals().get("SEED_DISCOUNT_CHANCE", 0.5)):
+            return out
+        names = sorted({c["name"] for c in crops})
+        if not names:
+            return out
+        n = rng.randint(int(globals().get("SEED_DISCOUNT_MIN", 1) or 1),
+                        int(globals().get("SEED_DISCOUNT_MAX", 3) or 3))
+        pct = float(globals().get("SEED_DISCOUNT_PCT", 0.8) or 0.8)
+        for nm in rng.sample(names, min(n, len(names))):
+            out[nm] = pct
+        return out
+
     def _farm_buy_seed(self, data, key, name, crop_name, count):
-        """购买种子核心逻辑（供「购买」「购买种子」使用），盈利即时扣减成本"""
-        crop = self._find_item(self._load_crops(), crop_name)
+        """购买种子核心逻辑（供「购买」「购买种子」使用），盈利即时扣减成本；
+        2.0.3：种子每日折扣（打八折款按折后价结算）"""
+        crops = self._load_crops()
+        crop = self._find_item(crops, crop_name)
         if not crop:
             return f"没有「{crop_name}」这种作物，发送「农场商店」查看。"
         farm = self._farm_of(data, key)
@@ -1086,7 +1128,8 @@ class FarmMixin:
             return f"{name} 还没有农场，发送「解锁农场」（需 {FARM_UNLOCK_COST} 金币）解锁。"
         if int(farm.get("level", 0)) < crop["min_level"]:
             return f"农场等级不足（需要 Lv.{crop['min_level']}，当前 Lv.{farm['level']}）。"
-        p = round(crop["seed_price"] * self._farm_seed_mult(farm), 2)
+        disc = self._seed_discount_map(crops).get(crop_name, 1.0)
+        p = round(crop["seed_price"] * self._farm_seed_mult(farm) * disc, 2)
         total = int(round(p * count))
         if self._coins_of(data, key) < total:
             return f"金币不足（需要 {total}，当前 {self._coins_of(data, key)}）。"
@@ -1096,7 +1139,8 @@ class FarmMixin:
         # 盈利即时扣减种子成本（允许为负）
         farm["total_profit"] = int(farm.get("total_profit", 0)) - total
         self._save(data)
-        return (f"✅ 购买 {crop_name} 种子 ×{count}，花费 {total} 金币（单价 {self._fmt_price(p)}）。\n"
+        price_note = f"（折后价，原价 {self._fmt_price(crop['seed_price'] * self._farm_seed_mult(farm))}）" if disc < 1.0 else ""
+        return (f"✅ 购买 {crop_name} 种子 ×{count}，花费 {total} 金币（单价 {self._fmt_price(p)}）{price_note}。\n"
                 f"{self._coin_line(data, key)}\n"
                 f"{self._farm_state_snippet(farm)}")
 
@@ -2195,7 +2239,7 @@ class FarmMixin:
                 alive.append(it)
         if not alive:
             return []
-        # 按偷菜者聚合（同一偷菜者一行，多种作物换行）
+        # 按偷菜者聚合（同一偷菜者一行，多种作物换行；2.0.3：连续重复折叠）
         by_thief = {}
         for it in alive:
             tid = it["thief_uid"]
@@ -2219,11 +2263,20 @@ class FarmMixin:
                 else:
                     st = "成功"
                     color = "#C00000"
-                d["rows"].append((f"{item['crop']} * {qty}", f"损失{loss}", st, color))
+                # [作物, 数量, 损失, 状态, 颜色, 次数]
+                d["rows"].append([item["crop"], qty, loss, st, color, 1])
         lines = ["🥬 偷菜记录（被偷批次收割后 24 小时内显示）："]
         for tid, d in by_thief.items():
-            for crop_txt, loss_txt, st, color in d["rows"]:
-                lines.append(f"{d['name']}|{crop_txt}|{loss_txt}|{st}")
+            # 2.0.3：折叠连续重复（同一偷菜者 + 同作物 + 同成败状态）→ *N 表示次数
+            merged = []
+            for r in d["rows"]:
+                if merged and merged[-1][0] == r[0] and merged[-1][3] == r[3]:
+                    merged[-1][5] += 1
+                else:
+                    merged.append(r)
+            for crop, qty, loss, st, color, count in merged:
+                crop_txt = f"{crop} * {qty}" + (f"*{count}" if count > 1 else "")
+                lines.append(f"{d['name']}|{crop_txt}|损失{loss}|{st}")
         return lines
 
     def _handle_farm_cancel(self, event):

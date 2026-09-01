@@ -32,7 +32,21 @@ from .modules.webui import WebUIMixin
 _register_runtime_module(_sys.modules[__name__])
 
 
-@register("astrbot_plugin_signin", "sishijiu", "群签到 + 左轮手枪 + 宠物养成 + 金币银行 + 农场", "2.0.2")
+class _NameOverrideEvent:
+    """把事件的发送者昵称替换为自定义昵称（2.0.3），其余属性/方法原样委托给原事件。"""
+
+    def __init__(self, event: AstrMessageEvent, name: str):
+        self._base_event = event
+        self._override_name = name
+
+    def __getattr__(self, item):
+        return getattr(self._base_event, item)
+
+    def get_sender_name(self):
+        return self._override_name
+
+
+@register("astrbot_plugin_signin", "sishijiu", "群签到 + 左轮手枪 + 宠物养成 + 金币银行 + 农场", "2.0.4")
 class SignInPlugin(Star, FarmMixin, PetMixin, BankMixin, RedpacketMixin, ActivityMixin, LoanMixin, RouletteMixin, RankMixin, LanMixin, WebUIMixin, CoreMixin):
     def __init__(self, context: Context, config: dict = None):
         super().__init__(context)
@@ -159,6 +173,10 @@ class SignInPlugin(Star, FarmMixin, PetMixin, BankMixin, RedpacketMixin, Activit
             ("lan/records", "GET", self.web_lan_records, "局域网开放：访问记录（仅本地）"),
             ("lan/blacklist", "GET", self.web_lan_blacklist_get, "局域网开放：黑名单（仅本地）"),
             ("lan/blacklist", "POST", self.web_lan_blacklist_set, "局域网开放：添加/移除黑名单（仅本地）"),
+            # 2.0.4：WebUI 运行记录页
+            ("records/pets", "GET", self.web_get_record_pets, "运行记录：全部宠物卡片（状态/活动/自动信息）"),
+            ("records/pets/auto", "POST", self.web_toggle_record_auto, "运行记录：切换用户自动购买/自动打工开关"),
+            ("records/prices", "GET", self.web_get_record_prices, "运行记录：商店价格变动"),
         ]
         for path, method, handler, desc in _web_apis:
             if not path.startswith("lan/"):
@@ -175,6 +193,10 @@ class SignInPlugin(Star, FarmMixin, PetMixin, BankMixin, RedpacketMixin, Activit
             # 贷款逾期懒处理（标记逾期 + 每日好感度降低 / 23 点自动卖仓库签到还款）
             data = self._load()
             key = event.get_sender_id()
+            # 2.0.3：自定义昵称（90 天有效期）优先级高于获取的昵称 → 包装事件替换发送者昵称
+            _custom = self._custom_name_of(data, key)
+            if _custom:
+                event = _NameOverrideEvent(event, _custom)
             # 同义口令展开：别名 → 标准指令（一步展开，不递归；别名可被 WebUI 编辑）
             head = self._expand_alias(data, head)
             dirty = False
@@ -188,6 +210,13 @@ class SignInPlugin(Star, FarmMixin, PetMixin, BankMixin, RedpacketMixin, Activit
             if gid:
                 self._mark_group_member(data, gid, str(key), event.get_sender_name())
                 dirty = True
+            # 2.0.4：自动购买触发判定——饱食/口渴/心情/健康 任一进入第 3/4 档时自动补满
+            # （替换 2.0.3 的每日 0:00 自动喂养懒结算；自动购买触发后自动开启自动打工）
+            if self._auto_purchase_due(data, key):
+                self._auto_purchase_settle(data, key)
+                dirty = True
+            # 2.0.4：自动打工独立计时器懒启动（仅在真正开启自动购买的用户存在时运行）
+            self._ensure_auto_work_loop()
             # 排行榜：每次查询时通过平台 API 刷新在榜用户的本群昵称（仅已标记用户，不改 48h 时间戳）
             if gid and head in RANK_KINDS:
                 _show = int(globals().get("RANK_DISPLAY", 20) or 20)
@@ -344,6 +373,10 @@ class SignInPlugin(Star, FarmMixin, PetMixin, BankMixin, RedpacketMixin, Activit
     _ROUTE_WITH_EVENT = {
         "签到": "_handle_sign_in",
         "我的签到": "_handle_my_info",
+        "修改昵称": "_handle_change_name",
+        "自动购买": "_handle_auto_feed_switch",
+        "自动打工": "_handle_auto_work_switch",
+        "结算日志": "_handle_auto_feed_log",
         "装弹": "_handle_load",
         "加入": "_handle_join",
         "开始": "_handle_start",
@@ -607,6 +640,7 @@ class SignInPlugin(Star, FarmMixin, PetMixin, BankMixin, RedpacketMixin, Activit
             ("签到", [
                 ("签到", "每日签到，获得金币 / 好感度 / 宠物经验 / 属性丸 / 农场经验球"),
                 ("我的签到", "查看金币与好感度"),
+                ("修改昵称 <任意字符>", "设置自定义昵称（90 天有效，优先级高于获取的昵称）"),
                 ("签到帮助", "查看签到模块指令"),
                 ("游戏帮助", "查看全部模块指令"),
             ]),
@@ -626,6 +660,9 @@ class SignInPlugin(Star, FarmMixin, PetMixin, BankMixin, RedpacketMixin, Activit
                 ("使用 <道具名> [数量]", "使用道具（不填数量 = 1 个，结果合入宠物总览图）"),
                 ("背包", "查看背包"),
                 ("治疗宠物", "治疗虚弱宠物（花 500 金币，所有数值恢复 40；仅虚弱状态可用）"),
+                ("自动购买 开/关", "开启/关闭自动购买（饱食/口渴/心情/健康 任一进入第 3/4 档自动补满；开启后自动同步开启自动打工）"),
+                ("自动打工 开/关", "自动打工开关（自动选择报酬最接近打工基准金币的项目，只给金币不给经验；基准 ≤ 100 自动暂停）"),
+                ("结算日志", "查看自动购买/自动打工记录（购买/使用带数量标记）"),
             ]),
         ]
         return self._build_help("宠物帮助", sections)
@@ -667,6 +704,7 @@ class SignInPlugin(Star, FarmMixin, PetMixin, BankMixin, RedpacketMixin, Activit
             ("签到", [
                 ("签到", "每日签到，获得金币 / 好感度 / 宠物经验 / 属性丸 / 农场经验球"),
                 ("我的签到", "查看金币与好感度"),
+                ("修改昵称 <任意字符>", "设置自定义昵称（90 天有效，优先级高于获取的昵称）"),
                 ("签到帮助", "查看签到模块指令"),
                 ("游戏帮助", "查看全部模块指令（本菜单）"),
             ]),
@@ -687,6 +725,9 @@ class SignInPlugin(Star, FarmMixin, PetMixin, BankMixin, RedpacketMixin, Activit
                 ("购买 / 使用 <道具名> [数量]", "购买 / 使用道具（不填数量 = 1 个）"),
                 ("背包", "查看背包"),
                 ("治疗宠物", "治疗虚弱宠物（花 500 金币，所有数值恢复 40；仅虚弱状态可用）"),
+                ("自动购买 开/关", "开启/关闭自动购买（饱食/口渴/心情/健康 任一进入第 3/4 档自动补满；开启后自动同步开启自动打工）"),
+                ("自动打工 开/关", "自动打工开关（自动选择报酬最接近打工基准金币的项目，只给金币不给经验；基准 ≤ 100 自动暂停）"),
+                ("结算日志", "查看自动购买/自动打工记录（购买/使用带数量标记）"),
             ]),
             ("金币银行", [
                 ("存款 <金额>", "存钱生息（不填=存最大可存金额）"),
