@@ -257,20 +257,38 @@ class BankMixin:
 
     # ================= 金币账单 =================
     def _handle_ledger(self, event: AstrMessageEvent) -> str:
-        """查询流水 / 流水查询 / 消费记录：图片展示金币变动流水（只记发生金额变动的操作）"""
+        """查询流水 / 流水查询 / 消费记录：图片展示金币变动流水（只记发生金额变动的操作）。
+        2.0.3：连续的重复内容（同时间 + 同原因 + 同金额）折叠为一条，*N 用黄色表示。"""
         name = event.get_sender_name()
         key = self._user_key(event)
         data = self._load()
         ledger = data.get("ledger", {}).get(key, [])
         if not ledger:
             return f"{name} 还没有金币流水记录（金币发生变动时才会记录）。"
-        lines = [f"📒 {name} 的金币账单（最近 {min(LEDGER_SHOW, len(ledger))} 条）：", ""]
+        # 2.0.3：折叠连续的重复条目（时间/原因/金额均相同）→ 保留组内最新一条（首条显示）的余额 + 计数
+        merged = []  # [时间, 原因, 金额, 余额, 次数]
         for rec in reversed(ledger[-LEDGER_SHOW:]):
             delta = int(rec.get("delta", 0))
+            ts = str(rec.get("ts", ""))[:16]
+            reason = rec.get("reason", "")
+            if merged and merged[-1][0] == ts and merged[-1][1] == reason and merged[-1][2] == delta:
+                merged[-1][4] += 1
+            else:
+                merged.append([ts, reason, delta, int(rec.get("balance", 0) or 0), 1])
+        # 渲染（*N 黄色 #FFC000）
+        rows = []
+        texts = []
+        for ts, reason, delta, balance, count in merged:
             sign = "+" if delta >= 0 else ""
-            ts = str(rec.get("ts", ""))
-            lines.append(f"{ts[:16]} {rec.get('reason', '')} {sign}{delta}（余额 {rec.get('balance', 0)}）")
-        img = self._render_text_image("金币账单", lines)
+            base = f"{ts} {reason}{sign}{delta}"
+            tail = f"（余额 {balance}）"
+            texts.append(base + (f"*{count}" if count > 1 else "") + tail)
+            segs = [(base, (70, 70, 70), False)]
+            if count > 1:
+                segs.append((f"*{count}", (255, 192, 0), False))
+            segs.append((tail, (70, 70, 70), False))
+            rows.append(segs)
+        img = self._render_rich_image(f"{name} 的金币账单（最近 {min(LEDGER_SHOW, len(ledger))} 条）", rows)
         if img is not None:
             return img
-        return "\n".join(lines)
+        return "\n".join(texts)

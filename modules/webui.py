@@ -1222,3 +1222,141 @@ class WebUIMixin:
             msg = f"已同步 {groups} 个群、共 {members} 名成员昵称（作为排行榜默认昵称）"
             logger.info(f"[插件] WebUI 同步群昵称：{msg}")
             return json_response({"ok": True, "groups": groups, "members": members, "msg": msg})
+
+    # ================= 运行记录（2.0.4）：宠物记录 / 商店价格 =================
+    async def web_get_record_pets(self):
+        """运行记录·宠物记录：全部宠物卡片（当前状态 / 正在进行的活动 / 自动购买·自动打工信息）。"""
+        async with self._lock:
+            data = self._load()
+            today = date.today().isoformat()
+            dirty = False
+            pets = []
+            for uid, pet in (data.get("pets") or {}).items():
+                if not isinstance(pet, dict):
+                    continue
+                if pet.get("last_settle_date") != today:
+                    dirty = True
+                    self._bring_pet_up_to_date(pet, today)
+                u = data.get("users", {}).get(uid) or {}
+                custom = self._custom_name_of(data, uid)
+                sat_max, thr_max, sta_max, mood_max = self._attr_max(pet["health"])
+                now_ts = datetime.now().timestamp()
+                busy_until = self._pet_busy_until(pet)
+                busy = None
+                if busy_until > now_ts:
+                    busy = {
+                        "activity": pet.get("busy_activity"),
+                        "item": pet.get("busy_item"),
+                        "until": busy_until,
+                        "remaining_min": int((busy_until - now_ts) // 60),
+                    }
+                tickets = {
+                    "sat": pet.get("satiety", 0), "thr": pet.get("thirst", 0),
+                    "sta": pet.get("stamina", 0), "mood": pet.get("mood", 0),
+                    "health": pet.get("health", 0),
+                    "sat_max": sat_max, "thr_max": thr_max, "sta_max": sta_max,
+                    "mood_max": mood_max, "health_max": PET_MAX_HEALTH,
+                    "sat_red": self._attr_is_red("饱食", pet.get("satiety", 0)),
+                    "thr_red": self._attr_is_red("口渴", pet.get("thirst", 0)),
+                    "mood_red": self._attr_is_red("心情", pet.get("mood", 0)),
+                    "health_red": self._attr_is_red("健康", pet.get("health", 0)),
+                }
+                pets.append({
+                    "uid": uid,
+                    "nick": custom or uid,
+                    "name": pet.get("name", "宠物"),
+                    "level": pet.get("level", 0),
+                    "exp": round(float(pet.get("exp", 0) or 0), 1),
+                    "tier": self._worst_tier(pet.get("satiety", 0), pet.get("thirst", 0), pet.get("mood", 0)),
+                    "weak": bool(pet.get("weak")),
+                    "attrs": tickets,
+                    "busy": busy,
+                    "auto": {
+                        "purchase_on": bool(u.get("auto_feed_enabled")),
+                        "purchase_global": bool(globals().get("AUTO_FEED_ENABLED", False)),
+                        "work_on": bool(u.get("auto_work_enabled")),
+                        "work_global": bool(globals().get("AUTO_WORK_ENABLED", True)),
+                        "work_base": int(u.get("work_base", 0) or 0),
+                        "work_next": float(u.get("auto_work_next", 0) or 0),
+                        "feed_logs": (u.get("auto_feed_logs") or [])[-5:],
+                        "work_logs": (u.get("auto_work_logs") or [])[-5:],
+                    },
+                })
+            if dirty:
+                self._save(data)
+            return json_response({"pets": pets})
+
+    async def web_toggle_record_auto(self):
+        """运行记录·宠物记录：管理员在 WebUI 直接切换某个用户的 自动购买/自动打工 开关。
+        入参 {uid, key: purchase|work, on: bool}；同一用户维度，跨群共享。
+        规则与群聊指令一致：开启自动购买 → 自动开启自动打工；不开启自动购买则不允许开启自动打工。"""
+        try:
+            payload = await request.json(default={})
+        except Exception:
+            payload = {}
+        uid = str(payload.get("uid") or "").strip()
+        key = str(payload.get("key") or "").strip()
+        on = bool(payload.get("on"))
+        if not uid:
+            return error_response("uid 不能为空", status_code=400)
+        if key not in ("purchase", "work"):
+            return error_response("key 只能是 purchase 或 work", status_code=400)
+        async with self._lock:
+            data = self._load()
+            if uid not in (data.get("pets") or {}):
+                return error_response("该用户还没有宠物", status_code=400)
+            u = self._ensure_user(data, uid)
+            if key == "work":
+                if on and not u.get("auto_feed_enabled"):
+                    return error_response("该用户未开启自动购买，无法开启自动打工（请先开启自动购买）", status_code=400)
+                u["auto_work_enabled"] = on
+                if on:
+                    u.setdefault("work_base", int(u.get("work_base", 0) or 0))
+                    u["auto_work_next"] = 0  # 立即可调度（基准金币 > 100 才真正执行）
+                    self._ensure_auto_work_loop()
+                msg = "已开启自动打工" if on else "已关闭自动打工"
+            else:  # purchase
+                u["auto_feed_enabled"] = on
+                if on:
+                    u["auto_work_enabled"] = True  # 用户开启自动购买 → 自动开启自动打工
+                    u.setdefault("work_base", int(u.get("work_base", 0) or 0))
+                    u["auto_work_next"] = 0
+                    self._ensure_auto_work_loop()
+                    msg = "已开启自动购买（自动打工同步开启）"
+                else:
+                    u["auto_work_enabled"] = False
+                    msg = "已关闭自动购买（自动打工同步关闭）"
+            self._save(data)
+            return json_response({
+                "ok": True, "msg": msg, "uid": uid, "key": key, "on": bool(u["auto_work_enabled"] if key == "work" else u["auto_feed_enabled"]),
+                "purchase_on": bool(u.get("auto_feed_enabled")),
+                "work_on": bool(u.get("auto_work_enabled")),
+                "work_base": int(u.get("work_base", 0) or 0),
+            })
+
+    async def web_get_record_prices(self):
+        """运行记录·商店价格：最近的价格变动记录 + 当前窗口折扣信息。"""
+        async with self._lock:
+            data = self._load()
+            added = self._record_shop_price_window(data)
+            if added:
+                self._save(data)
+            enabled = bool(globals().get("SHOP_PRICE_FLOAT_ENABLED", False))
+            now = datetime.now()
+            _start, wid = self._shop_price_window(now)
+            disc = self._shop_discount_map_cached(wid) if enabled else {}
+            current = [
+                {"name": it.get("name"), "base": int(it.get("price", 0)),
+                 "price": max(1, int(round(int(it.get("price", 0)) * disc.get(it.get("name"), 1.0)))),
+                 "mult": round(disc.get(it.get("name"), 1.0), 2)}
+                for it in self._load_config().get("shop", []) if enabled
+            ]
+            special = _start in tuple(globals().get("SHOP_PRICE_SPECIAL_HOURS", (10, 12, 18, 0)))
+            return json_response({
+                "enabled": enabled,
+                "now": now.strftime("%Y-%m-%d %H:%M"),
+                "window": wid,
+                "special": special,
+                "current": current,
+                "records": (data.get("shop_price_records") or [])[-int(globals().get("SHOP_PRICE_RECORD_MAX", 60) or 60):],
+            })

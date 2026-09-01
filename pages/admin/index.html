@@ -62,11 +62,18 @@
             <span class="card-tag">活动配置</span>
             <span class="card-arrow">→</span>
           </button>
-          <button class="card card-green" data-feature="aliases">
+          <button class="card card-gold" data-feature="aliases">
             <span class="card-icon">令</span>
             <span class="card-title">同义口令</span>
             <span class="card-desc">指令别名设置</span>
             <span class="card-tag">指令</span>
+            <span class="card-arrow">→</span>
+          </button>
+          <button class="card card-green" data-feature="records">
+            <span class="card-icon">录</span>
+            <span class="card-title">运行记录</span>
+            <span class="card-desc">宠物记录 / 商店价格变动（自动购买·自动打工运行情况）</span>
+            <span class="card-tag">运行记录</span>
             <span class="card-arrow">→</span>
           </button>
         </div>
@@ -258,7 +265,32 @@
         <p class="hint">同义口令 = 词义相近的口令别名，发送别名与发送对应指令效果完全相同（降低记忆指令的难度）。例如默认预置 <code>打卡 → 签到</code>、<code>我的宠物 → 宠物</code>、<code>存金币 → 存款</code>、<code>治疗 → 治疗宠物</code>、<code>财富榜 → 金币排行</code> 等。目标指令从下拉列表选择，同义词不能与标准指令同名；保存后立即生效（重启后保留）。</p>
       </section>
 
-      <footer class="page-foot">签到娱乐系统 · 2.0.2</footer>
+      <!-- ===================== 运行记录（2.0.4） ===================== -->
+      <!-- 运行记录：宠物记录（全部宠物卡片：状态 / 正在进行的活动 / 自动购买·自动打工信息） -->
+      <section id="panel-records-pets" class="panel hidden">
+        <div class="toolbar">
+          <button id="btn-load-record-pets">刷新</button>
+          <span id="status-record-pets" class="status"></span>
+        </div>
+        <div id="records-pets-list" class="record-list">
+          <p class="hint">点击「刷新」读取全部宠物的运行记录...</p>
+        </div>
+        <p class="hint">展示<b>全部宠物</b>的当前状态（属性/档位/虚弱）、正在进行的活动与剩余时间，以及自动购买 / 自动打工信息（打工基准金币、最近购买·使用×N 记录、自动打工记录）。<b>点卡片上的「自动购买」「自动打工」开关（开/关）可直接切换该用户的开关</b>——开启自动购买会自动开启自动打工，未开自动购买不允许开自动打工。</p>
+      </section>
+
+      <!-- 运行记录：商店价格（每次价格窗口的价格变动） -->
+      <section id="panel-records-prices" class="panel hidden">
+        <div class="toolbar">
+          <button id="btn-load-record-prices">刷新</button>
+          <span id="status-record-prices" class="status"></span>
+        </div>
+        <div id="records-prices-list" class="record-list">
+          <p class="hint">点击「刷新」读取商店价格变动记录...</p>
+        </div>
+        <p class="hint">宠物商店价格固定偶数点刷新（0/2/4/…/22 整点），同窗口（2 小时）稳定；特价时段（10/12/18/0 时窗口）随机选取 <span id="price-discount-range">2~5</span> 件商品打 二~八折。此处展示当前窗口与最近的价格变动记录（购买按实时价结算）。</p>
+      </section>
+
+      <footer class="page-foot">签到娱乐系统 · 2.0.4</footer>
     </div>
 
     <script type="module" src="./app.js"></script>

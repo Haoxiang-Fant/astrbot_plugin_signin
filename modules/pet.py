@@ -191,7 +191,8 @@ class PetMixin:
 
     def _settle_once(self, pet: dict, settle_date: str) -> None:
         """执行一次每日结算（2.0.1：固定四档 T1~T4，按饱食/口渴/心情最差档；
-        各档属性变化范围可在 WebUI「设置 → 签到 → 宠物结算范围」编辑）"""
+        各档属性变化范围可在 WebUI「设置 → 签到 → 宠物结算范围」编辑。
+        2.0.3：结算扣减的属性若超出结算前属性值，超出部分按可调比例用健康值抵扣）"""
         health = pet["health"]
         ranges = self._settle_ranges()
 
@@ -210,13 +211,22 @@ class PetMixin:
         mood_d = _roll("心情", self._SETTLE_DEFAULT_RANGES[tkey]["心情"])
         health_d = _roll("健康", self._SETTLE_DEFAULT_RANGES[tkey]["健康"])
 
+        # 2.0.3：超扣转健康抵扣 —— 扣减的属性若超出结算前属性值，
+        # 超出部分按「N 属性点 = 1 健康」折算为健康额外扣减（向上取整，N = PET_SETTLE_HEALTH_EXCHANGE）
+        exchange = max(1, int(float(globals().get("PET_SETTLE_HEALTH_EXCHANGE", 4) or 4)))
+        excess_total = 0.0
+        for _attr, _chg in (("satiety", sat_d), ("thirst", thr_d), ("stamina", sta_d), ("mood", mood_d)):
+            if _chg < 0:
+                excess_total += max(0.0, -(pet[_attr] + _chg))
+        health_extra = int(math.ceil(excess_total / exchange)) if excess_total > 0 else 0
+
         # 3. 应用（先按当前健康度的上限 clamp 属性，再改健康度，最后统一 clamp）
         sat_max, thr_max, sta_max, mood_max = self._attr_max(health)
         pet["satiety"] = round(self._clamp(pet["satiety"] + sat_d, 0, sat_max), 2)
         pet["thirst"] = round(self._clamp(pet["thirst"] + thr_d, 0, thr_max), 2)
         pet["stamina"] = round(self._clamp(pet["stamina"] + sta_d, 0, sta_max), 2)
         pet["mood"] = round(self._clamp(pet["mood"] + mood_d, 0, mood_max), 2)
-        pet["health"] = round(self._clamp(pet["health"] + health_d, 0, PET_MAX_HEALTH), 2)
+        pet["health"] = round(self._clamp(pet["health"] + health_d - health_extra, 0, PET_MAX_HEALTH), 2)
         self._clamp_attrs(pet)
 
         pet["last_settle"] = {
@@ -225,7 +235,9 @@ class PetMixin:
             "thirst_d": round(thr_d, 2),
             "stamina_d": round(sta_d, 2),
             "mood_d": round(mood_d, 2),
-            "health_d": round(health_d, 2),
+            "health_d": round(health_d - health_extra, 2),
+            "health_extra": health_extra,
+            "exchange": exchange,
             "rested_well": sta_d > 100.0,
             "sick": pet["health"] <= 39.0,
             "tier": tier,   # 1.7.6：1-4 档（3/4 为状态差，签到时提醒）
@@ -266,6 +278,10 @@ class PetMixin:
         lines = ["🐾 宠物结算（昨晚）："]
         lines.append(f"🍖 饱食度 {ls['satiety_d']:+.1f}，💧 口渴值 {ls['thirst_d']:+.1f}，"
                      f"⚡ 体力 {ls['stamina_d']:+.1f}，😊 心情 {ls['mood_d']:+.1f}，❤️ 健康 {ls['health_d']:+.1f}")
+        # 2.0.3：属性超扣转健康抵扣提示
+        if int(ls.get("health_extra", 0) or 0) > 0:
+            ex = int(ls.get("exchange", 4) or 4)
+            lines.append(f"🩹 属性不足，超扣部分按 {ex} 属性点 = 1 健康用健康值抵扣（健康额外 -{int(ls['health_extra'])}）")
         if ls.get("rested_well"):
             lines.append("😴 昨晚你的宠物休息得很好！")
         if ls.get("sick"):
@@ -1458,6 +1474,111 @@ class PetMixin:
 
         return _save_temp_image(img, "_wp_", f"{kind}列表")
 
+    def _shop_price_window(self, now=None):
+        """当前价格窗口（2.0.4）：刷新时间固定偶数点（0/2/4/…/22 整点），同一窗口（2 小时）内价格稳定。
+        返回 (窗口起始小时, 窗口标识串)；窗口标识形如 YYYYMMDD|HH，用于固定随机种子。"""
+        now = now or datetime.now()
+        start_hour = now.hour - (now.hour % 2)
+        wid = "%s|%02d" % (now.strftime("%Y%m%d"), start_hour)
+        return start_hour, wid
+
+    def _shop_discount_map_cached(self, wid):
+        """按窗口缓存折扣映射（同一窗口内价格稳定，避免每次查价都重读配置）。
+        仅在窗口变化时重算；极端情况下跨天窗口号不同必然重算。"""
+        cache = getattr(self, "_shop_discount_cache", None)
+        if cache and cache[0] == wid:
+            return cache[1]
+        m = self._shop_discount_map(wid)
+        self._shop_discount_cache = (wid, m)
+        return m
+
+    def _shop_discount_map(self, wid):
+        """指定窗口的折扣映射 {商品名: 倍率}（2.0.4）：特价时段（窗口起始 10/12/18/0 时）随机选取
+        SHOP_PRICE_DISCOUNT_MIN~MAX 种商品按 二~八折（倍率 LO~HI）；其余窗口全部原价。
+        按「窗口 id + 商品名」固定随机 → 同一窗口内价格稳定；取整后的价格可能使倍率略有偏差，这里只存随机倍率。"""
+        start_hour = int(wid.split("|")[1])
+        special = start_hour in tuple(globals().get("SHOP_PRICE_SPECIAL_HOURS", (10, 12, 18, 0)))
+        if not special:
+            return {}
+        lo = float(globals().get("SHOP_PRICE_DISCOUNT_LO", 0.2) or 0.2)
+        hi = float(globals().get("SHOP_PRICE_DISCOUNT_HI", 0.8) or 0.8)
+        cnt_lo = int(globals().get("SHOP_PRICE_DISCOUNT_MIN", 2) or 2)
+        cnt_hi = int(globals().get("SHOP_PRICE_DISCOUNT_MAX", 5) or 5)
+        cfg = self._load_config()
+        names = [it["name"] for it in cfg.get("shop", [])]
+        n = max(0, min(cnt_hi, len(names)))
+        if n < 1 or cnt_lo > n:
+            cnt_lo = min(cnt_lo, n)
+        rng = random.Random("pet_shop_window_discount|%s" % wid)
+        if n < 1:
+            return {}
+        count = rng.randint(cnt_lo, n)
+        chosen = rng.sample(sorted(names), count)
+        out = {}
+        for nm in chosen:
+            out[nm] = round(rng.uniform(lo, hi), 2)
+        return out
+
+    def _pet_shop_price(self, item):
+        """宠物商店实时价格（2.0.4 价格逻辑更改，默认关闭）：价格固定偶数点（0/2/…/22）刷新，
+        同一 2 小时窗口稳定；特价时段（10/12/18/0 时窗口）随机选取 2~5 件商品打 二~八折（倍率 0.2~0.8）；
+        其余时段全部商品回原价。返回 (原价, 实时价, 是否打折)。"""
+        base = int(item.get("price", 0))
+        if not bool(globals().get("SHOP_PRICE_FLOAT_ENABLED", False)):
+            return base, base, False
+        _start, wid = self._shop_price_window()
+        mult = self._shop_discount_map_cached(wid).get(item["name"], 1.0)
+        if mult >= 1.0 - 1e-9:
+            return base, base, False
+        price = max(1, int(round(base * mult)))
+        return base, price, price != base
+
+    def _record_shop_price_window(self, data):
+        """把从上次记录到当前的全部价格窗口变动写入 data['shop_price_records']（每次窗口开始时记一条），
+        返回是否新增。2.0.4：价格修改可在 WebUI「运行记录 → 商店价格」查看；
+        即使期间没打开过页面，重新打开时也会按固定随机把错过的窗口补齐。"""
+        if not bool(globals().get("SHOP_PRICE_FLOAT_ENABLED", False)):
+            return False
+        cap = int(globals().get("SHOP_PRICE_RECORD_MAX", 60) or 60)
+        start_hour, wid = self._shop_price_window()
+
+        def _wid_to_dt(wid_str):
+            d, hh = wid_str.split("|")
+            return datetime.strptime(d, "%Y%m%d").replace(hour=int(hh))
+
+        last = data.get("_shop_price_last_window")
+        # 上次记录之后到现在：逐窗口补齐（上次记录保持不动）；
+        # 首次无记录时回填最近 cap 个窗口（补齐整个记录容量），便于首次打开页面直接看到历史价格变动
+        if last:
+            cur = _wid_to_dt(last) + timedelta(hours=2)
+        else:
+            cur = cur_dt - timedelta(hours=max(0, cap - 1) * 2)
+        cur_dt = _wid_to_dt(wid)
+        recs = data.setdefault("shop_price_records", [])
+        added = False
+        while cur <= cur_dt:
+            w = "%s|%02d" % (cur.strftime("%Y%m%d"), cur.hour)
+            special = cur.hour in tuple(globals().get("SHOP_PRICE_SPECIAL_HOURS", (10, 12, 18, 0)))
+            disc = self._shop_discount_map(w)
+            items = []
+            for it in self._load_config().get("shop", []):
+                mult = disc.get(it["name"], 1.0)
+                if mult >= 1.0 - 1e-9:
+                    continue
+                base = int(it.get("price", 0))
+                items.append({"name": it["name"], "base": base,
+                              "price": max(1, int(round(base * mult))), "mult": round(mult, 2)})
+            recs.append({"window": w,
+                         "ts": cur.strftime("%Y-%m-%d %H:%M"),
+                         "special": special,
+                         "items": items})
+            added = True
+            cur += timedelta(hours=2)
+        if len(recs) > cap:
+            del recs[:len(recs) - cap]
+        data["_shop_price_last_window"] = wid
+        return added
+
     def _handle_shop(self, event: AstrMessageEvent) -> str:
         cfg = self._load_config()
         if not cfg["shop"]:
@@ -1472,9 +1593,9 @@ class PetMixin:
                 categories.append((typ, []))
             categories[seen[typ]][1].append(it)
         for typ, items in categories:
-            items.sort(key=lambda it: (int(it["price"]), it["name"]))
+            items.sort(key=lambda it: (self._pet_shop_price(it)[1], it["name"]))
         # 分类之间也按「组内最低价」升序，便宜的类别靠前
-        categories.sort(key=lambda cat: (min((int(it["price"]) for it in cat[1]), default=0), cat[0]))
+        categories.sort(key=lambda cat: (min((self._pet_shop_price(it)[1] for it in cat[1]), default=0), cat[0]))
         # 当前用户持有数量
         key = self._user_key(event)
         data = self._load()
@@ -1489,7 +1610,10 @@ class PetMixin:
             lines.append(f"【{typ}】")
             for it in items:
                 have = int(inventory.get(it["name"], 0))
-                ln = f"· {it['name']} ×{have}｜{int(it['price'])}金币"
+                _o, cur, _f = self._pet_shop_price(it)
+                ln = f"· {it['name']} ×{have}｜{cur}金币"
+                if _f:
+                    ln += f"（原价 {_o} 金币）"
                 if it.get("desc"):
                     ln += f"（{it['desc']}）"
                 ln += f"：{self._effect_desc(it['effects'])}"
@@ -1506,11 +1630,11 @@ class PetMixin:
         Image, ImageDraw = _ensure_pillow()
         if Image is None:
             return None
-        # 字号语义：标题 32 / 分类 26 / 名称 26（大三号）/ 正文 18 / 价格 20（大一号）
-        fonts = _load_fonts(32, 26, 26, 18, 20)
+        # 字号语义：标题 32 / 分类 26 / 名称 26（大三号）/ 正文 18 / 价格 20（大一号）/ 原价 14（小一号）
+        fonts = _load_fonts(32, 26, 26, 18, 20, 14)
         if fonts is None:
             return None
-        title_font, cat_font, name_font, body_font, price_font = fonts
+        title_font, cat_font, name_font, body_font, price_font, small_price_font = fonts
 
         pad = 20
         title_h = 52
@@ -1554,7 +1678,9 @@ class PetMixin:
                 rows.append(("plain", ln, ""))
             h_before = inner * 2 + sum(name_h if (i == 0 and r[0] == "pair") else line_h for i, r in enumerate(rows))
             rows.append(("rule", "", ""))
-            rows.append(("price", f"{int(it['price'])} 金币", ""))
+            # 2.0.3：价格浮动 → 原价（灰小字）+ 实时价（红正常字）
+            _o, cur, _f = self._pet_shop_price(it)
+            rows.append(("price", f"{cur} 金币", (f"{_o} 金币" if _f else "")))
             # 总高 = 分割线前内容 + 分割线距价格上方 N + 线 1px + 价格区（价格高 + 底边 N）
             h = h_before + n_pad + 1 + price_h + n_pad
             return rows, h, h_before
@@ -1642,9 +1768,14 @@ class PetMixin:
                         elif kind == "rule":
                             rule_y = price_y - n_pad  # 分割线固定在价格上方 N 距离
                         elif kind == "price":
-                            # 价格贴底边 N
-                            _dtext(d, (int(x0 + card_w - inner - tw(row[1], price_font)), price_y),
-                                   row[1], font=price_font, fill=(192, 0, 0))
+                            # 价格贴底边 N（2.0.3：原价灰色小字 + 实时价红色正常字）
+                            real_text = row[1]
+                            orig_text = row[2] or ""
+                            right_x = int(x0 + card_w - inner - tw(real_text, price_font))
+                            if orig_text:
+                                _dtext(d, (int(right_x - 6 - tw(orig_text, small_price_font)), price_y + 4),
+                                       orig_text, font=small_price_font, fill=(150, 150, 150))
+                            _dtext(d, (right_x, price_y), real_text, font=price_font, fill=(192, 0, 0))
                             break
                     if rule_y is not None:
                         d.line([(x0 + 8, rule_y), (x0 + card_w - 8, rule_y)], fill=(200, 200, 200), width=1)
@@ -1688,7 +1819,8 @@ class PetMixin:
         if not pet:
             return f"{name} 还没有宠物，发送「解锁宠物」领养一只吧。"
 
-        price = int(item["price"])
+        # 2.0.3：购买按实时价（价格浮动）结算
+        _orig_p, price, _floated = self._pet_shop_price(item)
         total = price * qty
         coins = self._coins_of(data, key)
         if coins < total:
@@ -1698,7 +1830,8 @@ class PetMixin:
         inv = pet.setdefault("inventory", {})
         inv[item_name] = int(inv.get(item_name, 0)) + qty
         self._save(data)
-        return (f"🛒 {name} 花费 {total} 金币购买了「{item_name}」×{qty}。发送「使用 {item_name}」使用。\n"
+        price_note = f"（实时价 {price} 金币，原价 {_orig_p}）" if _floated else ""
+        return (f"🛒 {name} 花费 {total} 金币购买了「{item_name}」×{qty}{price_note}。发送「使用 {item_name}」使用。\n"
                 f"{self._coin_line(data, key)}")
 
     def _handle_use_item(self, event: AstrMessageEvent) -> str:
@@ -1836,8 +1969,25 @@ class PetMixin:
         if not item:
             return f"没有「{item_name}」这个道具，发送「商店」查看。"
         have = int(inv.get(item_name, 0))
+        auto_buy_note = None
         if have < qty:
-            return f"你没有足够的「{item_name}」：需要 {qty} 个，当前 {have} 个。发送「购买 {item_name} {qty}」购买。"
+            # 2.0.3：缺货自动购买（默认关闭）——仓库不足时自动购买足额并使用
+            if bool(globals().get("AUTO_BUY_SHORT_ENABLED", False)):
+                short = qty - have
+                mult = float(globals().get("AUTO_BUY_SHORT_MULT", 1.0) or 1.0)
+                cur_price = self._pet_shop_price(item)[1]
+                cost = int(round(cur_price * mult * short))
+                coins = self._coins_of(data, key)
+                if coins >= cost:
+                    self._add_coins(data, key, -cost, f"自动购买·{item_name}")
+                    inv[item_name] = qty
+                    have = qty
+                    auto_buy_note = (short, cost)
+                else:
+                    return (f"你没有足够的「{item_name}」：需要 {qty} 个，当前 {have} 个；"
+                            f"缺货自动购买 {short} 个需 {cost} 金币，但当前金币不足（{coins}）。")
+            else:
+                return f"你没有足够的「{item_name}」：需要 {qty} 个，当前 {have} 个。发送「购买 {item_name} {qty}」购买。"
 
         changes = {}
         for _ in range(qty):
@@ -1857,6 +2007,8 @@ class PetMixin:
             inv.pop(item_name, None)
         self._clamp_attrs(pet)
         msg = f"{pet['name']} 使用「{item_name}」×{qty} 成功！"
+        if auto_buy_note:
+            msg += f"（缺货自动购买 {auto_buy_note[0]} 个，花费 {auto_buy_note[1]} 金币）"
         if not changes:
             msg += "（无效果）"
         pet["last_activity"] = {"msg": msg, "changes": changes,
@@ -1873,6 +2025,9 @@ class PetMixin:
             desc = "，".join(f"{ATTR_SHORT[a]}{v:+.1f}" for a, v in changes.items())
             text = (f"✅ {name} 使用了「{item_name}」×{qty}：{desc}\n"
                     f"{self._pet_state_snippet(pet)}")
+        if auto_buy_note:
+            _short, _cost = auto_buy_note
+            text += f"（缺货自动购买 {_short} 个，花费 {_cost} 金币）"
         # 2.0.0 消息合并：使用道具结果合入宠物指令图片的预留位（即时消息显示一次）
         # 本次有属性变化 → 卡片1高亮；无工作/玩耍变动 → 卡片2不高亮
         img = self._safe_render_pet(
@@ -1885,6 +2040,341 @@ class PetMixin:
             pet["last_activity"]["shown"] = True
             self._save(data)
         return img if img is not None else text
+
+    # ================= 自动购买（2.0.4 重做）+ 自动打工（2.0.4 新增） =================
+    def _auto_feed_enabled_for(self, data: dict, key: str) -> bool:
+        """自动购买是否对该用户生效：总开关（默认关闭）+ 主人开启 + 有宠物"""
+        if not bool(globals().get("AUTO_FEED_ENABLED", False)):
+            return False
+        u = data.get("users", {}).get(key)
+        if not (u and u.get("auto_feed_enabled")):
+            return False
+        return data.get("pets", {}).get(key) is not None
+
+    def _auto_purchase_due(self, data: dict, key: str) -> bool:
+        """自动购买触发判定（2.0.4）：饱食/口渴/心情/健康 任一属性进入第 3/4 档时触发。
+        （第三/四档：饱食/口渴/心情 < 该属性二档下限、健康 < 40，同宠物状态条标红判定。）
+        若上次触发时金币不足未能补满，则进入冷却（AUTO_PURCHASE_COOLDOWN_MIN 分钟）防止每消息反复尝试。"""
+        if not self._auto_feed_enabled_for(data, key):
+            return False
+        pet = data.get("pets", {}).get(key)
+        if not pet:
+            return False
+        if pet.get("weak"):
+            return False  # 虚弱期间不自动购买（与「购买/使用」锁定一致）
+        if self._attr_is_red("饱食", pet["satiety"]) or self._attr_is_red("口渴", pet["thirst"]) \
+                or self._attr_is_red("心情", pet["mood"]) or self._attr_is_red("健康", pet["health"]):
+            u = data.get("users", {}).get(key) or {}
+            cool = float(u.get("auto_purchase_cool", 0) or 0)
+            return datetime.now().timestamp() >= cool
+        return False
+
+    def _auto_purchase_pet(self, data: dict, key: str, pet: dict, cost_mult: float):
+        """自动购买例程（2.0.4）：按 饱食→口渴→心情→健康 顺序补满，且道具数量最少化——
+        对每个属性选择「单件效果最大」的道具（如缺口 120：优先 3 个 +40 而不是 12 个 +10），
+        优先使用仓库已有该道具（免费），仍不足再购买足额（实时价 × cost_mult）。
+        返回 (消耗明细 [(名称, 数量, 花费, 来源)], 总花费)——来源 ∈ 使用/购买，仓库消耗 花费=0。"""
+        shop = self._load_config()["shop"]
+        by_name = {it["name"]: it for it in shop}
+        sat_max, thr_max, sta_max, mood_max = self._attr_max(pet["health"])
+        spends = []
+        total_cost = 0
+        inv = pet.setdefault("inventory", {})
+        for attr, amax in (("satiety", sat_max), ("thirst", thr_max), ("mood", mood_max), ("health", PET_MAX_HEALTH)):
+            cur = float(pet.get(attr, 0) or 0)
+            if cur >= amax - 0.5:
+                continue
+            need = amax - cur
+            # 候选：对该属性单件效果 > 0 的道具，按效果降序（件数最少优先），同效果按价格升序
+            cand = []
+            for it in shop:
+                eff = float((it.get("effects") or {}).get(attr, 0) or 0)
+                if eff > 0:
+                    cand.append((eff, it))
+            if not cand:
+                continue
+            cand.sort(key=lambda x: (-x[0], int(x[1].get("price", 0) or 0), x[1]["name"]))
+            # 从效果最大的道具开始：优先使用仓库已有该道具（免费），再购买剩余部分；
+            # 若最优道具买不起则回退到次优（仍是最少挂件数量下能买得起的方案）
+            for best_eff, best_it in cand:
+                have = int(inv.get(best_it["name"], 0) or 0)
+                want = int(math.ceil(need / best_eff))
+                buy = max(0, want - have)
+                use_own = min(want, have)
+                if use_own > 0:
+                    inv[best_it["name"]] = have - use_own
+                    if inv[best_it["name"]] <= 0:
+                        inv.pop(best_it["name"], None)
+                    pet[attr] = round(min(amax, cur + best_eff * use_own), 2)
+                    cur = pet[attr]
+                    need = amax - cur
+                    spends.append((best_it["name"], use_own, 0, "使用"))
+                if need <= 0.5 or buy <= 0:
+                    break
+                base_price = self._pet_shop_price(best_it)[1]
+                cost = int(round(base_price * cost_mult * buy))
+                coins = self._coins_of(data, key)
+                if coins < cost:
+                    continue  # 买不起该道具 → 回退次优道具（仓库消耗部分已记录）
+                self._add_coins(data, key, -cost, f"自动购买·{best_it['name']}")
+                inv[best_it["name"]] = int(inv.get(best_it["name"], 0) or 0) + buy
+                total_cost += cost
+                spends.append((best_it["name"], buy, cost, "购买"))
+                use = min(int(math.ceil(need / best_eff)), buy)
+                inv[best_it["name"]] = int(inv.get(best_it["name"], 0) or 0) - use
+                if inv[best_it["name"]] <= 0:
+                    inv.pop(best_it["name"], None)
+                pet[attr] = round(min(amax, cur + best_eff * use), 2)
+                break
+        self._clamp_attrs(pet)
+        return spends, total_cost
+
+    def _auto_purchase_settle(self, data: dict, key: str) -> None:
+        """自动购买触发结算（2.0.4，调用方在锁内保存）：先把宠物结算到今日，再按档位触发自动补满；
+        购买消耗的金币计入打工基准金币（work_base），并自动开启自动打工。"""
+        pet = data.get("pets", {}).get(key)
+        if not pet:
+            return
+        today = date.today().isoformat()
+        self._bring_pet_up_to_date(pet, today)
+        mult = float(globals().get("AUTO_FEED_PRICE_MULT", 1.2) or 1.2)
+        spends, total = self._auto_purchase_pet(data, key, pet, mult)
+        u = data.setdefault("users", {}).setdefault(key, {})
+        if not spends:
+            # 完全没买到/没用到（金币不足或无道具）→ 冷却后再触发
+            cd = float(globals().get("AUTO_PURCHASE_COOLDOWN_MIN", 10) or 10) * 60
+            u["auto_purchase_cool"] = datetime.now().timestamp() + cd
+        else:
+            logs = u.setdefault("auto_feed_logs", [])
+            logs.append({"date": today,
+                         "ts": datetime.now().strftime("%Y-%m-%d %H:%M"),
+                         "trigger": "档位触发",
+                         "items": [{"name": n, "qty": q, "cost": c, "src": s} for n, q, c, s in spends],
+                         "total": total, "mult": round(mult, 2)})
+            cap = int(globals().get("AUTO_FEED_LOG_MAX", 30) or 30)
+            if len(logs) > cap:
+                del logs[:len(logs) - cap]
+            u["auto_purchase_cool"] = 0
+            # 自动购买消耗的金币 → 打工基准金币；自动购买开启 → 自动开启自动打工
+            u["work_base"] = int(u.get("work_base", 0) or 0) + total
+            u["auto_work_enabled"] = True
+            self._ensure_auto_work_loop()
+            # 仍处于第 3/4 档（只补了一部分/金币用完）→ 冷却后再尝试，避免每消息反复购买
+            if self._auto_purchase_due(data, key):
+                cd = float(globals().get("AUTO_PURCHASE_COOLDOWN_MIN", 10) or 10) * 60
+                u["auto_purchase_cool"] = datetime.now().timestamp() + cd
+        u["auto_feed_date"] = today
+
+    def _handle_auto_feed_switch(self, event: AstrMessageEvent) -> str:
+        """自动购买 <开/关>：主人开启/关闭自动购买（2.0.4）。开启自动购买 → 自动开启自动打工。"""
+        name = event.get_sender_name()
+        key = self._user_key(event)
+        parts = event.message_str.split(maxsplit=1)
+        if len(parts) < 2 or parts[1].strip() not in ("开", "关"):
+            return f"{name} 请指定：自动购买 开 / 自动购买 关"
+        data = self._load()
+        pet = data.get("pets", {}).get(key)
+        if not pet:
+            return f"{name} 还没有宠物，发送「解锁宠物」领养一只吧。"
+        on = parts[1].strip() == "开"
+        u = self._ensure_user(data, key)
+        u["auto_feed_enabled"] = on
+        if on:
+            u["auto_work_enabled"] = True  # 用户开启自动购买 → 自动开启自动打工
+            self._ensure_auto_work_loop()
+        self._save(data)
+        if on:
+            mult = globals().get("AUTO_FEED_PRICE_MULT", 1.2)
+            return (f"✅ {name} 已开启自动购买：当 饱食/口渴/心情/健康 任一属性进入第 3/4 档时，"
+                    f"自动按 饱食→口渴→心情→健康 顺序补满（优先最少道具数量，购买为原价 {mult} 倍）；"
+                    f"自动打工已同步开启（只给金币不给经验）。发送「结算日志」查看记录。")
+        return f"⏹️ {name} 已关闭自动购买（自动打工同步关闭）。"
+
+    def _handle_auto_work_switch(self, event: AstrMessageEvent) -> str:
+        """自动打工 <开/关>：单独控制自动打工（2.0.4）。未开启自动购买不允许开启自动打工。"""
+        name = event.get_sender_name()
+        key = self._user_key(event)
+        parts = event.message_str.split(maxsplit=1)
+        if len(parts) < 2 or parts[1].strip() not in ("开", "关"):
+            return f"{name} 请指定：自动打工 开 / 自动打工 关"
+        data = self._load()
+        if not data.get("pets", {}).get(key):
+            return f"{name} 还没有宠物，发送「解锁宠物」领养一只吧。"
+        u = self._ensure_user(data, key)
+        on = parts[1].strip() == "开"
+        if on and not u.get("auto_feed_enabled"):
+            return f"{name} 未开启自动购买，不允许开启自动打工（请先发送「自动购买 开」）。"
+        u["auto_work_enabled"] = on
+        if on:
+            u.setdefault("work_base", int(u.get("work_base", 0) or 0))
+            self._ensure_auto_work_loop()
+            base = int(u.get("work_base", 0) or 0)
+            pause = globals().get("AUTO_WORK_PAUSE_BASE", 100)
+            msg = (f"✅ {name} 已开启自动打工：自动选择报酬最接近打工基准金币（当前 {base}）的打工项目，"
+                   f"只给金币不给经验；冷却结束 {globals().get('AUTO_WORK_DELAY_MIN', 10)} 分钟后自动安排下一次；"
+                   f"基准金币 ≤ {pause} 时暂停，下次自动购买超过 {pause} 后自动恢复。")
+        else:
+            msg = f"⏹️ {name} 已关闭自动打工。"
+        self._save(data)
+        return msg
+
+    # ---- 自动打工引擎（2.0.4）：独立计时器循环 ----
+    def _auto_work_enabled_for(self, data: dict, key: str) -> bool:
+        """自动打工是否对该用户生效：总开关 + 自动购买总开关 + 主人开启了自动购买 + 主人开启了自动打工 + 有宠物"""
+        if not bool(globals().get("AUTO_WORK_ENABLED", True)):
+            return False
+        if not bool(globals().get("AUTO_FEED_ENABLED", False)):
+            return False
+        u = data.get("users", {}).get(key)
+        if not (u and u.get("auto_feed_enabled") and u.get("auto_work_enabled")):
+            return False
+        return data.get("pets", {}).get(key) is not None
+
+    def _auto_work_pick_job(self, pet: dict, base: int, cfg_jobs: list):
+        """选择报酬最接近打工基准金币的可行打工项目（要求达标 + 不忙碌 + 非虚弱）；
+        若有溢出（报酬 > 基准）则计入基准金币。返回项目 dict 或 None。"""
+        now_ts = datetime.now().timestamp()
+        busy = now_ts < self._pet_busy_until(pet)
+        best = None
+        best_diff = None
+        for j in cfg_jobs:
+            if not self._item_can_do(pet, j, now_ts, busy):
+                continue
+            diff = abs(int(j.get("coins", 0) or 0) - base)
+            if best_diff is None or diff < best_diff:
+                best_diff = diff
+                best = j
+        return best
+
+    def _auto_work_execute(self, data: dict, key: str, u: dict, pet: dict, job: dict, now_ts: float) -> None:
+        """执行一次自动打工：消耗属性、只给金币（不给经验）、进入冷却、更新打工基准金币、记录日志。
+        结果合入宠物总览图的预留位（不主动发消息）。"""
+        before = {a: pet[a] for a in ATTR_LABELS}
+        for attr, cost in job["cost"].items():
+            pet[attr] = round(max(0.0, pet[attr] - cost), 2)
+        self._add_coins(data, key, int(job["coins"]), f"自动打工·{job['name']}")
+        # 自动打工不给经验，不调用 _apply_exp
+        self._clamp_attrs(pet)
+        pet["busy_until"] = now_ts + int(job["time"]) * 60
+        pet["busy_start"] = now_ts
+        pet["busy_activity"] = "打工"
+        pet["busy_item"] = job["name"]
+        pet["_progress_done_notified"] = False
+        # 打工基准金币：收益若溢出基准则溢出部分计入基准（新基准 = |基准 - 报酬|）
+        base0 = int(u.get("work_base", 0) or 0)
+        u["work_base"] = abs(base0 - int(job["coins"]))
+        delay = float(globals().get("AUTO_WORK_DELAY_MIN", 10) or 10) * 60
+        u["auto_work_next"] = pet["busy_until"] + delay
+        # 结果合入宠物总览预留位（下次查看宠物时显示一次；自动打工不主动发消息）
+        changes = {a: round(pet[a] - before[a], 2) for a in ATTR_LABELS if abs(pet[a] - before[a]) > 1e-9}
+        pet["last_activity"] = {
+            "msg": f"{pet['name']} 自动去「{job['name']}」打工成功！",
+            "changes": changes,
+            "reason": f"自动打工「{job['name']}」",
+            "coins": int(job["coins"]),
+            "exp": 0,
+            "act": "打工",
+            "ts": now_ts,
+            "shown": False,
+        }
+        logs = u.setdefault("auto_work_logs", [])
+        logs.append({"date": date.today().isoformat(),
+                     "ts": datetime.now().strftime("%Y-%m-%d %H:%M"),
+                     "job": job["name"], "coins": int(job["coins"]),
+                     "base_before": base0, "base_after": int(u.get("work_base", 0) or 0)})
+        cap = int(globals().get("AUTO_WORK_LOG_MAX", 30) or 30)
+        if len(logs) > cap:
+            del logs[:len(logs) - cap]
+
+    async def _auto_work_loop(self):
+        """自动打工独立计时器：每 60 秒巡检一次所有用户；冷却结束 + AUTO_WORK_DELAY_MIN 分钟后安排下一次，循环往复。
+        全程在 _lock 内操作数据，改动后保存；不给经验；不主动发消息（进度走宠物总览）。"""
+        while True:
+            try:
+                await asyncio.sleep(60)
+                async with self._lock:
+                    data = self._load()
+                    changed = False
+                    now_ts = datetime.now().timestamp()
+                    cfg_jobs = self._load_config()["jobs"]
+                    pause = int(globals().get("AUTO_WORK_PAUSE_BASE", 100) or 100)
+                    for key, u in list((data.get("users") or {}).items()):
+                        if not isinstance(u, dict):
+                            continue
+                        if not self._auto_work_enabled_for(data, key):
+                            continue
+                        base = int(u.get("work_base", 0) or 0)
+                        if base <= pause:
+                            continue  # 打工基准金币 ≤ 100 → 暂停
+                        nxt = float(u.get("auto_work_next", 0) or 0)
+                        if nxt and now_ts < nxt:
+                            continue
+                        pet = data.get("pets", {}).get(key)
+                        if not pet or pet.get("weak"):
+                            continue
+                        self._bring_pet_up_to_date(pet, date.today().isoformat())
+                        busy_until = self._pet_busy_until(pet)
+                        if now_ts < busy_until:
+                            delay = float(globals().get("AUTO_WORK_DELAY_MIN", 10) or 10) * 60
+                            u["auto_work_next"] = busy_until + delay
+                            changed = True
+                            continue
+                        job = self._auto_work_pick_job(pet, base, cfg_jobs)
+                        if not job:
+                            delay = float(globals().get("AUTO_WORK_DELAY_MIN", 10) or 10) * 60
+                            u["auto_work_next"] = now_ts + delay
+                            changed = True
+                            continue
+                        self._auto_work_execute(data, key, u, pet, job, now_ts)
+                        changed = True
+                    if changed:
+                        self._save(data)
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logger.error(f"[插件] 自动打工循环异常: {e}")
+                await asyncio.sleep(60)
+
+    def _ensure_auto_work_loop(self):
+        """懒启动自动打工后台任务（幂等）：只在有运行中的事件循环时创建。"""
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            return
+        task = getattr(self, "_auto_work_task", None)
+        if task is not None and not task.done():
+            return
+        try:
+            self._auto_work_task = asyncio.create_task(self._auto_work_loop())
+        except Exception as e:
+            logger.warning(f"[插件] 启动自动打工计时器失败: {e}")
+
+    def _handle_auto_feed_log(self, event: AstrMessageEvent) -> str:
+        """结算日志：查看自动购买记录（2.0.4，购买/使用带数量标记）与自动打工记录"""
+        name = event.get_sender_name()
+        key = self._user_key(event)
+        data = self._load()
+        u = data.get("users", {}).get(key) or {}
+        logs = u.get("auto_feed_logs") or []
+        wlogs = u.get("auto_work_logs") or []
+        if not logs and not wlogs:
+            return f"{name} 还没有自动购买/自动打工记录（发送「自动购买 开」开启）。"
+        lines = [f"📋 {name} 的自动购买/打工记录（最近 {min(10, len(logs))} 条购买、{min(5, len(wlogs))} 条打工）：", ""]
+        for lg in reversed(logs[-10:]):
+            if int(lg.get("total", 0) or 0) > 0:
+                items = "、".join(
+                    f"{'🛒' if it.get('src') == '购买' else '📦'}{it['name']}×{it['qty']}" + (f"（{it['cost']}金）" if it.get('cost') else "")
+                    for it in lg.get("items", []))
+                lines.append(f"购买 {lg.get('date', '')}：{items}，共花费 {lg['total']} 金币")
+            else:
+                lines.append(f"购买 {lg.get('date', '')}：宠物状态良好，无需购买")
+        for lg in reversed(wlogs[-5:]):
+            lines.append(f"打工 {lg.get('date', '')}：完成「{lg['job']}」+{lg['coins']}金币，"
+                         f"基准 {lg['base_before']} → {lg['base_after']}")
+        img = self._render_text_image("自动购买/打工记录", lines)
+        if img is not None:
+            return img
+        return "\n".join(lines)
 
     def _handle_bag(self, event: AstrMessageEvent):
         """背包（1.7.7 大改）：卡片式图片——标题区（用户名/好感等级/金币/负债/宠物/农场）

@@ -1252,6 +1252,159 @@ async function syncGroupNames() {
   }
 }
 
+// ================= 运行记录（2.0.4）：宠物记录 / 商店价格 =================
+function tierLabel(tier) {
+  return tier ? "T" + tier : "-";
+}
+
+function fmtNum(v) {
+  const n = Number(v);
+  if (!Number.isFinite(n)) return "0";
+  return (Math.round(n * 10) / 10).toString();
+}
+
+function attrCell(label, val, maxv, red) {
+  const pct = maxv > 0 ? Math.min(100, Math.max(0, (val / maxv) * 100)) : 0;
+  return `<span class="rec-attr${red ? " red" : ""}" title="${esc(label)} ${fmtNum(val)}/${fmtNum(maxv)}">
+    <span class="rec-attr-label">${esc(label)}</span>
+    <span class="rec-attr-bar"><i style="width:${pct}%"></i></span>
+    <span class="rec-attr-num">${fmtNum(val)}/${fmtNum(maxv)}</span>
+  </span>`;
+}
+
+function recordPetCard(p) {
+  const a = p.attrs || {};
+  const auto = p.auto || {};
+  const busy = p.busy;
+  const attrRows = [
+    attrCell("饱食", a.sat, a.sat_max, a.sat_red),
+    attrCell("口渴", a.thr, a.thr_max, a.thr_red),
+    attrCell("体力", a.sta, a.sta_max, false),
+    attrCell("心情", a.mood, a.mood_max, a.mood_red),
+    attrCell("健康", a.health, a.health_max, a.health_red),
+  ].join("");
+  const feedLogs = (auto.feed_logs || []).slice().reverse().map((lg) => {
+    const items = (lg.items || [])
+      .map((it) => (it.src === "购买" ? "🛒" : "📦") + esc(it.name) + "×" + it.qty)
+      .join("、");
+    return `<div class="rec-line">${esc(lg.ts || lg.date || "")} ${items ? "：" + items : ""}${lg.total ? `（共 ${lg.total} 金币）` : ""}</div>`;
+  }).join("") || '<div class="rec-line muted">暂无购买记录</div>';
+  const workLogs = (auto.work_logs || []).slice().reverse().map((lg) =>
+    `<div class="rec-line">${esc(lg.ts || lg.date || "")}：自动打工「${esc(lg.job)}」+${lg.coins} 金币，基准 ${lg.base_before} → ${lg.base_after}</div>`,
+  ).join("") || '<div class="rec-line muted">暂无打工记录</div>';
+  // 可点击开关芯片（2.0.4：运行记录页直接控制每个用户的自动购买/自动打工）：
+  // data-cur = 用户当前开关（0/1）；点击后向 records/pets/auto 切换
+  const toggleChip = (key, on, hint) =>
+    `<button type="button" class="rec-chip${on ? " on" : ""} toggle" data-auto="${key}" data-uid="${esc(p.uid)}" data-cur="${on ? 1 : 0}" title="${esc(hint)}">${on ? "开" : "关"}</button>`;
+  const purchaseOn = !!auto.purchase_on;
+  const workOn = !!auto.work_on;
+  const purchaseHint = auto.purchase_global ? "自动购买（点击切换开/关）" : "自动购买 · ⚠️ 总开关未开启（设置 → 宠物 → 自动购买）";
+  const workHint = !auto.purchase_on
+    ? "自动打工 · 需先开启自动购买（点击无效）"
+    : (auto.work_global ? "自动打工（点击切换开/关；只给金币不给经验）" : "自动打工 · 总开关未开启（设置 → 宠物 → 自动打工）");
+  return `<div class="rec-card">
+    <div class="rec-card-head">
+      <span class="rec-card-name">${esc(p.name || "宠物")}</span>
+      <span class="rec-card-nick">${esc(p.nick || p.uid)}</span>
+      <span class="rec-card-tag">Lv.${fmtNum(p.level)}${p.weak ? " 😷虚弱" : ""} ${tierLabel(p.tier)}</span>
+    </div>
+    <div class="rec-attrs">${attrRows}</div>
+    <div class="rec-row">活动：${busy ? `${esc(busy.activity)}「${esc(busy.item)}」剩 ${busy.remaining_min} 分钟` : "空闲"}</div>
+    <div class="rec-row">
+      <span class="rec-row-label">自动购买</span> ${toggleChip("purchase", purchaseOn, purchaseHint)}
+      <span class="rec-row-label">自动打工</span> ${toggleChip("work", workOn, workHint)}
+      <span class="rec-chip gold">基准 ${fmtNum(auto.work_base)}</span>
+    </div>
+    <div class="rec-block"><div class="rec-block-title">购买 / 使用记录（×N 数量标记）</div>${feedLogs}</div>
+    <div class="rec-block"><div class="rec-block-title">自动打工记录</div>${workLogs}</div>
+  </div>`;
+}
+
+// 运行记录页：切换某用户的自动购买/自动打工（点击卡片上的「开/关」芯片）
+async function toggleRecordAuto(uid, key, curOn) {
+  setStatus("status-record-pets", "切换中...");
+  try {
+    const r = await bridge.apiPost("records/pets/auto", { uid, key, on: !curOn });
+    if (r && r.ok) {
+      setStatus("status-record-pets", `✅ ${r.msg}`);
+      loadRecordPets(); // 刷新列表，显示最新开关状态
+    } else {
+      setStatus("status-record-pets", "❌ " + ((r && r.msg) || "切换失败"));
+    }
+  } catch (e) {
+    setStatus("status-record-pets", "❌ 切换失败：" + e.message);
+  }
+}
+
+async function loadRecordPets() {
+  setStatus("status-record-pets", "加载中...");
+  const box = $("records-pets-list");
+  try {
+    const r = await bridge.apiGet("records/pets");
+    const pets = (r && r.pets) || [];
+    if (!pets.length) {
+      box.innerHTML = '<p class="hint">暂无宠物记录（还没有宠物被领养）。</p>';
+      setStatus("status-record-pets", `✅ 共 ${pets.length} 只`);
+      return;
+    }
+    box.innerHTML = `<div class="rec-grid">${pets.map(recordPetCard).join("")}</div>`;
+    if (!box._autoToggleHandler) {
+      box._autoToggleHandler = (e) => {
+        const btn = e.target.closest(".rec-chip[data-auto]");
+        if (!btn) return;
+        toggleRecordAuto(btn.dataset.uid, btn.dataset.auto, Number(btn.dataset.cur) === 1);
+      };
+      box.addEventListener("click", box._autoToggleHandler);
+    }
+    setStatus("status-record-pets", `✅ 共 ${pets.length} 只宠物（点击开/关可切换）`);
+  } catch (e) {
+    box.innerHTML = '<p class="hint">加载失败：' + esc(e.message) + "</p>";
+    setStatus("status-record-pets", "❌ 加载失败");
+  }
+}
+
+async function loadRecordPrices() {
+  setStatus("status-record-prices", "加载中...");
+  const box = $("records-prices-list");
+  try {
+    const r = await bridge.apiGet("records/prices");
+    if (!r || !r.enabled) {
+      box.innerHTML = '<p class="hint">商店价格浮动未开启：请在「设置 → 商店 → 宠物商店」打开「宠物商店价格浮动开关」后查看价格变动。当前所有商品按原价出售。</p>';
+      setStatus("status-record-prices", "未开启");
+      return;
+    }
+    const priceHint = $("price-discount-range");
+    if (priceHint) priceHint.textContent = "2~5";
+    const disc = r.discount || null;
+    let html = "";
+    if (r.special && (r.current || []).length) {
+      html += `<div class="rec-card"><div class="rec-card-head"><span class="rec-card-name">当前窗口 ${esc(r.window)}</span><span class="rec-card-tag gold">特价时段</span></div>`;
+      html += (r.current || []).filter((it) => it.price !== it.base).map((it) =>
+        `<div class="rec-line">${esc(it.name)}：${it.base} 金币 → <b>${it.price} 金币</b>（${(it.mult * 10).toFixed(1)} 折）</div>`).join("");
+      html += `</div>`;
+    }
+    const recs = (r.records || []).slice().reverse();
+    html += recs.map((rec) => {
+      const items = (rec.items || []).map((it) =>
+        `<div class="rec-line">${esc(it.name)}：${it.base} 金币 → <b>${it.price} 金币</b>（${(it.mult * 10).toFixed(1)} 折）</div>`).join("");
+      return `<div class="rec-card">
+        <div class="rec-card-head"><span class="rec-card-name">窗口 ${esc(rec.window)}</span>
+        ${rec.ts ? `<span class="rec-card-nick">${esc(rec.ts)}</span>` : ""}
+        <span class="rec-card-tag gold">${rec.items && rec.items.length ? rec.items.length + " 件打折" : "原价"}</span></div>
+        ${items || '<div class="rec-line muted">该窗口无打折商品</div>'}
+      </div>`;
+    }).join("");
+    if (!html) {
+      html = '<p class="hint">暂无价格变动记录（插件刚开启价格浮动或还没有到达特价时段）。</p>';
+    }
+    box.innerHTML = `<div class="rec-grid">${html}</div>`;
+    setStatus("status-record-prices", `✅ ${(recs || []).length} 条窗口记录`);
+  } catch (e) {
+    box.innerHTML = '<p class="hint">加载失败：' + esc(e.message) + "</p>";
+    setStatus("status-record-prices", "❌ 加载失败");
+  }
+}
+
 // ================= 调试模式 =================
 async function loadDebugStatus() {
   const bar = $("debug-bar");
@@ -1288,7 +1441,7 @@ async function toggleDebug() {
 // navStack 记录首页之后的视图；每项 {kind:'subpage'|'panel', id, title, params}
 const navStack = [];
 
-const SUBPAGE_TITLES = { shop: "商店编辑", settings: "设置", config: "打工玩耍" };
+const SUBPAGE_TITLES = { shop: "商店编辑", settings: "设置", config: "打工玩耍", records: "运行记录" };
 
 // 设置子页 → 子系统卡片（badge/icon/title/tag/group 用于过滤运行参数）
 const SETTINGS_CARDS = [
@@ -1325,6 +1478,12 @@ const SHOP_CARDS = [
 const CONFIG_CARDS = [
   { badge: "打工玩耍", icon: "work", title: "打工", tag: "项目", sub: "jobs" },
   { badge: "打工玩耍", icon: "toy", title: "玩耍", tag: "项目", sub: "plays" },
+];
+
+// 运行记录子页 → 宠物记录 / 商店价格（2.0.4）
+const RECORDS_CARDS = [
+  { badge: "运行记录", icon: "pet", title: "宠物记录", tag: "宠物", sub: "pets" },
+  { badge: "运行记录", icon: "shop", title: "商店价格", tag: "价格", sub: "prices" },
 ];
 
 // 子页面卡片：深浅两态背景扫描互换（图标居中不动、仅变色）+ 底部图标/标题（2.0.2：无徽章无标签）
@@ -1381,6 +1540,17 @@ function renderSubpage(id) {
         else openPanel({ id: "params", title: `设置 · ${c.title}`, params: { group: c.group } });
       });
     });
+  } else if (id === "records") {
+    // 运行记录子页：宠物记录 / 商店价格 两个按钮
+    wrap.innerHTML = `<div class="sub-cards cols-3">${RECORDS_CARDS.map((c, i) => subCard({ ...c, key: "rec-" + i })).join("")}</div>`;
+    wrap.querySelectorAll(".sub-card").forEach((btn) => {
+      const idx = Number(btn.dataset.card.split("-")[1]);
+      const c = RECORDS_CARDS[idx];
+      btn.addEventListener("click", () => {
+        if (c.sub === "pets") openPanel({ id: "records-pets", title: "运行记录 · 宠物记录" });
+        else openPanel({ id: "records-prices", title: "运行记录 · 商店价格" });
+      });
+    });
   }
 }
 
@@ -1435,6 +1605,8 @@ function loadCurrent() {
     lanLoadSettings();
   } else if (cur.id === "activities") loadActivities();
   else if (cur.id === "aliases") loadAliases();
+  else if (cur.id === "records-pets") loadRecordPets();
+  else if (cur.id === "records-prices") loadRecordPrices();
   // data 面板为导出/导入操作，无需自动加载
 }
 
@@ -1476,6 +1648,7 @@ function openFeature(name) {
     activities: () => openPanel({ id: "activities", title: "活动中心" }),
     aliases: () => openPanel({ id: "aliases", title: "同义口令" }),
     data: () => openPanel({ id: "data", title: "数据导入导出" }),
+    records: () => openSubpage("records"),
   };
   (map[name] || (() => openSubpage(name)))();
 }
@@ -1575,6 +1748,8 @@ $("btn-load-params").addEventListener("click", () => loadParams(currentView().pa
 $("btn-save-params").addEventListener("click", saveParams);
 $("btn-load-aliases").addEventListener("click", loadAliases);
 $("btn-save-aliases").addEventListener("click", saveAliases);
+$("btn-load-record-pets").addEventListener("click", loadRecordPets);
+$("btn-load-record-prices").addEventListener("click", loadRecordPrices);
 $("btn-export-data").addEventListener("click", exportData);
 $("btn-import-data").addEventListener("click", importData);
 $("btn-sync-group-names").addEventListener("click", syncGroupNames);

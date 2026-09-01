@@ -299,6 +299,52 @@ PLAY_SHOW_LOCKED = 2
 # 宠物属性上限：不同健康值范围内的 饱食/口渴/体力/心情 上限（WebUI「设置 → 宠物 → 属性」可改）
 # 格式：健康值下限=饱食,口渴,体力,心情，竖线分隔，从高到低匹配
 PET_ATTR_MAX_RANGES = "140=200,200,200,120|80=120,120,120,100|40=100,100,100,100|0=80,80,60,80"
+# 宠物每日结算·超扣转健康抵扣（2.0.3）：结算扣减的属性若超出结算前属性值，
+# 超出部分按「PET_SETTLE_HEALTH_EXCHANGE 属性点 = 1 健康」用健康值抵扣（WebUI「设置 → 签到 → 宠物结算范围」可改）
+PET_SETTLE_HEALTH_EXCHANGE = 4
+
+# 宠物自动购买（2.0.4，默认关闭）：主人用「自动购买 开/关」开启。
+# 触发判定：饱食/口渴/心情/健康 任一属性进入第 3/4 档（饱食/口渴/心情 < 二档下限、健康 < 40）自动触发；
+# 按 饱食→口渴→心情→健康 顺序补满，且道具数量最少化（如缺口 120：优先 3 个 +40 而不是 12 个 +10）；
+# 优先消耗仓库已有道具（免费），不足再购买（实时价 × AUTO_FEED_PRICE_MULT，计入打工基准金币 work_base）；
+# 购买/使用记录带数量标记（🛒/📦 ×N）。AUTO_PURCHASE_COOLDOWN_MIN=触发后金币不足未能补满时的冷却分钟数（防刷屏）。
+AUTO_FEED_ENABLED = False
+AUTO_FEED_PRICE_MULT = 1.2
+AUTO_FEED_LOG_MAX = 30
+AUTO_PURCHASE_COOLDOWN_MIN = 10
+
+# 自动打工（2.0.4，默认总开关开启）：开启自动购买的用户自动开启自动打工（也可「自动打工 开/关」单独控制，
+# 未开启自动购买不允许开启自动打工）。自动购买消耗的金币 = 打工基准金币（work_base）；
+# 自动选择「报酬最接近打工基准金币」的可行打工项目，只给金币不给经验；完成后 新基准 = |基准 - 报酬|（溢出计入基准）；
+# 基准金币 ≤ AUTO_WORK_PAUSE_BASE（100）暂停，直到下次自动购买使基准 > 100 自动恢复；
+# 独立计时器：冷却结束 + AUTO_WORK_DELAY_MIN 分钟后安排下一次自动打工，循环往复。
+AUTO_WORK_ENABLED = True
+AUTO_WORK_DELAY_MIN = 10
+AUTO_WORK_PAUSE_BASE = 100
+AUTO_WORK_LOG_MAX = 30
+
+# 缺货自动购买（2.0.3，默认关闭）：使用道具时仓库不足则自动购买足额道具并使用（倍率可调）
+AUTO_BUY_SHORT_ENABLED = False
+AUTO_BUY_SHORT_MULT = 1.0
+
+# 商店价格浮动（2.0.4 更改，默认关闭）：宠物商店价格固定偶数点刷新（0/2/4/…/22 整点），
+# 同一 2 小时窗口内价格稳定（按窗口种子固定随机）；特价时段（10/12/18/0 时窗口）随机选取
+# SHOP_PRICE_DISCOUNT_MIN~MAX 种商品打 二~八折（价格 = 原价 × 倍率 LO~HI），其余时段全部商品回原价；
+# 购买按实时价结算；价格变动被记录，可在 WebUI「运行记录 → 商店价格」查看。
+# 种子折扣（2.0.3，默认关闭）：种子每日有概率让 1~3 款打八折（肥料不受影响，仍独立受 SEED_DISCOUNT_* 控制）
+SHOP_PRICE_FLOAT_ENABLED = False
+SHOP_PRICE_REFRESH_HOURS = (0, 2, 4, 6, 8, 10, 12, 14, 16, 18, 20, 22)
+SHOP_PRICE_SPECIAL_HOURS = (10, 12, 18, 0)
+SHOP_PRICE_DISCOUNT_MIN = 2
+SHOP_PRICE_DISCOUNT_MAX = 5
+SHOP_PRICE_DISCOUNT_LO = 0.2
+SHOP_PRICE_DISCOUNT_HI = 0.8
+SHOP_PRICE_RECORD_MAX = 60
+SEED_DISCOUNT_ENABLED = False
+SEED_DISCOUNT_CHANCE = 0.5
+SEED_DISCOUNT_MIN = 1
+SEED_DISCOUNT_MAX = 3
+SEED_DISCOUNT_PCT = 0.8
 MONEY_EVENT_CHANCE = 0.01   # 玩耍捡到钱概率（1%）
 MONEY_EVENT_GAIN = 100      # 捡到钱的金币
 MONEY_EVENT_MAX_PER_DAY = 2  # 每个周期最多触发次数
@@ -310,7 +356,7 @@ _PET_WEAK_LOCKED_HEADS = frozenset(("打工", "玩耍", "购买", "使用", "看
 # 全部标准指令口令（供 WebUI 下拉与保存校验；别名必须指向其中之一）
 CMD_HEADS = frozenset((
     "签到", "我的签到", "签到帮助", "游戏帮助", "帮助", "宠物帮助", "农场帮助", "左轮手枪帮助",
-    "装弹", "加入", "开始", "开枪", "我的战绩",
+    "修改昵称", "自动购买", "自动打工", "结算日志", "装弹", "加入", "开始", "开枪", "我的战绩",
     "解锁宠物", "宠物", "更改宠物名字", "治疗宠物", "打工", "玩耍",
     "商店", "购买", "使用", "背包", "看家",
     "农场", "解锁农场", "购买土地", "土地升级", "种子商店", "农场商店", "购买种子",
@@ -449,6 +495,10 @@ DEBUG_PASSWORD = "88224646"
 # 金币账单最多展示条数
 LEDGER_SHOW = 30
 
+# 自定义昵称（2.0.3）：有效期 90 天（秒），优先级高于获取的昵称
+CUSTOM_NAME_TTL = 90 * 86400
+CUSTOM_NAME_MAX_LEN = 50
+
 # 金币红包：每人每天最多发送次数、有效期（秒）
 REDPACKET_DAILY_LIMIT = 4
 REDPACKET_TTL = 600
@@ -579,6 +629,46 @@ RUNTIME_PARAMS = [
      "desc": "「农场商店」（不带参数）默认展示的不能购买（等级不足）的种子灰卡数量；「农场商店 全部」显示全部商品", "default": 3, "min": 0, "max": 99},
     {"key": "SHOP_PRICE_PAD", "label": "商店价格底边距（像素）", "type": "int", "group": "商店", "subgroup": "通用",
      "desc": "商店卡片价格与卡片底部/分割线的距离 N", "default": 4, "min": 0, "max": 30},
+    # ---- 商店（补充）2.0.3：缺货自动购买；2.0.4：价格刷新改为固定时段折扣 ----
+    {"key": "AUTO_BUY_SHORT_ENABLED", "label": "缺货自动购买开关", "type": "bool", "group": "商店", "subgroup": "通用",
+     "desc": "开启后：使用道具时仓库不足则自动购买足额道具并使用（默认关闭）", "default": False},
+    {"key": "AUTO_BUY_SHORT_MULT", "label": "缺货自动购买价格倍率", "type": "float", "group": "商店", "subgroup": "通用",
+     "desc": "缺货自动购买道具的价格倍率（1.0 = 原价）", "default": 1.0, "min": 0.1, "max": 10},
+    {"key": "SHOP_PRICE_FLOAT_ENABLED", "label": "宠物商店价格浮动开关", "type": "bool", "group": "商店", "subgroup": "宠物商店",
+     "desc": "开启后：宠物商店价格固定偶数点（0/2/4/…/22 整点）刷新、同窗口（2 小时）内稳定；特价时段（10/12/18/0 时窗口）随机选取 MIN~MAX 种商品按 LO~HI 倍率打折，其余时段全部回原价（默认关闭）", "default": False},
+    {"key": "SHOP_PRICE_DISCOUNT_MIN", "label": "特价时段·最少折扣商品数", "type": "int", "group": "商店", "subgroup": "宠物商店",
+     "desc": "特价时段（10/12/18/0 时窗口）随机选取的打折商品最少数量", "default": 2, "min": 0, "max": 20},
+    {"key": "SHOP_PRICE_DISCOUNT_MAX", "label": "特价时段·最多折扣商品数", "type": "int", "group": "商店", "subgroup": "宠物商店",
+     "desc": "特价时段随机选取的打折商品最多数量", "default": 5, "min": 0, "max": 20},
+    {"key": "SHOP_PRICE_DISCOUNT_LO", "label": "折扣倍率下限（二折）", "type": "float", "group": "商店", "subgroup": "宠物商店",
+     "desc": "折扣价格 = 原价 × [下限, 上限]（0.2 = 打二折）", "default": 0.2, "min": 0.05, "max": 1},
+    {"key": "SHOP_PRICE_DISCOUNT_HI", "label": "折扣倍率上限（八折）", "type": "float", "group": "商店", "subgroup": "宠物商店",
+     "desc": "折扣价格 = 原价 × [下限, 上限]（0.8 = 打八折）", "default": 0.8, "min": 0.05, "max": 1},
+    {"key": "SHOP_PRICE_RECORD_MAX", "label": "价格变动·保留记录条数", "type": "int", "group": "商店", "subgroup": "宠物商店",
+     "desc": "WebUI「运行记录 → 商店价格」保留的最近价格变动记录条数（每次刷新窗口记一条）", "default": 60, "min": 1, "max": 500},
+    {"key": "SEED_DISCOUNT_ENABLED", "label": "种子每日折扣开关", "type": "bool", "group": "商店", "subgroup": "农场商店",
+     "desc": "开启后：每天有概率让 1~3 款种子打八折（肥料不受影响；默认关闭）", "default": False},
+    {"key": "SEED_DISCOUNT_CHANCE", "label": "种子折扣发生概率", "type": "float", "group": "商店", "subgroup": "农场商店",
+     "desc": "每天触发种子折扣的概率（0.5 = 50%）", "default": 0.5, "min": 0, "max": 1},
+    {"key": "SEED_DISCOUNT_MIN", "label": "种子折扣最少款数", "type": "int", "group": "商店", "subgroup": "农场商店",
+     "desc": "每天被打折的种子最少数量", "default": 1, "min": 1, "max": 20},
+    {"key": "SEED_DISCOUNT_MAX", "label": "种子折扣最多款数", "type": "int", "group": "商店", "subgroup": "农场商店",
+     "desc": "每天被打折的种子最多数量", "default": 3, "min": 1, "max": 20},
+    {"key": "SEED_DISCOUNT_PCT", "label": "种子折扣倍率", "type": "float", "group": "商店", "subgroup": "农场商店",
+     "desc": "折扣后的价格倍率（0.8 = 打八折）", "default": 0.8, "min": 0.05, "max": 1},
+    # ---- 宠物（补充）2.0.3 自动喂养 → 2.0.4 改为自动购买 + 自动打工 ----
+    {"key": "AUTO_FEED_ENABLED", "label": "自动购买总开关", "type": "bool", "group": "宠物", "subgroup": "自动购买",
+     "desc": "总开关（默认关闭）：开启后，用「自动购买 开/关」启用了自动购买的用户，在宠物 饱食/口渴/心情/健康 任一属性进入第 3/4 档时自动补满；自动购买同时自动开启自动打工", "default": False},
+    {"key": "AUTO_FEED_PRICE_MULT", "label": "自动购买·购买价格倍率", "type": "float", "group": "宠物", "subgroup": "自动购买",
+     "desc": "自动购买（补满缺口）商品的价格倍率（1.2 = 比手动购买高 20%）；仓库已有道具免费使用", "default": 1.2, "min": 0.1, "max": 10},
+    {"key": "AUTO_PURCHASE_COOLDOWN_MIN", "label": "自动购买·失败冷却分钟", "type": "int", "group": "宠物", "subgroup": "自动购买",
+     "desc": "自动购买触发后因金币不足未能补满时，多少分钟后才允许再次触发（防止每消息反复尝试）", "default": 10, "min": 0, "max": 1440},
+    {"key": "AUTO_WORK_ENABLED", "label": "自动打工总开关", "type": "bool", "group": "宠物", "subgroup": "自动打工",
+     "desc": "总开关（默认开启）：开启后，开启了自动购买的用户自动开启自动打工（也可「自动打工 开/关」单独控制）", "default": True},
+    {"key": "AUTO_WORK_DELAY_MIN", "label": "自动打工·冷却后间隔分钟", "type": "int", "group": "宠物", "subgroup": "自动打工",
+     "desc": "自动打工完成进入冷却后，冷却结束再过 N 分钟安排下一次自动打工（独立计时器循环）", "default": 10, "min": 0, "max": 600},
+    {"key": "AUTO_WORK_PAUSE_BASE", "label": "自动打工·暂停基准金币", "type": "int", "group": "宠物", "subgroup": "自动打工",
+     "desc": "打工基准金币 ≤ 该值（100）时暂停自动打工；下次自动购买使其超过该值后自动恢复", "default": 100, "min": 0, "max": 1000000},
     # ---- 背包（独立折叠分组） ----
     {"key": "BAG_CARD_COLS", "label": "背包每行卡片数", "type": "int", "group": "背包", "subgroup": "卡片显示",
      "desc": "「背包」图片一行展示的卡片数量", "default": 5, "min": 3, "max": 7},
@@ -678,6 +768,9 @@ RUNTIME_PARAMS = [
      "desc": "四档判定阈值（一档下限,二档下限,三档下限，从高到低）：属性值 ≥一档下限→1档；≥二档下限→2档；≥三档下限→3档；否则4档。格式：饱食=120,50,30|口渴=120,70,30|心情=80,50,30",
      "default": "饱食=120,50,30|口渴=120,70,30|心情=80,50,30",
      "attr": "pet_settle_tiers"},
+    {"key": "PET_SETTLE_HEALTH_EXCHANGE", "label": "宠物结算·超扣转健康抵扣比例", "type": "int", "group": "签到", "subgroup": "宠物结算范围",
+     "desc": "每日结算扣减的属性若超出结算前属性值，超出部分按「N 属性点 = 1 健康」用健康值抵扣（默认 4：少 4 点属性点扣 1 点健康；超出部分向上取整）",
+     "default": 4, "min": 1, "max": 100},
     # ---- 左轮手枪（补充） ----
     {"key": "ROULETTE_MAGAZINES", "label": "弹匣数量", "type": "int", "group": "左轮手枪", "subgroup": "规则",
      "desc": "左轮手枪弹匣容量", "default": 7, "min": 3, "max": 20},
@@ -1528,6 +1621,42 @@ class CoreMixin:
         # 数据按用户维度存储，跨群聊共享
         return event.get_sender_id()
 
+    def _custom_name_of(self, data: dict, key: str) -> str:
+        """返回用户在有效期内的自定义昵称（2.0.3）；未设置或已过期返回空串。"""
+        u = data.get("users", {}).get(key)
+        if not u:
+            return ""
+        ts = u.get("custom_name_ts")
+        if not ts:
+            return ""
+        try:
+            ts = float(ts)
+        except (TypeError, ValueError):
+            return ""
+        if datetime.now().timestamp() - ts > float(globals().get("CUSTOM_NAME_TTL", 90 * 86400)):
+            return ""
+        return str(u.get("custom_name") or "").strip()
+
+    def _handle_change_name(self, event: AstrMessageEvent) -> str:
+        """修改昵称 <任意字符>：设置自定义昵称（2.0.3），有效期 90 天，优先级高于获取的昵称"""
+        name = event.get_sender_name()
+        key = self._user_key(event)
+        parts = event.message_str.split(maxsplit=1)
+        if len(parts) < 2 or not parts[1].strip():
+            return f"{name} 请指定要设置的昵称：修改昵称 <任意字符>（如：修改昵称 小明）"
+        custom = parts[1].strip()
+        max_len = int(globals().get("CUSTOM_NAME_MAX_LEN", 50))
+        if len(custom) > max_len:
+            return f"昵称过长（最多 {max_len} 个字符）。"
+        data = self._load()
+        u = self._ensure_user(data, key)
+        u["custom_name"] = custom
+        u["custom_name_ts"] = datetime.now().timestamp()
+        self._save(data)
+        ttl_days = int(float(globals().get("CUSTOM_NAME_TTL", 90 * 86400)) // 86400)
+        return (f"✅ {name} 已设置自定义昵称为「{custom}」（有效期 {ttl_days} 天，"
+                f"优先级高于获取的昵称，后续响应将使用该昵称）。")
+
     @staticmethod
     def _level_of(favorability: float) -> int:
         return min(MAX_LEVEL, int(favorability // LEVEL_STEP))
@@ -1886,6 +2015,30 @@ __all__ = [
     "PLAY_SHOW_DOABLE",
     "PLAY_SHOW_LOCKED",
     "PET_ATTR_MAX_RANGES",
+    "PET_SETTLE_HEALTH_EXCHANGE",
+    "AUTO_FEED_ENABLED",
+    "AUTO_FEED_PRICE_MULT",
+    "AUTO_FEED_LOG_MAX",
+    "AUTO_PURCHASE_COOLDOWN_MIN",
+    "AUTO_WORK_ENABLED",
+    "AUTO_WORK_DELAY_MIN",
+    "AUTO_WORK_PAUSE_BASE",
+    "AUTO_WORK_LOG_MAX",
+    "AUTO_BUY_SHORT_ENABLED",
+    "AUTO_BUY_SHORT_MULT",
+    "SHOP_PRICE_FLOAT_ENABLED",
+    "SHOP_PRICE_REFRESH_HOURS",
+    "SHOP_PRICE_SPECIAL_HOURS",
+    "SHOP_PRICE_DISCOUNT_MIN",
+    "SHOP_PRICE_DISCOUNT_MAX",
+    "SHOP_PRICE_DISCOUNT_LO",
+    "SHOP_PRICE_DISCOUNT_HI",
+    "SHOP_PRICE_RECORD_MAX",
+    "SEED_DISCOUNT_ENABLED",
+    "SEED_DISCOUNT_CHANCE",
+    "SEED_DISCOUNT_MIN",
+    "SEED_DISCOUNT_MAX",
+    "SEED_DISCOUNT_PCT",
     "MONEY_EVENT_CHANCE",
     "MONEY_EVENT_GAIN",
     "MONEY_EVENT_MAX_PER_DAY",
