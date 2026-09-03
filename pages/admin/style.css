@@ -1771,12 +1771,170 @@ input[type="file"] {
   margin-top: var(--space-2);
 }
 
-/* ================= 运行记录（2.0.4）：宠物记录 / 商店价格 ================= */
-.record-grid {
+/* ================= 运行记录（2.0.4/2.1.0）：宠物记录 / 用户信息 / 商店价格 ================= */
+.record-grid,
+.rec-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(340px, 1fr));
   gap: var(--space-3);
   margin-bottom: var(--space-3);
+}
+
+/* 2.1.0：宠物记录 / 用户信息每行固定两只卡片（宽屏），窄屏自动降为单列 */
+.rec-grid.cols-2 {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+@media (max-width: 900px) {
+  .rec-grid.cols-2 {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* 2.1.0：顶部矩形搜索框（校园导览风：矩形、边框、聚焦绿环） */
+.search-box {
+  width: 260px;
+  max-width: 100%;
+  padding: 7px 12px;
+  border: 1px solid var(--border-2);
+  border-radius: 0;
+  background: var(--surface);
+  color: var(--text);
+  font: inherit;
+  font-size: 13px;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+.search-box::placeholder {
+  color: var(--muted);
+}
+.search-box:focus-visible {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: var(--ring-accent);
+}
+
+/* 2.1.0：停用标签（虚弱宠物红色） */
+.rec-chip.danger-chip {
+  border-color: var(--danger);
+  color: var(--danger);
+  background: var(--danger-soft);
+}
+
+/* 2.1.0：用户信息卡片（点击展开详情） */
+.user-card {
+  cursor: pointer;
+}
+.user-card .rec-card-head {
+  flex-wrap: wrap;
+}
+/* 2.1.0：展开的卡片横跨整行（拉出详情空间），同行其它卡片顺延平移到被拉出的空白位置、
+   不遮挡且本身不展开；管理员可同时展开多张（各自占一整行） */
+.user-card.expanded {
+  grid-column: 1 / -1;
+  border-color: var(--gold);
+  box-shadow: var(--shadow-2);
+}
+.user-card.expanded .user-detail {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  border-top: 1px dashed var(--gold);
+  padding-top: var(--space-2);
+  margin-top: var(--space-2);
+  cursor: default;
+}
+.user-detail {
+  display: none;
+}
+/* 2.1.0：展开详情 = 各模块独立附属卡片（仓库/农场/宠物/银行/自动化） */
+.detail-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+  gap: var(--space-2);
+}
+.detail-card {
+  border: 1px solid var(--border);
+  border-right-width: 3px;
+  border-right-color: var(--gold);
+  border-radius: var(--radius);
+  background: var(--surface-2);
+  padding: 8px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.detail-card-title {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--accent);
+  padding-bottom: 3px;
+  border-bottom: 1px solid var(--border);
+}
+.user-detail .rec-block-title {
+  color: var(--accent);
+}
+.user-detail .rec-line {
+  margin-left: 2px;
+}
+.bag-row {
+  gap: 4px;
+  flex-wrap: wrap;
+}
+.bag-chip {
+  display: inline-block;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text-2);
+  padding: 0 7px;
+  font-size: 11px;
+  line-height: 20px;
+  border-radius: 0;
+  white-space: nowrap;
+}
+.bag-chip.muted {
+  color: var(--muted);
+}
+.rec-chip.toggle-expand {
+  cursor: pointer;
+  border-style: dashed;
+  margin-left: auto;
+}
+.rec-chip.toggle-expand:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+/* 2.1.0：用户信息排序控件（矩形、与搜索框一致的校园导览样式） */
+.sort-select {
+  padding: 7px 10px;
+  border: 1px solid var(--border-2);
+  border-radius: 0;
+  background: var(--surface);
+  color: var(--text);
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+.sort-select:focus-visible {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: var(--ring-accent);
+}
+.sort-order {
+  padding: 7px 12px;
+  border: 1px solid var(--border-2);
+  border-radius: 0;
+  background: var(--surface-2);
+  color: var(--accent);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: border-color 0.15s ease, color 0.15s ease, background 0.15s ease;
+}
+.sort-order:hover {
+  border-color: var(--accent);
+  background: var(--accent-soft);
 }
 
 .rec-card {
