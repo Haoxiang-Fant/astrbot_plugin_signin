@@ -315,13 +315,24 @@ AUTO_PURCHASE_COOLDOWN_MIN = 10
 
 # 自动打工（2.0.4，默认总开关开启）：开启自动购买的用户自动开启自动打工（也可「自动打工 开/关」单独控制，
 # 未开启自动购买不允许开启自动打工）。自动购买消耗的金币 = 打工基准金币（work_base）；
-# 自动选择「报酬最接近打工基准金币」的可行打工项目，只给金币不给经验；完成后 新基准 = |基准 - 报酬|（溢出计入基准）；
+# 自动选择「报酬最接近打工基准金币」的可行打工项目，默认只给金币不给经验；完成后 新基准 = |基准 - 报酬|（溢出计入基准）；
 # 基准金币 ≤ AUTO_WORK_PAUSE_BASE（100）暂停，直到下次自动购买使基准 > 100 自动恢复；
 # 独立计时器：冷却结束 + AUTO_WORK_DELAY_MIN 分钟后安排下一次自动打工，循环往复。
+# 2.1.0：AUTO_WORK_EXP_ENABLED=自动打工是否产生经验收益（默认关闭）；开启后经验 = 该打工项目经验 × AUTO_WORK_EXP_MULT
+#（倍率 0.1~1 倍，可在 WebUI「设置 → 宠物 → 自动打工」调整，默认 0.5 = 手动打工经验的一半）。
 AUTO_WORK_ENABLED = True
 AUTO_WORK_DELAY_MIN = 10
 AUTO_WORK_PAUSE_BASE = 100
 AUTO_WORK_LOG_MAX = 30
+AUTO_WORK_EXP_ENABLED = False
+AUTO_WORK_EXP_MULT = 0.5
+
+# 2.1.0：固定刷新时间 —— 每天 DAILY_SETTLE_HOUR（默认 0 点）固定开始结算插件数据
+# （全部宠物每日结算 + 自动购买每日结算触发），每天 BANK_SETTLE_HOUR（默认 4 点）结算银行存款数据
+# （解锁到期存单并发放利息）。由固定结算循环（_daily_settle_loop）执行，可在 WebUI「设置 → 固定结算」调整。
+DAILY_SETTLE_HOUR = 0
+BANK_SETTLE_HOUR = 4
+DAILY_SETTLE_LOOP_INTERVAL = 60  # 固定结算循环巡检间隔（秒）
 
 # 缺货自动购买（2.0.3，默认关闭）：使用道具时仓库不足则自动购买足额道具并使用（倍率可调）
 AUTO_BUY_SHORT_ENABLED = False
@@ -356,7 +367,7 @@ _PET_WEAK_LOCKED_HEADS = frozenset(("打工", "玩耍", "购买", "使用", "看
 # 全部标准指令口令（供 WebUI 下拉与保存校验；别名必须指向其中之一）
 CMD_HEADS = frozenset((
     "签到", "我的签到", "签到帮助", "游戏帮助", "帮助", "宠物帮助", "农场帮助", "左轮手枪帮助",
-    "修改昵称", "自动购买", "自动打工", "结算日志", "装弹", "加入", "开始", "开枪", "我的战绩",
+    "修改昵称", "自动购买", "自动打工", "自动化", "自动化帮助", "结算日志", "装弹", "加入", "开始", "开枪", "我的战绩",
     "解锁宠物", "宠物", "更改宠物名字", "治疗宠物", "打工", "玩耍",
     "商店", "购买", "使用", "背包", "看家",
     "农场", "解锁农场", "购买土地", "土地升级", "种子商店", "农场商店", "购买种子",
@@ -482,6 +493,8 @@ IMAGE_COMMANDS = {
     "开": "金币红包",
     "抢红包": "金币红包",
     "活动": "活动中心",
+    "自动化": "自动化状态",
+    "自动化帮助": "自动化帮助",
 }
 
 # 插件消息发送后多少秒撤回（防刷屏，0 = 不撤回）
@@ -669,6 +682,17 @@ RUNTIME_PARAMS = [
      "desc": "自动打工完成进入冷却后，冷却结束再过 N 分钟安排下一次自动打工（独立计时器循环）", "default": 10, "min": 0, "max": 600},
     {"key": "AUTO_WORK_PAUSE_BASE", "label": "自动打工·暂停基准金币", "type": "int", "group": "宠物", "subgroup": "自动打工",
      "desc": "打工基准金币 ≤ 该值（100）时暂停自动打工；下次自动购买使其超过该值后自动恢复", "default": 100, "min": 0, "max": 1000000},
+    {"key": "AUTO_WORK_EXP_ENABLED", "label": "自动打工·是否产生经验", "type": "bool", "group": "宠物", "subgroup": "自动打工",
+     "desc": "自动打工是否产生经验收益（默认关闭 = 只给金币不给经验）；开启后经验 = 打工项目经验 × 可调倍率", "default": False},
+    {"key": "AUTO_WORK_EXP_MULT", "label": "自动打工·经验收益倍率", "type": "float", "group": "宠物", "subgroup": "自动打工",
+     "desc": "自动打工经验 = 该打工项目经验 × 此倍率（0.1~1 倍，默认 0.5 = 手动打工经验的一半；仅在开启经验收益时生效）", "default": 0.5, "min": 0.1, "max": 1.0},
+    # ---- 固定结算（2.1.0：固定刷新时间） ----
+    {"key": "DAILY_SETTLE_HOUR", "label": "插件数据结算时间（时）", "type": "int", "group": "固定结算", "subgroup": "每日结算",
+     "desc": "每天该整点固定开始结算插件数据：全部宠物每日结算 + 自动购买「每日结算」触发（默认 0 = 零点）", "default": 0, "min": 0, "max": 23},
+    {"key": "BANK_SETTLE_HOUR", "label": "银行存款结算时间（时）", "type": "int", "group": "固定结算", "subgroup": "每日结算",
+     "desc": "每天该整点结算银行存款数据：解锁到期存单并发放利息（默认 4 = 四点）", "default": 4, "min": 0, "max": 23},
+    {"key": "DAILY_SETTLE_LOOP_INTERVAL", "label": "固定结算·巡检间隔（秒）", "type": "int", "group": "固定结算", "subgroup": "每日结算",
+     "desc": "固定结算循环每隔多少秒巡检一次当前时间（到达设定整点后触发结算；默认 60）", "default": 60, "min": 5, "max": 3600},
     # ---- 背包（独立折叠分组） ----
     {"key": "BAG_CARD_COLS", "label": "背包每行卡片数", "type": "int", "group": "背包", "subgroup": "卡片显示",
      "desc": "「背包」图片一行展示的卡片数量", "default": 5, "min": 3, "max": 7},
@@ -1314,6 +1338,98 @@ def _text_measurer():
     return tw
 
 
+# ================= 汉字排序工具（2.1.0：用户信息排序自定义） =================
+# GB2312 一级汉字按拼音字母顺序排列，可用码位区间查拼音首字母（零依赖经典方案）。
+# 区间取值自公开的 GB2312 一级汉字拼音字母分段表（I/U/V 无对应首字母，因为
+# 普通话拼音不以 I/U/V 开头；ü 开头字归入 L/N 排列）。
+_GB2312_PINYIN_RANGES = [
+    ("A", 0xB0A1, 0xB0C4), ("B", 0xB0C5, 0xB2C0), ("C", 0xB2C1, 0xB4ED),
+    ("D", 0xB4EE, 0xB6E9), ("E", 0xB6EA, 0xB7A1), ("F", 0xB7A2, 0xB8C0),
+    ("G", 0xB8C1, 0xB9FD), ("H", 0xB9FE, 0xBBF6), ("J", 0xBBF7, 0xBFA5),
+    ("K", 0xBFA6, 0xC0AB), ("L", 0xC0AC, 0xC2E7), ("M", 0xC2E8, 0xC4C2),
+    ("N", 0xC4C3, 0xC5B5), ("O", 0xC5B6, 0xC5BD), ("P", 0xC5BE, 0xC6D9),
+    ("Q", 0xC6DA, 0xC8BA), ("R", 0xC8BB, 0xC8F5), ("S", 0xC8F6, 0xCBF9),
+    ("T", 0xCBFA, 0xCDD9), ("W", 0xCDDA, 0xCEF3), ("X", 0xCEF4, 0xD188),
+    ("Y", 0xD189, 0xD4D0), ("Z", 0xD4D1, 0xD7F9),
+]
+
+
+def _hanzi_pinyin_initial(ch):
+    """汉字 → 拼音首字母（大写 A-Z）；非 GB2312 一级汉字（如生僻字/非汉字）返回空串。"""
+    if not ch or not ("\u4e00" <= ch <= "\u9fff"):
+        return ""
+    try:
+        gb = ch.encode("gb2312")
+    except Exception:
+        return ""
+    if len(gb) != 2:
+        return ""
+    code = (gb[0] << 8) + gb[1]
+    for letter, lo, hi in _GB2312_PINYIN_RANGES:
+        if lo <= code <= hi:
+            return letter
+    return ""
+
+
+# 常用汉字笔画数表（2.1.0 排序自定义：昵称首字笔画）。覆盖常见姓氏与昵称常用字；
+# 未收录的汉字在排序时作为「笔画未知」处理（排在该类别内部偏后，按拼音首字母稳定排序）。
+_COMMON_STROKES = {
+    "一": 1, "乙": 1, "三": 3, "上": 3, "下": 3, "不": 4, "中": 4, "为": 4, "主": 5, "之": 3,
+    "义": 3, "云": 4, "五": 4, "人": 2, "天": 4, "小": 3, "山": 3, "工": 3, "平": 5, "强": 12,
+    "心": 4, "永": 5, "白": 5, "百": 6, "石": 5, "福": 13, "秀": 7, "立": 5, "笑": 10, "红": 6,
+    "亮": 9, "伟": 6, "华": 6, "广": 3, "建": 8, "明": 8, "星": 9, "晨": 11, "月": 4, "有": 6,
+    "木": 4, "林": 8, "水": 4, "火": 4, "玉": 5, "王": 4, "田": 5, "男": 7, "女": 3, "安": 6,
+    "宏": 7, "家": 10, "富": 12, "宝": 8, "小": 3, "文": 4, "新": 13, "方": 4, "日": 4, "早": 6,
+    "旺": 8, "春": 9, "夏": 10, "秋": 9, "冬": 5, "可": 5, "爱": 10, "娟": 10, "婷": 12, "燕": 16,
+    "鹏": 13, "龙": 5, "虎": 8, "凤": 4, "海": 10, "洋": 9, "波": 8, "涛": 10, "江": 6, "河": 8,
+    "湖": 12, "山": 3, "石": 5, "花": 7, "草": 9, "树": 9, "松": 8, "柏": 9, "梅": 11, "兰": 5,
+    "竹": 6, "菊": 11, "鸿": 11, "兴": 6, "旺": 8, "昌": 8, "盛": 11, "成": 6, "功": 5, "杰": 8,
+    "俊": 9, "勇": 9, "刚": 6, "毅": 15, "超": 12, "越": 12, "飞": 3, "翔": 12, "玉": 5, "琪": 12,
+    "璐": 17, "瑶": 14, "佩": 8, "珊": 9, "霞": 17, "丽": 7, "美": 9, "秀": 7, "英": 8, "莉": 10,
+    "薇": 16, "梦": 11, "欣": 8, "悦": 10, "怡": 8, "慧": 15, "聪": 14, "灵": 8, "巧": 5, "君": 7,
+    "俊": 9, "楷": 13, "轩": 7, "恒": 9, "志": 7, "诚": 8, "信": 9, "礼": 5, "义": 3, "仁": 4,
+    "德": 15, "道": 12, "言": 7, "语": 9, "佳": 8, "娜": 9, "婷": 12, "云": 4, "宇": 6, "宙": 8,
+    "宏": 7, "伟": 6, "东": 5, "西": 6, "南": 9, "北": 5, "风": 4, "雪": 11, "雨": 8, "雷": 13,
+    "电": 5, "光": 6, "辉": 12, "耀": 20, "阳": 6, "阴": 6, "天": 4, "地": 6, "乾": 11, "坤": 8,
+    "震": 15, "巽": 12, "离": 10, "兑": 7, "泰": 10, "丰": 4, "国": 8, "邦": 11, "民": 5, "众": 6,
+    "群": 13, "团": 6, "队": 4, "日": 4, "时": 7, "辰": 7, "年": 6, "岁": 6, "世": 5, "界": 9,
+    "宇": 6, "航": 10, "飞": 3, "机": 6, "车": 4, "马": 3, "牛": 4, "羊": 6, "猪": 11, "狗": 8,
+    "猫": 11, "兔": 8, "鸡": 7, "鸭": 10, "鹅": 12, "鱼": 8, "虾": 9, "蟹": 19, "龟": 7,
+    "龙": 5, "蛇": 11, "象": 12, "虎": 8, "狮": 9, "狼": 10, "熊": 14, "鹿": 11, "豹": 10,
+}
+
+
+def _hanzi_stroke(ch):
+    """汉字 → 总笔画数（内置常用表）；未收录返回 0（排序时视为未知，拼音首字母稳定兜底）。"""
+    if not ch:
+        return 0
+    return int(_COMMON_STROKES.get(ch, 0) or 0)
+
+
+def _record_nick_sort_key(nick, mode):
+    """用户信息排序键（2.1.0）：
+    mode="pinyin"：昵称首字拼音首字母（中文 A-Z → 英文 A-Z → 数字 0-9 → 特殊字符计入 #）；
+    mode="stroke"：昵称首字笔画（升序即 中文按笔画 → 英文 A-Z → 数字 0-9 → 特殊字符计入 #）。
+    返回 (类别权重, 子键, 兜底串)；升序 = 中文(0) < 英文(1) < 数字(2) < 特殊(3)。"""
+    s = str(nick or "").strip()
+    ch = s[0] if s else ""
+    if not ch:
+        return (9, "", "")
+    if "\u4e00" <= ch <= "\u9fff":  # 中文
+        if mode == "stroke":
+            st = _hanzi_stroke(ch)
+            return (0, st, ch)
+        py = _hanzi_pinyin_initial(ch)
+        return (0, py, ch)
+    if "A" <= ch <= "Z":
+        return (1, ch, ch)
+    if "a" <= ch <= "z":
+        return (1, ch.upper(), ch)
+    if "0" <= ch <= "9":
+        return (2, ch, ch)
+    return (3, "#", ch)  # 特殊字符系列算入 #
+
+
 def _ensure_pillow():
     """尝试导入 Pillow 的 Image 和 ImageDraw；不可用时返回 (None, None)"""
     try:
@@ -1503,12 +1619,12 @@ class CoreMixin:
         """返回空白数据模板（每次调用返回新字典）"""
         return {"users": {}, "roulette": {}, "pets": {}, "bank": {}, "farms": {}, "loans": {},
                 "ledger": {}, "redpackets": [], "activities": {}, "group_members": {}, "group_names": {},
-                "alias_cmds": {**DEFAULT_ALIAS_CMDS}, LAN_DATA_KEY: {}}
+                "alias_cmds": {**DEFAULT_ALIAS_CMDS}, LAN_DATA_KEY: {}, "settle_dates": {}}
 
     # 需要 setdefault 的字典键列表（与 _default_data 保持一致）
     _DATA_DICT_KEYS = ("users", "roulette", "pets", "bank", "farms", "loans",
                        "ledger", "activities", "activity_config", "params",
-                       "group_members", "group_names", LAN_DATA_KEY)
+                       "group_members", "group_names", LAN_DATA_KEY, "settle_dates")
 
     def _load_disk(self) -> dict:
         if not os.path.exists(DATA_FILE):
@@ -2024,6 +2140,11 @@ __all__ = [
     "AUTO_WORK_DELAY_MIN",
     "AUTO_WORK_PAUSE_BASE",
     "AUTO_WORK_LOG_MAX",
+    "AUTO_WORK_EXP_ENABLED",
+    "AUTO_WORK_EXP_MULT",
+    "DAILY_SETTLE_HOUR",
+    "BANK_SETTLE_HOUR",
+    "DAILY_SETTLE_LOOP_INTERVAL",
     "AUTO_BUY_SHORT_ENABLED",
     "AUTO_BUY_SHORT_MULT",
     "SHOP_PRICE_FLOAT_ENABLED",
@@ -2151,4 +2272,10 @@ __all__ = [
     "_MessageChain",
     "_clean_img_text",
     "_dtext",
+    # 2.1.0：汉字排序工具（用户信息排序自定义）
+    "_GB2312_PINYIN_RANGES",
+    "_hanzi_pinyin_initial",
+    "_COMMON_STROKES",
+    "_hanzi_stroke",
+    "_record_nick_sort_key",
 ]

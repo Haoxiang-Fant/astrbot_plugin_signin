@@ -269,13 +269,36 @@
       <!-- 运行记录：宠物记录（全部宠物卡片：状态 / 正在进行的活动 / 自动购买·自动打工信息） -->
       <section id="panel-records-pets" class="panel hidden">
         <div class="toolbar">
+          <input id="record-pets-search" class="search-box" type="text" placeholder="搜索 宠物名 / 昵称 / 用户ID…" />
           <button id="btn-load-record-pets">刷新</button>
           <span id="status-record-pets" class="status"></span>
         </div>
         <div id="records-pets-list" class="record-list">
           <p class="hint">点击「刷新」读取全部宠物的运行记录...</p>
         </div>
-        <p class="hint">展示<b>全部宠物</b>的当前状态（属性/档位/虚弱）、正在进行的活动与剩余时间，以及自动购买 / 自动打工信息（打工基准金币、最近购买·使用×N 记录、自动打工记录）。<b>点卡片上的「自动购买」「自动打工」开关（开/关）可直接切换该用户的开关</b>——开启自动购买会自动开启自动打工，未开自动购买不允许开自动打工。</p>
+        <p class="hint">展示<b>全部宠物</b>的当前状态（属性/档位/虚弱）、正在进行的活动与剩余时间，以及自动购买 / 自动打工信息（打工基准金币、最近购买·使用×N 记录、自动打工记录）。<b>点卡片上的「自动购买」「自动打工」开关（开/关）可直接切换该用户的开关</b>——开启自动购买会自动开启自动打工，未开自动购买不允许开自动打工。<b>虚弱宠物显示红色「停用」标签</b>（自动购买/自动打工暂停执行，需先「治疗宠物」）。</p>
+      </section>
+
+      <!-- 运行记录：用户信息（2.1.0：全部用户基础信息卡片，点击展开详细信息） -->
+      <section id="panel-records-users" class="panel hidden">
+        <div class="toolbar">
+          <input id="record-users-search" class="search-box" type="text" placeholder="搜索 昵称 / 用户ID…" />
+          <select id="record-users-sort" class="sort-select" title="排序方式">
+            <option value="last_active" selected>最后活跃</option>
+            <option value="nick_pinyin">昵称首拼</option>
+            <option value="nick_stroke">昵称首字笔画</option>
+            <option value="pet_level">宠物等级</option>
+            <option value="farm_level">农场等级</option>
+            <option value="fav_level">好感度等级</option>
+          </select>
+          <button id="btn-record-users-order" class="sort-order" title="切换升降序">降序 ↓</button>
+          <button id="btn-load-record-users">刷新</button>
+          <span id="status-record-users" class="status"></span>
+        </div>
+        <div id="records-users-list" class="record-list">
+          <p class="hint">点击「刷新」读取全部用户信息...</p>
+        </div>
+        <p class="hint">展示<b>全部用户</b>的基础信息卡片（金币 / 好感等级 / 宠物等级 / 农场等级 / 最后活跃时间）；<b>昵称回退链：自定义昵称 → 账户昵称（群聊记录的昵称）→ 用户ID</b>。<b>点击卡片展开用户详细信息</b>（📦 仓库 / 🌾 农场实时状态 / 🐾 宠物状态 / 🏦 银行 / ⚙️ 自动化，各模块为独立附属卡片）；展开后的详情横跨整行拉出空白，<b>其它卡片自动平移到空白位置、互不遮挡，同行卡片不展开、可同时展开多张</b>。排序方式：昵称首拼 / 昵称首字笔画（升序=中文→英文A-Z→数字0-9→特殊#）/ 最后活跃 / 宠物等级 / 农场等级 / 好感度等级，均可升序或降序。</p>
       </section>
 
       <!-- 运行记录：商店价格（每次价格窗口的价格变动） -->
@@ -290,7 +313,7 @@
         <p class="hint">宠物商店价格固定偶数点刷新（0/2/4/…/22 整点），同窗口（2 小时）稳定；特价时段（10/12/18/0 时窗口）随机选取 <span id="price-discount-range">2~5</span> 件商品打 二~八折。此处展示当前窗口与最近的价格变动记录（购买按实时价结算）。</p>
       </section>
 
-      <footer class="page-foot">签到娱乐系统 · 2.0.4</footer>
+      <footer class="page-foot">签到娱乐系统 · 2.1.0</footer>
     </div>
 
     <script type="module" src="./app.js"></script>

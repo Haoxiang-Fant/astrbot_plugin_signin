@@ -1224,6 +1224,29 @@ class WebUIMixin:
             return json_response({"ok": True, "groups": groups, "members": members, "msg": msg})
 
     # ================= 运行记录（2.0.4）：宠物记录 / 商店价格 =================
+    def _record_account_name(self, data: dict, uid) -> str:
+        """账户昵称（2.1.0）：取用户任意群聊里记录的昵称（WebUI 同步的 group_names 优先，
+        实时标记的 group_members 次之）；与自定义昵称 `_custom_name_of` 组成回退链：
+        自定义昵称 → 账户昵称 → uid。"""
+        uid = str(uid)
+        for src in ("group_names", "group_members"):
+            groups = data.get(src) or {}
+            if not isinstance(groups, dict):
+                continue
+            for g in groups.values():
+                if not isinstance(g, dict):
+                    continue
+                info = g.get(uid)
+                if isinstance(info, dict):
+                    nm = str(info.get("name", "") or "").strip()
+                elif isinstance(info, str):
+                    nm = str(info).strip()
+                else:
+                    nm = ""
+                if nm:
+                    return nm
+        return ""
+
     async def web_get_record_pets(self):
         """运行记录·宠物记录：全部宠物卡片（当前状态 / 正在进行的活动 / 自动购买·自动打工信息）。"""
         async with self._lock:
@@ -1289,7 +1312,9 @@ class WebUIMixin:
     async def web_toggle_record_auto(self):
         """运行记录·宠物记录：管理员在 WebUI 直接切换某个用户的 自动购买/自动打工 开关。
         入参 {uid, key: purchase|work, on: bool}；同一用户维度，跨群共享。
-        规则与群聊指令一致：开启自动购买 → 自动开启自动打工；不开启自动购买则不允许开启自动打工。"""
+        规则与群聊指令一致：开启自动购买 → 自动开启自动打工；不开启自动购买则不允许开启自动打工。
+        2.1.0：管理员开启自动购买时立即触发一次自动购买（清空失败冷却，宠物处于第 3/4 档则立即补满，
+        触发来源 = 管理员开启）。"""
         try:
             payload = await request.json(default={})
         except Exception:
@@ -1314,6 +1339,7 @@ class WebUIMixin:
                     u.setdefault("work_base", int(u.get("work_base", 0) or 0))
                     u["auto_work_next"] = 0  # 立即可调度（基准金币 > 100 才真正执行）
                     self._ensure_auto_work_loop()
+                    self._ensure_daily_settle_loop()
                 msg = "已开启自动打工" if on else "已关闭自动打工"
             else:  # purchase
                 u["auto_feed_enabled"] = on
@@ -1322,7 +1348,21 @@ class WebUIMixin:
                     u.setdefault("work_base", int(u.get("work_base", 0) or 0))
                     u["auto_work_next"] = 0
                     self._ensure_auto_work_loop()
+                    self._ensure_daily_settle_loop()
                     msg = "已开启自动购买（自动打工同步开启）"
+                    # 2.1.0：管理员开启自动购买 → 立即触发一次自动购买
+                    u["auto_purchase_cool"] = 0
+                    if self._auto_purchase_due(data, uid):
+                        entry = self._auto_purchase_settle(data, uid, trigger="管理员开启")
+                        if entry and entry.get("items"):
+                            items = "、".join(
+                                f"{'🛒' if it.get('src') == '购买' else '📦'}{it['name']}×{it['qty']}"
+                                for it in entry["items"])
+                            msg += f"；已立即触发自动购买：{items}（花费 {entry.get('total', 0)} 金币）"
+                        else:
+                            msg += "；已立即触发自动购买，但金币不足/无可用道具，未能补满（稍后自动重试）"
+                    else:
+                        msg += "；已立即检查：宠物状态良好，无需购买"
                 else:
                     u["auto_work_enabled"] = False
                     msg = "已关闭自动购买（自动打工同步关闭）"
@@ -1333,6 +1373,144 @@ class WebUIMixin:
                 "work_on": bool(u.get("auto_work_enabled")),
                 "work_base": int(u.get("work_base", 0) or 0),
             })
+
+    async def web_get_record_users(self):
+        """运行记录·用户信息（2.1.0）：全部用户的信息卡片。
+        基础信息：金币 / 好感等级 / 宠物等级 / 农场等级 / 最后活跃时间；点击卡片后展开用户详细信息，
+        每个模块（仓库/农场/宠物/银行/自动化）为独立附属卡片。
+        排序键（昵称首拼/首字笔画）由后端计算随用户数据返回，前端本地排序（不依赖 query）。
+        昵称回退链：自定义昵称 → 账户昵称（任意群聊记录的昵称）→ uid。"""
+        try:
+            async with self._lock:
+                return self._record_users_payload()
+        except Exception as e:
+            logger.error(f"[插件] 运行记录·用户信息 读取失败: {e}")
+            return json_response({"users": [], "error": str(e)})
+
+    def _record_users_payload(self):
+        """（同步，锁内调用）组装全部用户信息卡片数据：含各模块附属卡片字段与排序键。"""
+        data = self._load()
+        now_ts = datetime.now().timestamp()
+        users = []
+        for uid, u in (data.get("users") or {}).items():
+            if not isinstance(u, dict):
+                continue
+            pet = data.get("pets", {}).get(uid)
+            farm = data.get("farms", {}).get(uid)
+            bank = data.get("bank", {}).get(uid)
+            custom = self._custom_name_of(data, uid)
+            acc_name = self._record_account_name(data, uid)
+            nick = custom or acc_name or uid
+            la = float(u.get("last_active", 0) or 0)
+            # 登录活跃时间：显示相对时间（如 3 分钟前 / 昨天 14:30）
+            la_text = "-"
+            if la > 0:
+                diff = now_ts - la
+                if diff < 60:
+                    la_text = "刚刚"
+                elif diff < 3600:
+                    la_text = f"{int(diff // 60)} 分钟前"
+                elif diff < 86400:
+                    la_text = f"{int(diff // 3600)} 小时前"
+                else:
+                    la_text = f"{int(diff // 86400)} 天前"
+            # ---- 宠物状态（详情独立附属卡片用） ----
+            pet_info = None
+            if isinstance(pet, dict):
+                pet_info = {
+                    "name": pet.get("name", "宠物"),
+                    "level": pet.get("level", 0),
+                    "weak": bool(pet.get("weak")),
+                    "exp": round(float(pet.get("exp", 0) or 0), 1),
+                    "busy_activity": pet.get("busy_activity"),
+                    "busy_item": pet.get("busy_item"),
+                    "busy_until": float(pet.get("busy_until", 0) or 0),
+                }
+            # ---- 农场实时状态（详情独立附属卡片用：每块土地） ----
+            farm_info = None
+            if isinstance(farm, dict):
+                plots = []
+                for i, p in enumerate((farm.get("plots") or []), start=1):
+                    if not isinstance(p, dict):
+                        continue
+                    crop = p.get("crop")
+                    if crop is None:
+                        plots.append({"no": i, "grade": int(p.get("grade", 0) or 0),
+                                      "crop": None, "mature": False, "remain_min": 0})
+                    else:
+                        mature = now_ts >= float(p.get("mature_ts", 0) or 0)
+                        remain = max(0, float(p.get("mature_ts", 0) or 0) - now_ts)
+                        plots.append({"no": i, "grade": int(p.get("grade", 0) or 0),
+                                      "crop": str(crop), "mature": mature,
+                                      "remain_min": int(remain // 60)})
+                farm_info = {
+                    "level": int(farm.get("level", 0) or 0),
+                    "exp": round(float(farm.get("exp", 0) or 0), 1),
+                    "plots": plots,
+                }
+            # ---- 仓库（宠物背包，详情独立附属卡片用） ----
+            bag = []
+            if isinstance(pet, dict):
+                inv = pet.get("inventory") or {}
+                if isinstance(inv, dict):
+                    for nm, cnt in inv.items():
+                        n = int(cnt or 0)
+                        if n > 0:
+                            bag.append({"name": str(nm), "qty": n})
+                    bag.sort(key=lambda x: (-x["qty"], x["name"]))
+            # ---- 银行（2.1.0 详情独立附属卡片用：存单列表 + 汇总） ----
+            bank_info = None
+            if isinstance(bank, dict) and bank.get("deposits"):
+                deposits = []
+                for d in (bank["deposits"] or []):
+                    if not isinstance(d, dict):
+                        continue
+                    deposits.append({
+                        "amount": int(d.get("amount", 0) or 0),
+                        "interest": int(d.get("interest", 0) or 0),
+                        "status": d.get("status", "locked"),
+                        "hours": int(d.get("hours", 0) or 0),
+                        "deposit_time": d.get("deposit_time", ""),
+                        "base_rate": float(d.get("base_rate", 0) or 0),
+                        "bonus_rate": float(d.get("bonus_rate", 0) or 0),
+                    })
+                locked_sum = sum(x["amount"] for x in deposits if x["status"] == "locked")
+                matured_sum = sum(x["amount"] for x in deposits if x["status"] == "matured")
+                interest_sum = sum(x["interest"] for x in deposits)
+                bank_info = {
+                    "total_count": len(deposits),
+                    "locked_count": sum(1 for x in deposits if x["status"] == "locked"),
+                    "matured_count": sum(1 for x in deposits if x["status"] == "matured"),
+                    "locked_sum": locked_sum, "matured_sum": matured_sum,
+                    "interest_sum": interest_sum,
+                    "deposits": deposits[:8],  # 最近 8 笔，前端折叠展示
+                }
+            users.append({
+                "uid": uid,
+                "nick": nick,
+                "nick_source": "custom" if custom else ("account" if acc_name else "uid"),
+                "coins": int(u.get("coins", 0) or 0),
+                "fav": round(float(u.get("favorability", 0) or 0), 1),
+                "fav_level": self._level_of(float(u.get("favorability", 0) or 0)),
+                "pet": pet_info,
+                "farm": farm_info,
+                "bag": bag,
+                "bank": bank_info,
+                "last_active": la,
+                "last_active_text": la_text,
+                "auto": {
+                    "purchase_on": bool(u.get("auto_feed_enabled")),
+                    "work_on": bool(u.get("auto_work_enabled")),
+                    "work_base": int(u.get("work_base", 0) or 0),
+                },
+                # 2.1.0：前端本地排序键（昵称首拼 / 昵称首字笔画 由后端计算好，
+                # 前端切换排序方式/升降序时不再重新请求，规避带 query 的 API 兼容性问题）
+                "sort_pinyin": list(_record_nick_sort_key(nick, "pinyin")),
+                "sort_stroke": list(_record_nick_sort_key(nick, "stroke")),
+            })
+        # 后端默认按最后活跃时间降序（排序交给前端，这里仅做基础稳定序）
+        users.sort(key=lambda x: x["last_active"], reverse=True)
+        return json_response({"users": users})
 
     async def web_get_record_prices(self):
         """运行记录·商店价格：最近的价格变动记录 + 当前窗口折扣信息。"""

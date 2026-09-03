@@ -46,7 +46,7 @@ class _NameOverrideEvent:
         return self._override_name
 
 
-@register("astrbot_plugin_signin", "sishijiu", "群签到 + 左轮手枪 + 宠物养成 + 金币银行 + 农场", "2.0.4")
+@register("astrbot_plugin_signin", "sishijiu", "群签到 + 左轮手枪 + 宠物养成 + 金币银行 + 农场", "2.1.0")
 class SignInPlugin(Star, FarmMixin, PetMixin, BankMixin, RedpacketMixin, ActivityMixin, LoanMixin, RouletteMixin, RankMixin, LanMixin, WebUIMixin, CoreMixin):
     def __init__(self, context: Context, config: dict = None):
         super().__init__(context)
@@ -177,11 +177,18 @@ class SignInPlugin(Star, FarmMixin, PetMixin, BankMixin, RedpacketMixin, Activit
             ("records/pets", "GET", self.web_get_record_pets, "运行记录：全部宠物卡片（状态/活动/自动信息）"),
             ("records/pets/auto", "POST", self.web_toggle_record_auto, "运行记录：切换用户自动购买/自动打工开关"),
             ("records/prices", "GET", self.web_get_record_prices, "运行记录：商店价格变动"),
+            # 2.1.0：WebUI 运行记录页 · 用户信息
+            ("records/users", "GET", self.web_get_record_users, "运行记录：全部用户信息卡片"),
         ]
         for path, method, handler, desc in _web_apis:
             if not path.startswith("lan/"):
                 handler = self._lan_gate_wrap(handler)
             context.register_web_api(f"/{PLUGIN_NAME}/{path}", handler, [method], desc)
+
+        # 2.1.0：固定结算循环懒启动（插件加载时即有运行中的事件循环则立即启动，
+        # 否则等首条消息触发；每天 DAILY_SETTLE_HOUR 结算插件数据、BANK_SETTLE_HOUR 结算银行存款）
+        self._ensure_daily_settle_loop()
+        self._ensure_auto_work_loop()
 
     @filter.event_message_type(EventMessageType.ALL)
     async def on_message(self, event: AstrMessageEvent):
@@ -200,6 +207,15 @@ class SignInPlugin(Star, FarmMixin, PetMixin, BankMixin, RedpacketMixin, Activit
             # 同义口令展开：别名 → 标准指令（一步展开，不递归；别名可被 WebUI 编辑）
             head = self._expand_alias(data, head)
             dirty = False
+            # 2.1.0：记录用户最后活跃时间（运行记录·用户信息页面展示用；5 分钟内不重复写盘）
+            _active_u = data.get("users", {}).get(key)
+            if _active_u is None and (key in (data.get("pets") or {}) or key in (data.get("farms") or {})):
+                _active_u = self._ensure_user(data, key)
+            if isinstance(_active_u, dict):
+                _ts = datetime.now().timestamp()
+                if _ts - float(_active_u.get("last_active", 0) or 0) > 300:
+                    _active_u["last_active"] = _ts
+                    dirty = True
             if data.get("loans", {}).get(key):
                 sync_c = self._loan_sync(data, key)
                 daily_c = self._loan_daily_process(data, key)
@@ -210,13 +226,18 @@ class SignInPlugin(Star, FarmMixin, PetMixin, BankMixin, RedpacketMixin, Activit
             if gid:
                 self._mark_group_member(data, gid, str(key), event.get_sender_name())
                 dirty = True
-            # 2.0.4：自动购买触发判定——饱食/口渴/心情/健康 任一进入第 3/4 档时自动补满
-            # （替换 2.0.3 的每日 0:00 自动喂养懒结算；自动购买触发后自动开启自动打工）
-            if self._auto_purchase_due(data, key):
-                self._auto_purchase_settle(data, key)
-                dirty = True
+            # 2.1.0：自动购买触发判定时间 = 每日结算时（当天首次互动懒结算完成后判定，兜底固定结算循环）
+            # 触发条件：饱食/口渴/心情 任一进入第 3/4 档时立即触发；健康仅在心情之后收尾判定
+            _pet_today = data.get("pets", {}).get(key)
+            if isinstance(_pet_today, dict) and _pet_today.get("last_settle_date") != date.today().isoformat():
+                self._bring_pet_up_to_date(_pet_today, date.today().isoformat())
+                if self._auto_purchase_due(data, key):
+                    self._auto_purchase_settle(data, key, trigger="每日结算")
+                    dirty = True
             # 2.0.4：自动打工独立计时器懒启动（仅在真正开启自动购买的用户存在时运行）
             self._ensure_auto_work_loop()
+            # 2.1.0：固定结算循环懒启动（每天固定时间结算插件数据与银行存款数据）
+            self._ensure_daily_settle_loop()
             # 排行榜：每次查询时通过平台 API 刷新在榜用户的本群昵称（仅已标记用户，不改 48h 时间戳）
             if gid and head in RANK_KINDS:
                 _show = int(globals().get("RANK_DISPLAY", 20) or 20)
@@ -366,6 +387,7 @@ class SignInPlugin(Star, FarmMixin, PetMixin, BankMixin, RedpacketMixin, Activit
         "宠物帮助": "_handle_help_pet",
         "农场帮助": "_handle_help_farm",
         "左轮手枪帮助": "_handle_help_roulette",
+        "自动化帮助": "_handle_auto_help",
         "查看后台配置": "_handle_view_config",
         "导出数据": "_handle_export_data",
     }
@@ -376,6 +398,7 @@ class SignInPlugin(Star, FarmMixin, PetMixin, BankMixin, RedpacketMixin, Activit
         "修改昵称": "_handle_change_name",
         "自动购买": "_handle_auto_feed_switch",
         "自动打工": "_handle_auto_work_switch",
+        "自动化": "_handle_auto_overview",
         "结算日志": "_handle_auto_feed_log",
         "装弹": "_handle_load",
         "加入": "_handle_join",
@@ -660,9 +683,11 @@ class SignInPlugin(Star, FarmMixin, PetMixin, BankMixin, RedpacketMixin, Activit
                 ("使用 <道具名> [数量]", "使用道具（不填数量 = 1 个，结果合入宠物总览图）"),
                 ("背包", "查看背包"),
                 ("治疗宠物", "治疗虚弱宠物（花 500 金币，所有数值恢复 40；仅虚弱状态可用）"),
-                ("自动购买 开/关", "开启/关闭自动购买（饱食/口渴/心情/健康 任一进入第 3/4 档自动补满；开启后自动同步开启自动打工）"),
+                ("自动购买 开/关", "开启/关闭自动购买（开启时立即判定一次；自动打工时/每日固定结算时判定；饱食/口渴/心情 任一进入第 3/4 档按 饱食→口渴→心情 补满；开启后自动同步开启自动打工）"),
                 ("自动打工 开/关", "自动打工开关（自动选择报酬最接近打工基准金币的项目，只给金币不给经验；基准 ≤ 100 自动暂停）"),
-                ("结算日志", "查看自动购买/自动打工记录（购买/使用带数量标记）"),
+                ("自动化", "查看自动购买/自动打工状态与指令调用方法"),
+                ("自动化帮助", "自动购买 + 自动打工 玩法说明（含固定刷新时间）"),
+                ("结算日志", "查看自动购买/自动打工记录（购买/使用带数量标记与触发来源）"),
             ]),
         ]
         return self._build_help("宠物帮助", sections)
@@ -725,9 +750,10 @@ class SignInPlugin(Star, FarmMixin, PetMixin, BankMixin, RedpacketMixin, Activit
                 ("购买 / 使用 <道具名> [数量]", "购买 / 使用道具（不填数量 = 1 个）"),
                 ("背包", "查看背包"),
                 ("治疗宠物", "治疗虚弱宠物（花 500 金币，所有数值恢复 40；仅虚弱状态可用）"),
-                ("自动购买 开/关", "开启/关闭自动购买（饱食/口渴/心情/健康 任一进入第 3/4 档自动补满；开启后自动同步开启自动打工）"),
+                ("自动购买 开/关", "开启/关闭自动购买（开启时立即判定一次；自动打工时/每日固定结算时判定；饱食/口渴/心情 任一进入第 3/4 档按 饱食→口渴→心情 补满；开启后自动同步开启自动打工）"),
                 ("自动打工 开/关", "自动打工开关（自动选择报酬最接近打工基准金币的项目，只给金币不给经验；基准 ≤ 100 自动暂停）"),
-                ("结算日志", "查看自动购买/自动打工记录（购买/使用带数量标记）"),
+                ("自动化 / 自动化帮助", "查看自动化状态与玩法 / 自动购买+自动打工说明（含固定刷新时间）"),
+                ("结算日志", "查看自动购买/自动打工记录（购买/使用带数量标记与触发来源）"),
             ]),
             ("金币银行", [
                 ("存款 <金额>", "存钱生息（不填=存最大可存金额）"),
