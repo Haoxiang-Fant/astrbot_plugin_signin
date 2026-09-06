@@ -950,6 +950,8 @@ LOAN_FILE = os.path.join(_DATA_DIR, "贷款套餐.txt")
 # 1.7.7：商店/打工/玩耍数值的 JSON 存储（WebUI 表格编辑；首次启动从旧版 txt 自动迁移）
 ITEMS_JSON_FILE = os.path.join(_DATA_DIR, "game_items.json")
 FONT_FILE = os.path.join(_PLUGIN_DIR, "OPPOSans-M.ttf")
+# 2.1.1：标题衬线字体（思源宋体 Bold，对齐 WebUI --font-display 衬线标题层级）
+TITLE_FONT_FILE = os.path.join(_PLUGIN_DIR, "SourceHanSerifCN-Bold.otf")
 
 # 宠物商店按类型拆分的文件（1.7.3）
 PET_SHOP_TYPE_FILES = {
@@ -1297,31 +1299,86 @@ if _should_migrate_txt_descriptions():
 _FONT_CACHE = {}
 
 
-def _load_fonts(*sizes):
-    """按字号批量加载 OPPOSans 字体（带进程内缓存）。
+def _load_fonts(*sizes, font_file=FONT_FILE):
+    """按字号批量加载字体（带进程内缓存）。
 
-    返回字号对应的字体元组；Pillow 缺失、字体文件缺失或加载失败时返回 None。
+    默认加载 OPPOSans（FONT_FILE）；传 font_file=TITLE_FONT_FILE 可加载标题衬线字体
+    （思源宋体 Bold）。返回字号对应的字体元组；Pillow 缺失、字体文件缺失或加载失败时返回 None。
     """
     try:
         from PIL import ImageFont
     except Exception as e:
         logger.error(f"[插件] 缺少 Pillow，无法生成图片: {e}")
         return None
-    if not os.path.exists(FONT_FILE):
-        logger.error(f"[插件] 字体文件不存在: {FONT_FILE}")
+    if not os.path.exists(font_file):
+        logger.error(f"[插件] 字体文件不存在: {font_file}")
         return None
     fonts = []
     for size in sizes:
-        font = _FONT_CACHE.get(size)
+        key = (font_file, size)
+        font = _FONT_CACHE.get(key)
         if font is None:
             try:
-                font = ImageFont.truetype(FONT_FILE, size)
+                font = ImageFont.truetype(font_file, size)
             except Exception as e:
-                logger.error(f"[插件] 加载字体 {FONT_FILE} 失败: {e}")
+                logger.error(f"[插件] 加载字体 {font_file} 失败: {e}")
                 return None
-            _FONT_CACHE[size] = font
+            _FONT_CACHE[key] = font
         fonts.append(font)
     return tuple(fonts)
+
+
+# ================= 全局图片设计系统（温暖简约和风 · 与 WebUI style.css 同源） =================
+# 2.1.1：统一所有响应图片的视觉语言——米白暖底 / 白卡片 / 深林绿主色 / 校徽金强调 /
+# 米金描边 / 危险红语义色；标题一律用思源宋体 Bold（衬线，对齐 --font-display）。
+DS_BG = (252, 252, 250)             # 页面背景 米白 #fcfcfa
+DS_SURFACE = (255, 255, 255)        # 卡片/面板 白 #ffffff
+DS_SURFACE_2 = (251, 250, 245)      # 次级表面 #fbfaf5
+DS_TEXT = (34, 50, 42)              # 主文本 深林绿黑 #22322a
+DS_TEXT_2 = (63, 74, 64)            # 次级文本 #3f4a40
+DS_MUTED = (101, 113, 95)           # 说明/占位 #65715f
+DS_BORDER = (230, 226, 210)         # 常规描边 米金 #e6e2d2
+DS_BORDER_2 = (217, 211, 191)       # 强调描边 #d9d3bf
+DS_ACCENT = (31, 95, 62)            # 深林绿 #1f5f3e
+DS_ACCENT_STRONG = (22, 71, 44)     # 深林绿加深 #16472c
+DS_GOLD = (214, 161, 26)            # 校徽金 #d6a11a
+DS_GOLD_2 = (226, 176, 42)          # 校徽金亮 #e2b02a
+DS_DANGER = (179, 57, 46)           # 危险红 #b3392e
+DS_DANGER_STRONG = (143, 43, 34)    # 危险红加深 #8f2b22
+DS_SUCCESS = (44, 122, 80)          # 成功绿 #2c7a50
+DS_GREEN_SOFT = (128, 160, 110)     # 柔和鼠尾草绿（属性条/空闲进度填充）
+DS_BLUE = (52, 88, 132)             # 提示蓝（深调）
+# 标题字号档位（思源宋体 Bold）
+DS_TITLE_SIZES = {"list": 42, "rich": 40, "rank": 42, "snapshot": 36, "pet": 36,
+                  "shop": 36, "bag": 36, "farm": 36, "activity": 36, "work": 36}
+
+
+def _title_font(size=None, kind="list"):
+    """加载标题衬线字体（思源宋体 Bold，size 缺省按 kind 取档位）；思源宋体缺失时回退 OPPOSans。
+
+    返回字体对象；两种字体均不可用时返回 None。
+    """
+    if size is None:
+        size = int(DS_TITLE_SIZES.get(kind, 36))
+    for ff in (TITLE_FONT_FILE, FONT_FILE):
+        t = _load_fonts(size, font_file=ff)
+        if t is not None:
+            return t[0]
+    return None
+
+
+def _draw_underlined_title(d, xy, title, font, color=DS_ACCENT, width=None, gap=8, line_w=2):
+    """标题 + 下方页头分隔线（对齐 WebUI .page-head：深林绿 2px 底边）。
+
+    xy: 标题左上角；width: 分隔线宽度（缺省按 xy 起延伸）；gap: 标题底到分隔线间距。
+    返回分隔线 y 坐标（供后续内容定位）。
+    """
+    x, y = xy
+    d.text((int(x), int(y)), title, font=font, fill=color)
+    ly = int(y) + int(font.size * 1.25) + gap
+    d.line([(int(x), ly), (int(x) + (width if width is not None else 200), ly)],
+           fill=color, width=line_w)
+    return ly
 
 
 def _text_measurer():
@@ -1923,18 +1980,20 @@ class CoreMixin:
         return " ".join(parts) if parts else "无效果"
 
     def _render_text_image(self, title: str, lines):
-        """把标题 + 正文行渲染为 PNG 图片（使用 OPPOSans-M.ttf）。返回 ("image", path)；失败返回 None"""
+        """把标题 + 正文行渲染为 PNG 图片。标题用思源宋体 Bold + 页头分隔线，
+        正文用 OPPOSans（温暖简约和风 · 米白暖底）。返回 ("image", path)；失败返回 None"""
         Image, ImageDraw = _ensure_pillow()
         if Image is None:
             return None
-        # 字号语义：标题 36 / 正文 24
-        fonts = _load_fonts(36, 24)
-        if fonts is None:
+        # 字号语义：标题 42（衬线）/ 正文 24
+        title_font = _title_font(kind="list")
+        fonts = _load_fonts(24)
+        if title_font is None or fonts is None:
             return None
-        title_font, body_font = fonts
+        body_font = fonts[0]
 
         pad = 30
-        title_h = 64
+        title_h = 80
         line_h = 42
 
         tw = _text_measurer()
@@ -1945,29 +2004,226 @@ class CoreMixin:
             width = max(480, int(max(all_w) + pad * 2))
 
         height = pad * 2 + title_h + line_h * len(lines)
-        img = Image.new("RGB", (width, height), (255, 255, 255))
+        img = Image.new("RGB", (width, height), DS_BG)
         draw = ImageDraw.Draw(img)
         y = pad
-        draw.text((pad, y), title, font=title_font, fill=(20, 20, 20))
+        _draw_underlined_title(draw, (pad, y), title, title_font, color=DS_ACCENT,
+                               width=width - pad * 2, gap=10)
         y += title_h
         for line in lines:
-            draw.text((pad, y), line, font=body_font, fill=(70, 70, 70))
+            draw.text((pad, y), line, font=body_font, fill=DS_TEXT_2)
             y += line_h
 
         return _save_temp_image(img, "_list_", "")
+
+    def _render_snapshot_image(self, title, modules, width=900, pad=20, title_h=64, line_h=30, mod_gap=14,
+                               col_gap=12, header_right=None):
+        """2.1.1 签到实时数据快照：信息流瀑布平铺渲染。
+        modules: 每项为一张卡片 (模块标题, 内容行列表, 高亮?) 或一行并排的多张卡片
+                 [卡片1, 卡片2, ...]（如 签到信息|好感度信息、银行与征信|排行榜信息）。
+        并排行末尾可带列宽权重元组 [卡1, 卡2, (w1, w2)]，各行比例可不同；
+        卡片内容行支持：
+          - (文本, 颜色[, 边框高亮色])：普通文本行；
+          - ("__bar__", 比例0~1, 填充色, 标签文本)：矩形边框+百分比填充的进度条行。
+        整体加宽至 900，保证并排卡片（排行榜信息等）内容单行不换行；
+        并排行内卡片高度取最高者，较矮卡片（如 好感度信息）内容在行内垂直居中，
+        利用同排较高卡片（如 签到信息）右侧的空白部分；
+        文本含「｜」时按「｜」分段整体换行（宠物属性/自动化等不会被切开）；
+        图片总高度 = 各行卡片高度之和 + 间距（避免文字溢出）；卡片高度计入上下内边距
+        （inner*2），内容最后一行与卡片底部线条不重叠；高亮规范：高亮不变动卡片填充
+        颜色，只改变 边框颜色 + 字体颜色。
+        header_right: (文本, 颜色) 时显示在标题行右侧（右上角，如 金币数量）。
+        返回 ("image", path)；失败返回 None。"""
+        Image, ImageDraw = _ensure_pillow()
+        if Image is None:
+            return None
+        # 标题用思源宋体 Bold（衬线，对齐 WebUI --font-display），正文/模块标题用 OPPOSans；
+        # 思源宋体缺失时回退 OPPOSans（保证图片仍可渲染）
+        fonts = _load_fonts(24, 20, 18)
+        if fonts is None:
+            return None
+        mod_font, body_font, small_font = fonts
+        title_font = _title_font(kind="snapshot")
+        if title_font is None:
+            return None
+        tw = _text_measurer()
+        if tw is None:
+            return None
+        content_w = width - pad * 2
+        inner = 10
+        mod_title_h = 34
+        bar_h = 16            # 矩形进度条高度
+        wrap = _make_wrapper(tw, content_w - inner * 2)
+        # 全局图片设计系统（温暖简约和风 · 与 WebUI style.css 一致）：
+        # 背景米白 / 卡片白 / 深林绿主色 / 校徽金强调 / 米金描边 / 危险红语义色
+        BG = DS_BG                    # 页面背景 米白暖色
+        HL = DS_GOLD                  # 高亮边框/强调金
+        NORMAL = DS_BORDER            # 常规描边米金
+        TITLE_DARK = DS_ACCENT        # 标题深林绿
+        MOD_TITLE = DS_TEXT           # 模块标题深林绿黑
+        TEXT = DS_TEXT_2              # 正文
+        MUTED = DS_MUTED              # 说明/次级
+        # 标题下划线到首行卡片的间距（卡片整体下移量）
+        TITLE_UNDERLINE_GAP = 12
+
+        # 规范化：modules → 行列表，每行 = [卡片, ...]（单卡行含一张）
+        # 并排行末尾可带列宽权重元组，如 [卡1, 卡2, (0.42, 0.58)]（各行比例可不同）
+        lines = []
+        for m in modules:
+            if isinstance(m, (list, tuple)) and m and isinstance(m[0], (list, tuple)):
+                row = list(m)
+                weights = None
+                if row and isinstance(row[-1], tuple) and len(row[-1]) == len(row) - 1 \
+                        and all(isinstance(w, (int, float)) for w in row[-1]):
+                    weights = row.pop()          # 末位权重元组
+                lines.append((row, weights))     # 已是并排行 [卡片1, 卡片2, ...]
+            else:
+                lines.append(([m], None))        # 单卡行
+
+        # 每行列宽：默认并排等宽；带权重元组时按比例分配（行内等高底部对齐）
+        col_widths = []
+        for row, weights in lines:
+            n = len(row)
+            avail = content_w - col_gap * (n - 1)
+            if weights and len(weights) == n:
+                total_w = float(sum(weights))
+                ws = []
+                used = 0
+                for i, w in enumerate(weights):
+                    if i == n - 1:
+                        ws.append(avail - used)
+                    else:
+                        cw = int(avail * w / total_w)
+                        ws.append(cw)
+                        used += cw
+                col_widths.append(ws)
+            else:
+                col_widths.append([avail // n] * n)
+
+        def wrap_pipe(text, font, max_w):
+            """含「｜」→ 按「｜」分段整体换行（段内不切开）；否则字符级 fill 换行"""
+            if "｜" not in text:
+                return [wl for wl in wrap(text, font, max_w)]
+            segs = text.split("｜")
+            out = []
+            cur = ""
+            for seg in segs:
+                piece = ("｜" + seg) if cur else seg
+                if tw(cur + piece, font) <= max_w:
+                    cur += piece
+                    continue
+                if cur:
+                    out.append(cur)
+                if tw(seg, font) > max_w:
+                    cur = ""
+                    for ch in seg:
+                        if tw(cur + ch, font) <= max_w and cur:
+                            cur += ch
+                        else:
+                            if cur:
+                                out.append(cur)
+                            cur = ch
+                else:
+                    cur = seg
+            if cur:
+                out.append(cur)
+            return out
+
+        # ---- 第一遍：计算每行卡片高度（行内等高） ----
+        boxes = []  # 每行: (line_h_max, [(h, mod_rows), ...])
+        total_h = pad * 2 + title_h + TITLE_UNDERLINE_GAP
+        for (row, weights), col_ws in zip(lines, col_widths):
+            line_plan = []
+            line_h_max = 0
+            for (mtitle, rows, hl), col_w in zip(row, col_ws):
+                inner_w = col_w - inner * 2
+                mod_rows = []
+                # 卡片高度 = 上下内边距 + 模块标题 + 内容行（与 _render_activity_image 等
+                # 卡片渲染一致计入 inner*2；否则内容从 y+inner 起绘，最后一行会压住卡片底部边框）
+                h = inner * 2 + mod_title_h
+                for item in rows:
+                    if isinstance(item, (list, tuple)) and len(item) >= 2 and item[0] == "__bar__":
+                        ratio = max(0.0, min(1.0, float(item[1])))
+                        color = item[2] if len(item) > 2 else (52, 168, 83)
+                        label = str(item[3]) if len(item) > 3 else ""
+                        mod_rows.append(("__bar__", ratio, color, label))
+                        h += line_h
+                        continue
+                    text, color = item[0], item[1]
+                    hl_color = item[2] if len(item) > 2 else (HL if hl else NORMAL)
+                    font = body_font
+                    if tw(text, body_font) > inner_w:
+                        for wl in wrap_pipe(text, body_font, inner_w):
+                            mod_rows.append((wl, color, font, hl_color))
+                            h += line_h
+                    else:
+                        mod_rows.append((text, color, font, hl_color))
+                        h += line_h
+                line_plan.append((h, mod_rows))
+                line_h_max = max(line_h_max, h)
+            boxes.append((line_h_max, line_plan))
+            total_h += line_h_max + mod_gap
+        total_h += pad
+
+        img = Image.new("RGB", (width, total_h), BG)
+        d = ImageDraw.Draw(img)
+        y = pad
+        # 标题（右上角 header_right：如 金币数量）+ 页头分隔线（对齐 WebUI .page-head）
+        _dtext(d, (pad, y), title, font=title_font, fill=TITLE_DARK)
+        if header_right:
+            rt_text, rt_color = header_right
+            _dtext(d, (int(width - pad - tw(rt_text, small_font)), y + (title_h - 20) // 2),
+                   rt_text, font=small_font, fill=rt_color)
+        y += title_h - 6
+        d.line([(pad, y), (width - pad, y)], fill=TITLE_DARK, width=2)
+        y += 6 + TITLE_UNDERLINE_GAP
+        for (row, weights), col_ws, (line_h_max, line_plan) in zip(lines, col_widths, boxes):
+            for ci, ((mtitle, rows, hl), (h, mod_rows)) in enumerate(zip(row, line_plan)):
+                x0 = pad + sum(col_ws[:ci]) + col_gap * ci
+                x1 = x0 + col_ws[ci]
+                # 卡片：白底填充，边框色按高亮（金/米金）变化；行内等高 → 底边对齐
+                border = HL if hl else NORMAL
+                d.rectangle([x0, y, x1, y + line_h_max], fill=(255, 255, 255),
+                            outline=border, width=(2 if hl else 1))
+                # 较矮卡片（如 好感度信息）内容垂直居中，利用同行较高卡片右侧空白
+                yy = y + (line_h_max - h) // 2 + inner
+                _dtext(d, (x0 + inner, yy), mtitle, font=mod_font, fill=MOD_TITLE)
+                yy += mod_title_h
+                for item in mod_rows:
+                    if item[0] == "__bar__":
+                        ratio, color, label = item[1], item[2], item[3]
+                        bar_y = yy + (line_h - bar_h) // 2
+                        bx0, bx1 = x0 + inner, x1 - inner
+                        d.rectangle([bx0, bar_y, bx1, bar_y + bar_h], fill=(255, 255, 255),
+                                    outline=NORMAL, width=1)
+                        fw = int((bx1 - bx0 - 2) * ratio)
+                        if fw > 0:
+                            d.rectangle([bx0 + 1, bar_y + 1, bx0 + 1 + fw, bar_y + bar_h - 1], fill=color)
+                        if label:
+                            _dtext(d, (int(bx1 - tw(label, small_font)), bar_y - 4),
+                                   label, font=small_font, fill=color)
+                        yy += line_h
+                    else:
+                        text, color, font, hl_color = item
+                        # 高亮规范：高亮只改边框色 + 字体颜色（行内已带色）；无高亮行保持原色
+                        _dtext(d, (x0 + inner, yy), text, font=font, fill=color)
+                        yy += line_h
+            y += line_h_max + mod_gap
+        return _save_temp_image(img, "_snap_", "数据快照")
 
     def _render_rich_image(self, title, rows):
         """rows: 每行是 (text, color, strike) 元组列表。返回 ('image', path) 或 None"""
         Image, ImageDraw = _ensure_pillow()
         if Image is None:
             return None
-        # 字号语义：标题 34 / 正文 24
-        fonts = _load_fonts(34, 24)
-        if fonts is None:
+        # 字号语义：标题 40（衬线）/ 正文 24
+        title_font = _title_font(kind="rich")
+        fonts = _load_fonts(24)
+        if title_font is None or fonts is None:
             return None
-        title_font, body_font = fonts
+        body_font = fonts[0]
         pad = 26
-        title_h = 56
+        title_h = 76
         line_h = 40
         sw = _text_measurer()
         if sw is None:
@@ -1979,9 +2235,10 @@ class CoreMixin:
         width = max(460, int(max_w + pad * 2))
         height = pad * 2 + title_h + line_h * len(rows)
 
-        img = Image.new("RGB", (width, height), (255, 255, 255))
+        img = Image.new("RGB", (width, height), DS_BG)
         d = ImageDraw.Draw(img)
-        _dtext(d, (pad, pad), title, font=title_font, fill=(20, 20, 20))
+        _draw_underlined_title(d, (pad, pad), title, title_font, color=DS_ACCENT,
+                               width=width - pad * 2, gap=10)
         y = pad + title_h
         for r in rows:
             x = pad
@@ -2003,9 +2260,9 @@ class CoreMixin:
         rows = []
         for header, items in sections:
             if header:
-                rows.append([(header, (110, 110, 110), False)])
+                rows.append([(header, DS_MUTED, False)])
             for cmd, desc in items:
-                rows.append([(cmd, (20, 20, 20), False), (f"  {desc}", (90, 90, 90), False)])
+                rows.append([(cmd, DS_TEXT, False), (f"  {desc}", DS_MUTED, False)])
         return self._render_rich_image(title, rows)
 
     def _build_help(self, title, sections):
@@ -2278,4 +2535,10 @@ __all__ = [
     "_COMMON_STROKES",
     "_hanzi_stroke",
     "_record_nick_sort_key",
+    # 2.1.1：全局图片设计系统（温暖简约和风，与 WebUI style.css 同源）
+    "TITLE_FONT_FILE",
+    "DS_BG", "DS_SURFACE", "DS_SURFACE_2", "DS_TEXT", "DS_TEXT_2", "DS_MUTED",
+    "DS_BORDER", "DS_BORDER_2", "DS_ACCENT", "DS_ACCENT_STRONG", "DS_GOLD",
+    "DS_GOLD_2", "DS_DANGER", "DS_DANGER_STRONG", "DS_SUCCESS", "DS_GREEN_SOFT", "DS_BLUE",
+    "DS_TITLE_SIZES", "_title_font", "_draw_underlined_title",
 ]

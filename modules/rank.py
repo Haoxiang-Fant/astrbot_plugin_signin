@@ -225,16 +225,18 @@ class RankMixin:
         Image, ImageDraw = _ensure_pillow()
         if Image is None:
             return None
-        fonts = _load_fonts(36, 24)
-        if fonts is None:
+        # 标题 42（衬线）/ 正文 24
+        title_font = _title_font(kind="rank")
+        fonts = _load_fonts(24)
+        if title_font is None or fonts is None:
             return None
-        title_font, body_font = fonts
+        body_font = fonts[0]
         tw = _text_measurer()
         if tw is None:
             return None
 
         pad = 24
-        title_h = 60
+        title_h = 82
         line_h = 40
         bar_h = 12          # 进度条高度
         rank_col = 64       # 名次列宽
@@ -245,9 +247,9 @@ class RankMixin:
         gap_left = gap_base * float(globals().get("RANK_BAR_GAP_LEFT_MULT", 2.0) or 2.0)
         gap_right = gap_base * float(globals().get("RANK_BAR_GAP_RIGHT_MULT", 3.0) or 3.0)
         sep_pct = float(globals().get("RANK_ROW_SEP_PCT", 0.03) or 0.03)
-        text_color_s = self._parse_hex_color(globals().get("RANK_TEXT_COLOR", "#000000"), (0, 0, 0))
-        masked_color_s = self._parse_hex_color(globals().get("RANK_MASKED_COLOR", "#7F7F7F"), (127, 127, 127))
-        sep_color = self._parse_hex_color(globals().get("RANK_SEP_COLOR", "#D9D9D9"), (217, 217, 217))
+        text_color_s = self._parse_hex_color(globals().get("RANK_TEXT_COLOR", "#22322A"), DS_TEXT)
+        masked_color_s = self._parse_hex_color(globals().get("RANK_MASKED_COLOR", "#65715F"), DS_MUTED)
+        sep_color = self._parse_hex_color(globals().get("RANK_SEP_COLOR", "#E6E2D2"), DS_BORDER)
 
         prepared = []
         score_w_max = 0
@@ -275,9 +277,10 @@ class RankMixin:
             bar_x1 = bar_x0 + 12              # 极小图兜底：进度条至少 12px
         sep_x1 = int(score_x)                  # 分割线右端 = 积分右边缘
 
-        img = Image.new("RGB", (width, height), (255, 255, 255))
+        img = Image.new("RGB", (width, height), DS_BG)
         d = ImageDraw.Draw(img)
-        _dtext(d, (int(pad), int(pad)), title, font=title_font, fill=(20, 20, 20))
+        _draw_underlined_title(d, (int(pad), int(pad)), title, title_font, color=DS_ACCENT,
+                               width=width - pad * 2, gap=10)
         y = pad + title_h
         hl = self._parse_hex_color(hl_color)
         bar_w = bar_x1 - bar_x0
@@ -292,9 +295,9 @@ class RankMixin:
             bar_color = self._lighten_color(text_color, lighten)
             _dtext(d, (int(pad), int(y)), str(rank), font=body_font, fill=text_color)
             _dtext(d, (int(name_x), int(y)), disp, font=body_font, fill=text_color)
-            # 进度条：轨道浅灰 + 填充色（文字浅 20%，高亮行即高亮色浅 20%）
+            # 进度条：轨道米金描边 + 填充色（文字浅 20%，高亮行即高亮色浅 20%）
             bar_y = y + (line_h - bar_h) // 2
-            d.rectangle([bar_x0, bar_y, bar_x1, bar_y + bar_h], fill=(238, 238, 238), outline=(205, 205, 205))
+            d.rectangle([bar_x0, bar_y, bar_x1, bar_y + bar_h], fill=DS_SURFACE_2, outline=DS_BORDER)
             fill_w = int(bar_w * max(0.0, min(1.0, ratio)))
             if fill_w > 0:
                 d.rectangle([bar_x0 + 1, bar_y + 1, bar_x0 + fill_w, bar_y + bar_h - 1], fill=bar_color)

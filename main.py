@@ -46,7 +46,7 @@ class _NameOverrideEvent:
         return self._override_name
 
 
-@register("astrbot_plugin_signin", "sishijiu", "群签到 + 左轮手枪 + 宠物养成 + 金币银行 + 农场", "2.1.0")
+@register("astrbot_plugin_signin", "sishijiu", "群签到 + 左轮手枪 + 宠物养成 + 金币银行 + 农场", "2.1.1")
 class SignInPlugin(Star, FarmMixin, PetMixin, BankMixin, RedpacketMixin, ActivityMixin, LoanMixin, RouletteMixin, RankMixin, LanMixin, WebUIMixin, CoreMixin):
     def __init__(self, context: Context, config: dict = None):
         super().__init__(context)
@@ -502,6 +502,206 @@ class SignInPlugin(Star, FarmMixin, PetMixin, BankMixin, RedpacketMixin, Activit
         return self._activity_command(head, event)
 
     # ================= 数据存取 =================
+    def _render_signin_snapshot(self, name: str, key: str, data: dict, extra_lines=None, bank_paid=0, signed_today=False):
+        """2.1.1 签到实时数据快照：信息流瀑布平铺（参考图片2.png 布局）——
+        标题为按时段问候语（早上好/上午好/中午好/下午好/晚上好！/夜深了）+ 用户名；
+        签到信息 | 好感度信息（同一行左右并排）、银行与征信 | 排行榜信息（同一行左右并排）、
+        宠物信息 / 农场信息 各占整行；标题右上角显示当前金币数量；
+        好感度进度条为矩形边框+百分比填充；含「｜」的文本（宠物属性/自动化等）
+        按段整体换行、不切开；图片高度自适应避免文字溢出；
+        配色与 WebUI 后台设计系统一致（米白暖底/白卡片/深林绿/校徽金/危险红）；
+        高亮规范：高亮不变动卡片填充颜色，只改变边框颜色 + 字体颜色。"""
+        user = data.get("users", {}).get(key) or {}
+        pet = data.get("pets", {}).get(key)
+        farm = data.get("farms", {}).get(key)
+        bank = data.get("bank", {}).get(key)
+        loan = data.get("loans", {}).get(key)
+        now_ts = datetime.now().timestamp()
+        # WebUI 设计系统语义色（与 style.css 对齐）
+        GRAY = (101, 113, 95)       # --muted #65715f
+        TEXT = (63, 74, 64)         # --text-2 #3f4a40
+        GREEN = (44, 122, 80)       # --success #2c7a50
+        GOLD = (214, 161, 26)       # --gold #d6a11a
+        RED = (179, 57, 46)         # --danger #b3392e
+        BLUE = (52, 88, 132)        # 提示蓝（深调）
+        lines_layout = []
+
+        # ---------- 1. 签到信息（合并行：累计签到+获得金币 一行、获得好感度+宠物经验 一行） ----------
+        rows = []
+        if signed_today:
+            rows.append(("✅ 今日已签到", GREEN))
+        total = int(user.get("signin_total", 0) or 0)
+        double_on = False
+        try:
+            enabled = data.get("activities", {})
+            double_on = any(a.id == "double_signin" and enabled.get(a.id, False) and a.is_active_now()
+                            for a in (self._activities or []))
+        except Exception:
+            double_on = False
+        coins_total = int(user.get("signin_coins_total", 0) or 0)
+        rows.append((f"累计签到 {total} 次" + ("（双倍签到活动进行中）" if double_on else "") + f"｜获得金币：{coins_total}", TEXT))
+        fav_total = float(user.get("signin_fav_total", 0) or 0)
+        if pet:
+            exp_total = float(user.get("signin_pet_exp_total", 0) or 0)
+            rows.append((f"获得好感度：{fav_total:.1f}｜获得宠物经验：{exp_total:.1f}", TEXT))
+        else:
+            rows.append((f"获得好感度：{fav_total:.1f}", TEXT))
+        extra = user.get("signin_extra") or (extra_lines or [])
+        extra = [ln for ln in extra if ("属性丸" in ln or "经验球" in ln)]
+        rows.append((("额外道具：" + "；".join(extra)) if extra else "额外道具：无", GRAY))
+        signin_card = ("签到信息", rows, False)
+
+        # ---------- 2. 好感度信息（进度条 = 矩形边框 + 百分比填充） ----------
+        fav = float(user.get("favorability", 0) or 0)
+        lv = self._level_of(fav)
+        step = float(globals().get("LEVEL_STEP", 10.0) or 10.0)
+        progress = (fav - lv * step) / step if step > 0 else 0.0
+        progress = max(0.0, min(1.0, progress))
+        pct = int(progress * 100)
+        next_need = (lv + 1) * step - fav
+        fav_rows = [
+            (f"当前好感度总值：{fav:.1f}", TEXT),
+            ("__bar__", progress, GREEN, f"{pct}%"),
+            (f"距离下一级还需 {next_need:.1f} 好感度", GRAY),
+        ]
+        fav_card = ("好感度信息", fav_rows, False)
+
+        # 行1：签到信息 | 好感度信息（左右并排）
+        lines_layout.append([signin_card, fav_card])
+
+        # ---------- 3. 银行与征信（无存款无欠款则不显示） ----------
+        deposits = bank.get("deposits", []) if isinstance(bank, dict) else []
+        loans = loan.get("loans", []) if isinstance(loan, dict) else []
+        bank_card = None
+        if deposits or loans:
+            rows = []
+            matured_sum = sum(self._dep_amount(d) for d in deposits if d.get("status") == "matured")
+            locked_sum = sum(self._dep_amount(d) for d in deposits if d.get("status") == "locked")
+            rows.append((f"存款到期总额：{matured_sum}｜本次收益：+{bank_paid}", GOLD))
+            if locked_sum > 0:
+                nxt = min((float(d.get("unlock_ts", 0) or 0) for d in deposits
+                           if d.get("status") == "locked"), default=0)
+                nxt_txt = datetime.fromtimestamp(nxt).strftime("%m-%d %H:%M") if nxt else "—"
+                # 2.1.1：存款到期时间移动到「未到期存款」下方单独一行
+                rows.append((f"剩余未到期存款：{locked_sum}", TEXT))
+                rows.append((f"最早 {nxt_txt} 到期", GRAY))
+            if loans:
+                owed = sum(self._loan_owed(l, now_ts) for l in loans)
+                overdue_days = max([int((now_ts - l.get("due_ts", 0)) // 86400)
+                                    for l in loans if self._loan_is_overdue(l, now_ts)], default=0)
+                rows.append((f"负债信息：欠款总额 {owed:.0f} 金币", RED if overdue_days else TEXT))
+                if overdue_days:
+                    rows.append((f"逾期 {overdue_days} 天", RED))
+                rows.append(("还款提示：发送「还款 <套餐> [金额]」还款", BLUE))
+            bank_card = ("银行与征信", rows, bool(overdue_days) if loans else False)
+
+        # ---------- 4. 排行榜信息（与银行与征信 同一行右侧） ----------
+        rank_rows = []
+        for kind, label in (("coins", "金币"), ("pet", "宠物"), ("farm", "农场")):
+            try:
+                entries = self._rank_entries(kind, data)
+                pos = next((i for i, (_, euid, _) in enumerate(entries, 1) if str(euid) == str(key)), None)
+            except Exception:
+                pos = None
+            if pos:
+                score = entries[pos - 1][0]
+                rank_rows.append((f"{label}排行榜：第 {pos} 名（积分 {self._fmt_score(score)}）", GOLD))
+            else:
+                rank_rows.append((f"{label}排行榜：未上榜", GRAY))
+        rank_card = ("排行榜信息", rank_rows, False)
+
+        # 行2：银行与征信 | 排行榜信息（银行无数据显示时排行榜独占整行）
+        # 银行列收窄但不换行（最长行「还款提示…」约 352px），空出宽度给排行榜；
+        # 权重按内容宽度折算：银行 372 : 排行榜 391（可用列宽 848 → 银行≈413 / 排行榜≈435）
+        if bank_card:
+            lines_layout.append([bank_card, rank_card, (372, 391)])
+        else:
+            lines_layout.append([rank_card])
+
+        # ---------- 5. 宠物信息（未开通则不显示） ----------
+        if pet:
+            weak = bool(pet.get("weak"))
+            rows = []
+            if weak:
+                rows.append(("宠物健康值归零，进入虚弱状态！！！", RED))
+                rows.append(("操作提示：发送「治疗宠物」（花 500 金币）恢复", RED))
+                # 未照顾天数：连续两天结算健康为 0 进入虚弱
+                streak = int(pet.get("weak_streak", 0) or 0)
+                rows.append((f"未照顾天数：{max(1, streak)} 天", RED))
+                rows.append(("自动化提示：自动购买/自动打工已暂停，治疗恢复后自动继续", GRAY))
+            else:
+                rows.append((f"结算信息：{pet.get('last_settle', {}).get('date', '暂无')}", GRAY))
+                sat_max, thr_max, sta_max, mood_max = self._attr_max(pet["health"])
+                rows.append((f"饱食 {pet['satiety']:.0f}/{sat_max:.0f}｜口渴 {pet['thirst']:.0f}/{thr_max:.0f}"
+                             f"｜体力 {pet['stamina']:.0f}/{sta_max:.0f}｜心情 {pet['mood']:.0f}/{mood_max:.0f}"
+                             f"｜健康 {pet['health']:.0f}/{PET_MAX_HEALTH:.0f}", TEXT))
+                busy_until = self._pet_busy_until(pet)
+                if now_ts < busy_until:
+                    rows.append((f"忙碌中：{pet.get('busy_activity', '')}「{pet.get('busy_item', '')}」", BLUE))
+                else:
+                    rows.append(("当前空闲", GRAY))
+                u_auto = user
+                rows.append((f"自动化：自动购买{'开' if u_auto.get('auto_feed_enabled') else '关'}｜"
+                             f"自动打工{'开' if u_auto.get('auto_work_enabled') else '关'}｜"
+                             f"基准金币 {int(u_auto.get('work_base', 0) or 0)}", TEXT))
+                fl = (u_auto.get("auto_feed_logs") or [])
+                wl = (u_auto.get("auto_work_logs") or [])
+                if fl:
+                    last = fl[-1]
+                    items = "、".join(f"{it.get('name', '')}×{it.get('qty', 0)}" for it in last.get("items", []))
+                    rows.append((f"最近自动购买：{last.get('date', '')} {items}（花 {last.get('total', 0)} 金币）", GOLD))
+                if wl:
+                    last = wl[-1]
+                    rows.append((f"最近自动打工：{last.get('date', '')}「{last.get('job', '')}」+{last.get('coins', 0)} 金币", GREEN))
+                if not fl and not wl:
+                    rows.append(("暂无自动化记录", GRAY))
+            lines_layout.append(("宠物信息", rows, weak))
+
+        # ---------- 6. 农场信息（未开通则不显示） ----------
+        if farm:
+            rows = []
+            plots = farm.get("plots", []) or []
+            idle = sum(1 for p in plots if p.get("crop") is None)
+            mature = sum(1 for p in plots if p.get("crop") is not None and now_ts >= float(p.get("mature_ts", 0) or 0))
+            growing = len(plots) - idle - mature
+            rows.append((f"土地：空闲 {idle}｜种植中 {growing}｜已成熟 {mature}（共 {len(plots)} 块）", TEXT))
+            # 被偷菜统计
+            infos = farm.get("steal_infos", []) or []
+            thieves = set()
+            loss = 0
+            for it in infos:
+                tid = it.get("thief_uid")
+                if tid:
+                    thieves.add(str(tid))
+                for item in it.get("items", []) or []:
+                    loss += int(item.get("loss", 0) or 0)
+            rows.append((f"被偷菜人数：{len(thieves)}｜被偷损失总金额：{loss}", RED if loss else GRAY))
+            lines_layout.append(("农场信息", rows, bool(loss)))
+
+        if not lines_layout:
+            lines_layout.append([("签到信息", [("暂无数据", GRAY)], False)])
+        # 右上角：当前金币数量
+        coins = int(user.get("coins", 0) or 0)
+        img = self._render_snapshot_image(f"{self._time_greeting()} {name}", lines_layout,
+                                          header_right=(f"金币：{coins}", GOLD))
+        return img if img is not None else None
+
+    @staticmethod
+    def _time_greeting(now=None) -> str:
+        """按时段返回问候语（早上好/上午好/中午好/下午好/晚上好！/夜深了）"""
+        h = (now or datetime.now()).hour
+        if 5 <= h < 8:
+            return "早上好！"
+        if 8 <= h < 11:
+            return "上午好！"
+        if 11 <= h < 13:
+            return "中午好！"
+        if 13 <= h < 17:
+            return "下午好！"
+        if 17 <= h < 23:
+            return "晚上好！"
+        return "夜深了"
+
     def _handle_sign_in(self, event: AstrMessageEvent) -> str:
         name = event.get_sender_name()
         key = self._user_key(event)
@@ -511,18 +711,17 @@ class SignInPlugin(Star, FarmMixin, PetMixin, BankMixin, RedpacketMixin, Activit
         user = data.get("users", {}).get(key)
 
         if user and user.get("last_date") == today:
-            coins = user.get("coins", 0)
-            fav = float(user.get("favorability", 0.0))
-            lv = self._level_of(fav)
             reply = (f"{name}，你今天已经签到过啦～\n"
-                     f"💰 当前金币：{coins}\n"
-                     f"💗 当前好感度：{fav:.2f}（Lv.{lv}）")
+                     f"💰 当前金币：{user.get('coins', 0)}\n"
+                     f"💗 当前好感度：{float(user.get('favorability', 0.0)):.2f}（Lv.{self._level_of(float(user.get('favorability', 0.0)))}）")
             # 今天已签过：仍结算到期的存单
             settled, bank_paid = self._bank_settle(data, key)
             if settled > 0:
                 self._save(data)
                 reply += f"\n🏦 {settled} 笔存单已解锁，利息 +{bank_paid} 已自动入账，本金可发送「取款」取出。"
-            return reply
+            # 2.1.1：签到响应改为用户实时数据快照（瀑布平铺）
+            img = self._render_signin_snapshot(name, key, data, bank_paid=bank_paid, signed_today=True)
+            return img if img is not None else reply
 
         if user is None:
             user = self._ensure_user(data, key)
@@ -530,6 +729,8 @@ class SignInPlugin(Star, FarmMixin, PetMixin, BankMixin, RedpacketMixin, Activit
         lines = [f"✅ {name} 签到成功！"]
         lines += self._apply_signin_once(data, key, today)
         user["last_date"] = today
+        # 2.1.1：累计签到次数（只在主签到路径累加，双倍活动不重复计次）
+        user["signin_total"] = int(user.get("signin_total", 0) or 0) + 1
 
         pet = data.get("pets", {}).get(key)
         if pet:
@@ -547,7 +748,9 @@ class SignInPlugin(Star, FarmMixin, PetMixin, BankMixin, RedpacketMixin, Activit
         self._sign_in_activity_hooks(event, data, key, lines)
 
         self._save(data)
-        return "\n".join(lines)
+        # 2.1.1：签到响应改为用户实时数据快照（瀑布平铺）
+        img = self._render_signin_snapshot(name, key, data, extra_lines=lines, bank_paid=bank_paid)
+        return img if img is not None else "\n".join(lines)
 
     def _signin_reward_chances(self):
         """签到额外奖励池概率（WebUI 可编辑）：返回 (无奖品, 属性丸, 经验球)；
@@ -633,6 +836,16 @@ class SignInPlugin(Star, FarmMixin, PetMixin, BankMixin, RedpacketMixin, Activit
                 gain = cnt * ITEM_TO_COIN
                 self._add_coins(data, key, gain, "签到奖励转金币")
                 lines.append(f"🔄 抽到农场经验球 ×{cnt}（未开通农场，自动转为 {gain} 金币）")
+
+        # 2.1.1：累计签到统计（供「我的签到」实时数据快照展示）
+        # 注：signin_total 只在主签到路径累加（_handle_sign_in），避免双倍签到活动复用本函数导致次数翻倍
+        user["signin_coins_total"] = int(user.get("signin_coins_total", 0) or 0) + coins_got
+        user["signin_fav_total"] = round(float(user.get("signin_fav_total", 0) or 0) + fav_got, 2)
+        if pet:
+            user["signin_pet_exp_total"] = round(float(user.get("signin_pet_exp_total", 0) or 0) + exp_got, 2)
+        # 额外获得道具（本次签到）：从 lines 里提取 🎁 类提示（属性丸 / 经验球 / 转金币）
+        extra = [ln for ln in lines if ("属性丸" in ln or "经验球" in ln)]
+        user["signin_extra"] = extra
 
         return lines
 

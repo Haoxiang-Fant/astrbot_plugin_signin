@@ -343,15 +343,15 @@ class LoanMixin:
 
     def _render_loan_packages(self, data, key):
         rows = []
-        rows.append([("格式：借款 <套餐代码> <金额>", (90, 90, 90), False)])
-        rows.append([("每日累计贷款上限 = 2 × 套餐上限", (90, 90, 90), False)])
+        rows.append([("格式：借款 <套餐代码> <金额>", DS_MUTED, False)])
+        rows.append([("每日累计贷款上限 = 2 × 套餐上限", DS_MUTED, False)])
         rows.append([("", (0, 0, 0), False)])
         for pkg in self._loan_packages_info(data, key):
-            rows.append([(f"[套餐 {pkg['code']} - {pkg['name']}]", (110, 110, 110), False)])
-            rows.append([(f"最大可借：{pkg['max']}", (20, 20, 20), False)])
-            rows.append([(f"日利率：{pkg['rate']}", (20, 20, 20), False)])
+            rows.append([(f"[套餐 {pkg['code']} - {pkg['name']}]", DS_MUTED, False)])
+            rows.append([(f"最大可借：{pkg['max']}", DS_TEXT, False)])
+            rows.append([(f"日利率：{pkg['rate']}", DS_TEXT, False)])
             if pkg.get("note"):
-                rows.append([(f"说明：{pkg['note']}", (80, 80, 80), False)])
+                rows.append([(f"说明：{pkg['note']}", DS_MUTED, False)])
             rows.append([("", (0, 0, 0), False)])
         img = self._render_rich_image("借款（贷款套餐一览）", rows)
         if img is not None:
