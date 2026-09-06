@@ -810,7 +810,8 @@ class PetMixin:
                                  changes=None, reason=None, coins_delta=None, exp_delta=None,
                                  changes_fresh=False, progress_done=False, card2_hl=False):
         """「宠物」指令图片（2.0.0 新模板）：
-        标题(<用户昵称>的宠物 + 右侧宠物排行数据) / 预留位(红 #C00000，无内容则忽略) / 分割线 /
+        标题(<用户昵称>的宠物 + 右侧宠物排行数据) / 自动化信息（自动购买/自动打工 开关状态+累计金币，
+        2.1.1 起移至标题下方单行展示，无卡片边框，删除切换指令提示） / 预留位(红 #C00000，无内容则忽略) / 分割线 /
         宠物状态卡片（名称/状态/等级/经验/升级进度条 + 五项属性条）/ 底部双卡：
         - 底部卡片1（宽）：最近一次五大状态属性变化 + 变化原因 + 原打工/玩耍进度条模块
         - 底部卡片2（窄）：宠物正在进行的工作/玩耍项目 + 金币/经验变化 + 预计完成时间
@@ -822,14 +823,17 @@ class PetMixin:
         Image, ImageDraw = _ensure_pillow()
         if Image is None:
             return None
-        # 字号语义：标题 32 / 宠物名 26（大两号）/ 状态 18 / 正文 20 / 经验 16 / 属性名 18 / 提示 16 / 描述 18
+        # 字号语义：标题 36（衬线）/ 宠物名 26（大两号）/ 状态 18 / 正文 20 / 经验 16 / 属性名 18 / 提示 16 / 描述 18
         # 附加 14/12 小字号：底部卡片单行自适应（内容超宽时逐级缩小，保证不触发自动换行）
-        fonts = _load_fonts(32, 26, 18, 20, 16, 18, 16, 18, 14, 12)
+        fonts = _load_fonts(26, 18, 20, 16, 18, 16, 18, 14, 12)
         if fonts is None:
             return None
-        (title_font, pet_name_font, status_font, lv_font,
-         exp_font, attr_font, hint_font, desc_font) = fonts[:8]
-        small_font, tiny_font = fonts[8], fonts[9]
+        (pet_name_font, status_font, lv_font,
+         exp_font, attr_font, hint_font, desc_font) = fonts[:7]
+        small_font, tiny_font = fonts[7], fonts[8]
+        title_font = _title_font(kind="pet")
+        if title_font is None:
+            return None
 
         now_ts = datetime.now().timestamp()
         busy_until = self._pet_busy_until(pet)
@@ -848,7 +852,7 @@ class PetMixin:
         ]
 
         pad = 20
-        title_h = 52
+        title_h = 56  # 2.1.1：减小标题与下方自动化信息的间距
         inner = 10
         name_row_h = 34
         lv_row_h = 28
@@ -906,7 +910,7 @@ class PetMixin:
             txt = f"{ATTR_SHORT[a]}{v:+.1f}"
             if i < 4:
                 txt += " "  # 半角空格分隔（节省宽度，尽量一行）
-            color = (60, 60, 60) if abs(v) > 1e-9 else (190, 190, 190)
+            color = DS_TEXT_2 if abs(v) > 1e-9 else DS_MUTED
             chg_segs.append((txt, color))
 
         # 空闲进度条（原打工/玩耍进度条模块，移入底部卡片1）
@@ -915,7 +919,7 @@ class PetMixin:
             start = float(pet.get("busy_start", 0) or 0)
             total = busy_until - start if busy_until > start else 1.0
             idle_ratio = min(0.9, max(0.05, 1.0 - (busy_until - now_ts) / total))  # 忙碌中进度不满
-        idle_color = (146, 208, 80) if not busy else (255, 192, 0)
+        idle_color = DS_GREEN_SOFT if not busy else DS_GOLD_2
 
         # ---------- 底部卡片2 数据（当前项目 / 金币经验变化 / 预计完成时刻 / 状态档位） ----------
         if busy:
@@ -949,7 +953,7 @@ class PetMixin:
         # 当前宠物所处的状态档位（饱食/口渴/心情 取最差档，1~4）
         tier = self._worst_tier(pet["satiety"], pet["thirst"], pet["mood"])
         tier_txt = f"状态档位：{tier}/4"
-        tier_color = (192, 0, 0) if tier >= 3 else (110, 110, 110)
+        tier_color = DS_DANGER if tier >= 3 else DS_MUTED
 
         # ---------- 描述行（沿用原底部文案，显示在卡片1进度条下方） ----------
         if busy:
@@ -1059,9 +1063,23 @@ class PetMixin:
                                + len(c2_eta_rows) + len(c2_tier_rows)) * line_h
         bottom_h = max(c1_h, c2_h)
 
-        height = pad * 2 + title_h + slot_h + rule_h + pet_card_h + bottom_gap + bottom_h
+        # ---------- 自动化功能提示（2.1.1：从五属性条右侧移至标题下方；删除切换指令提示行） ----------
+        u_auto = data.get("users", {}).get(uid) or {}
+        feed_on = bool(u_auto.get("auto_feed_enabled")) and bool(globals().get("AUTO_FEED_ENABLED", False))
+        work_on = bool(u_auto.get("auto_work_enabled")) and bool(globals().get("AUTO_WORK_ENABLED", True)) and feed_on
+        feed_cost = sum(int(lg.get("total", 0) or 0) for lg in (u_auto.get("auto_feed_logs") or []))
+        work_gain = sum(int(lg.get("coins", 0) or 0) for lg in (u_auto.get("auto_work_logs") or []))
+        auto_st1 = "开" if feed_on else "关"
+        auto_c1 = DS_SUCCESS if feed_on else DS_MUTED
+        auto_line1 = f"自动购买 {auto_st1}｜消耗 {feed_cost} 金币"
+        auto_st2 = "开" if work_on else "关"
+        auto_c2 = DS_SUCCESS if work_on else DS_MUTED
+        auto_line2 = f"自动打工 {auto_st2}｜赚取 {work_gain} 金币"
+        auto_h = line_h + 6  # 单行（开关状态+累计金币）；指令提示已删除，无卡片边框
 
-        img = Image.new("RGB", (width, height), (255, 255, 255))
+        height = pad * 2 + title_h + auto_h + slot_h + rule_h + pet_card_h + bottom_gap + bottom_h
+
+        img = Image.new("RGB", (width, height), DS_BG)
         d = ImageDraw.Draw(img)
         y = pad
 
@@ -1078,120 +1096,134 @@ class PetMixin:
                 cut = cut[:-1]
             disp_name = (cut + "…") if cut else disp_name[:1] + "…"
         title_line = f"{disp_name}{_title_suffix}"
-        _dtext(d, (pad, y), title_line, font=title_font, fill=(20, 20, 20))
+        _dtext(d, (pad, y), title_line, font=title_font, fill=DS_ACCENT)
         if rank_text:
-            _dtext(d, (int(width - pad - tw(rank_text, desc_font)), y + 14), rank_text,
-                   font=desc_font, fill=(90, 90, 90))
+            _dtext(d, (int(width - pad - tw(rank_text, desc_font)), y + 16), rank_text,
+                   font=desc_font, fill=DS_MUTED)
         y += title_h
+
+        # 自动化信息（标题下方，单行展示，无卡片边框；保留分割线）
+        _dtext(d, (int(pad + inner), y + 2), auto_line1, font=tiny_font, fill=auto_c1)
+        x_auto = int(pad + inner + tw(auto_line1, tiny_font) + tw("　", tiny_font))
+        _dtext(d, (x_auto, y + 2), auto_line2, font=tiny_font, fill=auto_c2)
+        y += auto_h
 
         # 预留位（红 #C00000）
         if slot_lines:
             for wl in slot_lines:
-                _dtext(d, (pad, y), wl, font=desc_font, fill=(192, 0, 0))
+                _dtext(d, (pad, y), wl, font=desc_font, fill=DS_DANGER)
                 y += line_h
             y += 6
 
         # 分割线
-        d.line([(pad, y), (width - pad, y)], fill=(200, 200, 200), width=2)
+        d.line([(pad, y), (width - pad, y)], fill=DS_BORDER, width=2)
         y += rule_h
 
         # ---------- 宠物状态卡片（横跨整行） ----------
-        d.rectangle([pad, y, width - pad, y + pet_card_h], outline=(205, 205, 205), width=1)
+        d.rectangle([pad, y, width - pad, y + pet_card_h], outline=DS_BORDER, width=1)
         yy = y + inner
         # 行1：宠物名称(大两号,左) + 状态(小一号,右)
-        _dtext(d, (int(pad + inner), yy), pet.get("name", "宠物"), font=pet_name_font, fill=(20, 20, 20))
+        _dtext(d, (int(pad + inner), yy), pet.get("name", "宠物"), font=pet_name_font, fill=DS_TEXT)
         _dtext(d, (int(width - pad - inner - tw(status, status_font)), yy + 10),
-               status, font=status_font, fill=(150, 150, 150))
+               status, font=status_font, fill=DS_MUTED)
         yy += name_row_h
         # 行2：等级(左) + 经验(右,小两号)
-        _dtext(d, (int(pad + inner), yy), f"Lv.{lv}", font=lv_font, fill=(40, 40, 40))
+        _dtext(d, (int(pad + inner), yy), f"Lv.{lv}", font=lv_font, fill=DS_TEXT)
         _dtext(d, (int(width - pad - inner - tw(exp_text, exp_font)), yy + 6),
-               exp_text, font=exp_font, fill=(110, 110, 110))
+               exp_text, font=exp_font, fill=DS_MUTED)
         yy += lv_row_h
         # 行3：升级进度条（普通进度条高度，含百分比）
         bar_y = yy + (bar_h - bar_h_px) // 2
-        d.rectangle([pad + inner, bar_y, width - pad - inner, bar_y + bar_h_px], outline=(200, 200, 200), width=1)
+        d.rectangle([pad + inner, bar_y, width - pad - inner, bar_y + bar_h_px], outline=DS_BORDER, width=1)
         if exp_ratio > 0:
             d.rectangle([pad + inner + 1, bar_y + 1,
                          int(pad + inner + 1 + (content_w - 2 * inner - 2) * exp_ratio), bar_y + bar_h_px - 1],
-                        fill=(52, 168, 83))
+                        fill=DS_SUCCESS)
         pct_text = f"{int(exp_ratio * 100)}%"
         _dtext(d, (int(width - pad - inner - tw(pct_text, exp_font) - 4), bar_y - 4),
-               pct_text, font=exp_font, fill=(40, 40, 40))
+               pct_text, font=exp_font, fill=DS_TEXT)
         yy += bar_h
         # 行4+：宠物属性条区
         attr_w = int(content_w * 0.55)  # 属性条宽度（剩余右侧放状态解释）
         for label, val, amax, hint in attrs:
             # 属性名 + 当前值/最大值
             t = f"{label} {val:.0f}/{amax:.0f}"
-            _dtext(d, (int(pad + inner), yy), t, font=attr_font, fill=(60, 60, 60))
+            _dtext(d, (int(pad + inner), yy), t, font=attr_font, fill=DS_TEXT_2)
             yy += attr_label_h
             # 属性条颜色判定（2.0.2：饱/渴/心 进入第3/4档位 → 红 #C00000，档位阈值 WebUI 可编辑）
             red = self._attr_is_red(label, val)
             green = (amax - val) < 20 and pet["health"] >= 41
-            bar_color = (192, 0, 0) if red else ((146, 208, 80) if green else (51, 51, 51))
+            bar_color = DS_DANGER if red else (DS_GREEN_SOFT if green else DS_TEXT)
             # 属性条（高度 = 普通进度条的 30%）
             ay = yy + (attr_bar_h - attr_bar_px) // 2
             ratio = max(0.0, min(1.0, val / amax)) if amax > 0 else 0.0
             d.rectangle([pad + inner, ay, pad + inner + attr_w, ay + attr_bar_px],
-                        outline=(200, 200, 200), width=1)
+                        outline=DS_BORDER, width=1)
             if ratio > 0:
                 d.rectangle([pad + inner + 1, ay + 1,
                              int(pad + inner + 1 + (attr_w - 2) * ratio), ay + attr_bar_px - 1],
                             fill=bar_color)
             # 状态解释：仅红色时固定显示在整个属性条区域的右侧（不随填充比例移动）
             if red:
-                _dtext(d, (int(pad + inner + attr_w + 6), yy + 1), hint, font=hint_font, fill=(192, 0, 0))
+                _dtext(d, (int(pad + inner + attr_w + 6), yy + 1), hint, font=hint_font, fill=DS_DANGER)
             yy += attr_bar_h
         y += pet_card_h
         y += bottom_gap  # 状态卡片与底部双卡保持间距
 
         # ---------- 底部双卡：卡片1(宽) + 卡片2(窄) ----------
-        YELLOW = (255, 230, 153)  # #FFE699 变动高亮
+        # 2.1.1 高亮规范：高亮不变动卡片填充颜色，只改变 边框颜色 + 字体颜色
+        HL_BORDER = DS_GOLD    # 高亮边框（金）
+        HL_TEXT = DS_GOLD      # 高亮字体（深金）
+        NORMAL_BORDER = DS_BORDER
         # 卡片1：五属性变化(多色分段,自动换行) + 原因 + 打工/玩耍进度条 + 描述/剩余时间
         # 高亮条件：本次产生了新的状态变化，或 进度条满（空闲）后的第一次响应
-        c1_fill = YELLOW if (changes_fresh or progress_done) else None
+        c1_hl = bool(changes_fresh or progress_done)
         d.rectangle([pad, y, pad + card1_w, y + bottom_h],
-                    fill=c1_fill, outline=(205, 205, 205), width=1)
+                    fill=None, outline=(HL_BORDER if c1_hl else NORMAL_BORDER), width=(2 if c1_hl else 1))
         yy = y + c1_inner
         yy = draw_segs(d, pad + c1_inner, yy, c1_avail, chg_segs, c1_chg_font, line_h)
+        c1_reason_color = HL_TEXT if c1_hl else DS_MUTED
         for wl, f in c1_reason_rows:
-            _dtext(d, (int(pad + c1_inner), yy), wl, font=f, fill=(110, 110, 110))
+            _dtext(d, (int(pad + c1_inner), yy), wl, font=f, fill=c1_reason_color)
             yy += line_h
         # 打工/玩耍进度条（原模块）
         by = yy + (bar_h - bar_h_px) // 2
         d.rectangle([pad + c1_inner, by, pad + card1_w - c1_inner, by + bar_h_px],
-                    outline=(200, 200, 200), width=1)
+                    outline=DS_BORDER, width=1)
         if idle_ratio > 0:
             d.rectangle([pad + c1_inner + 1, by + 1,
                          int(pad + c1_inner + 1 + (card1_w - 2 * c1_inner - 2) * idle_ratio), by + bar_h_px - 1],
                         fill=idle_color)
         yy += bar_h
         # 描述（左）+ 剩余时间（进度条右下方、进度条外部，右对齐）
+        desc_color = HL_TEXT if c1_hl else DS_MUTED
         if remain_txt and remain_same_row:
-            _dtext(d, (int(pad + c1_inner), yy), desc, font=hint_font, fill=(90, 90, 90))
+            _dtext(d, (int(pad + c1_inner), yy), desc, font=hint_font, fill=desc_color)
             _dtext(d, (int(pad + card1_w - c1_inner - tw(remain_txt, hint_font)), yy),
-                   remain_txt, font=hint_font, fill=(110, 110, 110))
+                   remain_txt, font=hint_font, fill=DS_MUTED)
         else:
-            _dtext(d, (int(pad + c1_inner), yy), desc, font=hint_font, fill=(90, 90, 90))
+            _dtext(d, (int(pad + c1_inner), yy), desc, font=hint_font, fill=desc_color)
             if remain_txt:
                 _dtext(d, (int(pad + card1_w - c1_inner - tw(remain_txt, hint_font)), yy + line_h),
-                       remain_txt, font=hint_font, fill=(110, 110, 110))
+                       remain_txt, font=hint_font, fill=DS_MUTED)
         # 卡片2：当前项目 + 金币/经验 + 预计完成时刻 + 状态档位
         # 高亮条件：本次响应发生了 打工/玩耍 变动
         c2_x = pad + card1_w + card_gap
-        c2_fill = YELLOW if card2_hl else None
+        c2_hl = bool(card2_hl)
         d.rectangle([c2_x, y, width - pad, y + bottom_h],
-                    fill=c2_fill, outline=(205, 205, 205), width=1)
+                    fill=None, outline=(HL_BORDER if c2_hl else NORMAL_BORDER), width=(2 if c2_hl else 1))
         yy = y + c1_inner
+        c2_cur_color = HL_TEXT if c2_hl else DS_TEXT_2
+        c2_reward_color = HL_TEXT if c2_hl else DS_GOLD
+        c2_eta_color = HL_TEXT if c2_hl else DS_MUTED
         for wl, f in c2_cur_rows:
-            _dtext(d, (int(c2_x + c1_inner), yy), wl, font=f, fill=(60, 60, 60))
+            _dtext(d, (int(c2_x + c1_inner), yy), wl, font=f, fill=c2_cur_color)
             yy += line_h
         for wl, f in c2_reward_rows:
-            _dtext(d, (int(c2_x + c1_inner), yy), wl, font=f, fill=(150, 90, 0))
+            _dtext(d, (int(c2_x + c1_inner), yy), wl, font=f, fill=c2_reward_color)
             yy += line_h
         for wl, f in c2_eta_rows:
-            _dtext(d, (int(c2_x + c1_inner), yy), wl, font=f, fill=(110, 110, 110))
+            _dtext(d, (int(c2_x + c1_inner), yy), wl, font=f, fill=c2_eta_color)
             yy += line_h
         for wl, f in c2_tier_rows:
             _dtext(d, (int(c2_x + c1_inner), yy), wl, font=f, fill=tier_color)
@@ -1218,12 +1250,15 @@ class PetMixin:
         Image, ImageDraw = _ensure_pillow()
         if Image is None:
             raise ImportError("Pillow 不可用")
-        # 字号语义：标题 32 / 宠物名 26 / 状态 18 / 正文 20 / 经验 16 / 属性 18 / 内容名 28 / 描述 20 / 报酬 22
-        fonts = _load_fonts(32, 26, 18, 20, 16, 18, 28, 20, 22)
+        # 字号语义：标题 36（衬线）/ 宠物名 26 / 状态 18 / 正文 20 / 经验 16 / 属性 18 / 内容名 28 / 描述 20 / 报酬 22
+        fonts = _load_fonts(26, 18, 20, 16, 18, 28, 20, 22)
         if fonts is None:
             raise RuntimeError(f"字体加载失败: {FONT_FILE}")
-        (title_font, pet_name_font, status_font, lv_font, exp_font,
+        (pet_name_font, status_font, lv_font, exp_font,
          attr_font, item_name_font, body_font, price_font) = fonts
+        title_font = _title_font(kind="work")
+        if title_font is None:
+            raise RuntimeError(f"标题字体加载失败: {FONT_FILE}")
 
         has_pet = pet is not None
         now_ts = datetime.now().timestamp()
@@ -1244,7 +1279,7 @@ class PetMixin:
             status = "未解锁"
 
         pad = 20
-        title_h = 52
+        title_h = 76
         coin_h = 28  # 1.7.6：标题下方金币余额行高度
         rule_h = 22          # 宠物卡与内容卡之间的分割线
         gap = 12
@@ -1383,44 +1418,44 @@ class PetMixin:
             cards_h -= gap
         height = pad * 2 + title_h + (coin_h if coins is not None else 0) + pet_card_h + rule_h + cards_h
 
-        img = Image.new("RGB", (width, height), (255, 255, 255))
+        img = Image.new("RGB", (width, height), DS_BG)
         d = ImageDraw.Draw(img)
         y = pad
 
         # 标题：<用户名称>
-        _dtext(d, (pad, y), name, font=title_font, fill=(20, 20, 20))
+        _dtext(d, (pad, y), name, font=title_font, fill=DS_ACCENT)
         y += title_h
         # 1.7.6：标题下方金币余额
         if coins is not None:
-            _dtext(d, (pad, y), f"💰 金币余额：{coins}", font=attr_font, fill=(140, 90, 0))
+            _dtext(d, (pad, y), f"💰 金币余额：{coins}", font=attr_font, fill=DS_GOLD)
             y += coin_h
 
         # ---------- 宠物信息卡片（横跨整行） ----------
-        d.rectangle([pad, y, pad + pet_w, y + pet_card_h], outline=(205, 205, 205), width=1)
+        d.rectangle([pad, y, pad + pet_w, y + pet_card_h], outline=DS_BORDER, width=1)
         yy = y + inner
         # 行1：宠物名称(大两号,左) + 状态(小一号,右)
         pet_disp = pet.get("name", "宠物") if has_pet else "还没有宠物"
-        _dtext(d, (int(pad + inner), yy), pet_disp, font=pet_name_font, fill=(20, 20, 20))
+        _dtext(d, (int(pad + inner), yy), pet_disp, font=pet_name_font, fill=DS_TEXT)
         _dtext(d, (int(pad + pet_w - inner - tw(status, status_font)), yy + 10),
-               status, font=status_font, fill=(150, 150, 150))
+               status, font=status_font, fill=DS_MUTED)
         yy += name_row_h
         if has_pet:
             # 行2：等级(左) + 经验值(小两号,右)，两端对齐（本行宽 = 内容宽）
-            _dtext(d, (int(pad + inner), yy), f"Lv.{pet['level']}", font=lv_font, fill=(40, 40, 40))
+            _dtext(d, (int(pad + inner), yy), f"Lv.{pet['level']}", font=lv_font, fill=DS_TEXT)
             _dtext(d, (int(pad + pet_w - inner - tw(exp_text, exp_font)), yy + 6),
-                   exp_text, font=exp_font, fill=(110, 110, 110))
+                   exp_text, font=exp_font, fill=DS_MUTED)
             yy += lv_row_h
             # 行3：升级进度条（宽度与上一行相等 = 内容宽，含百分比）
             bar_w = pet_content_w
             bar_y = yy + (bar_h - 14) // 2
-            d.rectangle([pad + inner, bar_y, pad + inner + bar_w, bar_y + 14], outline=(200, 200, 200), width=1)
+            d.rectangle([pad + inner, bar_y, pad + inner + bar_w, bar_y + 14], outline=DS_BORDER, width=1)
             if exp_ratio > 0:
                 d.rectangle([pad + inner + 1, bar_y + 1,
                              int(pad + inner + 1 + (bar_w - 2) * exp_ratio), bar_y + 13],
-                            fill=(52, 168, 83))
+                            fill=DS_SUCCESS)
             pct_text = f"{int(exp_ratio * 100)}%"
             _dtext(d, (int(pad + pet_w - inner - tw(pct_text, exp_font) - 4), bar_y - 4),
-                   pct_text, font=exp_font, fill=(40, 40, 40))
+                   pct_text, font=exp_font, fill=DS_TEXT)
             yy += bar_h
             # 行4+：宠物属性（过低红色高亮）
             for group in attr_rows:
@@ -1428,17 +1463,17 @@ class PetMixin:
                 for an, av, amax, low in group:
                     t = f"{an} {av:.0f}/{amax:.0f}"
                     _dtext(d, (int(gx), yy), t, font=attr_font,
-                           fill=(192, 0, 0) if low else (70, 70, 70))
+                           fill=DS_DANGER if low else DS_TEXT_2)
                     gx += tw(t, attr_font) + 22
                 yy += attr_row_h
         else:
             # 无宠物：提示行
-            _dtext(d, (int(pad + inner), yy), "发送「解锁宠物」领养一只吧", font=lv_font, fill=(140, 90, 0))
+            _dtext(d, (int(pad + inner), yy), "发送「解锁宠物」领养一只吧", font=lv_font, fill=DS_GOLD)
             yy += lv_row_h
         y += pet_card_h
 
         # 分割线
-        d.line([(pad, y), (width - pad, y)], fill=(200, 200, 200), width=2)
+        d.line([(pad, y), (width - pad, y)], fill=DS_BORDER, width=2)
         y += rule_h
 
         # ---------- 内容卡片 ----------
@@ -1447,28 +1482,28 @@ class PetMixin:
             gh = max(p[3] for p in group)
             for j, (it, ok, rows, _) in enumerate(group):
                 x0 = pad + j * (card_w + gap)
-                bg = (217, 217, 217) if not ok else (255, 255, 255)
-                d.rectangle([x0, y, x0 + card_w, y + gh], fill=bg, outline=(200, 200, 200), width=1)
+                bg = DS_BORDER_2 if not ok else DS_SURFACE
+                d.rectangle([x0, y, x0 + card_w, y + gh], fill=bg, outline=DS_BORDER, width=1)
                 yy = y + inner
                 for row in rows:
                     kind_row = row[0]
                     if kind_row == "pair":
-                        _dtext(d, (int(x0 + inner), yy), row[1], font=item_name_font, fill=(20, 20, 20))
+                        _dtext(d, (int(x0 + inner), yy), row[1], font=item_name_font, fill=DS_TEXT)
                         _dtext(d, (int(x0 + card_w - inner - tw(row[2], body_font)), yy + 12),
-                               row[2], font=body_font, fill=(150, 150, 150))
+                               row[2], font=body_font, fill=DS_MUTED)
                         yy += item_name_h
                     elif kind_row == "plain":
                         for wl in wrap(row[1], body_font, card_w - inner * 2):
-                            _dtext(d, (int(x0 + inner), yy), wl, font=body_font, fill=(70, 70, 70))
+                            _dtext(d, (int(x0 + inner), yy), wl, font=body_font, fill=DS_TEXT_2)
                             yy += line_h
                     elif kind_row == "rule":
                         yy += rule_card_h // 2
-                        d.line([(x0 + 8, yy), (x0 + card_w - 8, yy)], fill=(200, 200, 200), width=1)
+                        d.line([(x0 + 8, yy), (x0 + card_w - 8, yy)], fill=DS_BORDER, width=1)
                         yy += rule_card_h // 2
                     elif kind_row == "price":
                         py = y + gh - n_pad - price_h
                         _dtext(d, (int(x0 + card_w - inner - tw(row[1], price_font)), py),
-                               row[1], font=price_font, fill=(192, 0, 0))
+                               row[1], font=price_font, fill=DS_DANGER)
                         break
             y += gh + gap
 
@@ -1640,14 +1675,17 @@ class PetMixin:
         Image, ImageDraw = _ensure_pillow()
         if Image is None:
             return None
-        # 字号语义：标题 32 / 分类 26 / 名称 26（大三号）/ 正文 18 / 价格 20（大一号）/ 原价 14（小一号）
-        fonts = _load_fonts(32, 26, 26, 18, 20, 14)
+        # 字号语义：标题 36（衬线）/ 分类 26 / 名称 26（大三号）/ 正文 18 / 价格 20（大一号）/ 原价 14（小一号）
+        fonts = _load_fonts(26, 26, 18, 20, 14)
         if fonts is None:
             return None
-        title_font, cat_font, name_font, body_font, price_font, small_price_font = fonts
+        cat_font, name_font, body_font, price_font, small_price_font = fonts
+        title_font = _title_font(kind="shop")
+        if title_font is None:
+            return None
 
         pad = 20
-        title_h = 52
+        title_h = 76
         coin_h = 28  # 1.7.6：标题下方金币余额行高度
         cat_h = 30
         rule_h = 18
@@ -1737,43 +1775,43 @@ class PetMixin:
         foot_lines = wrap_foot(pill_txt, body_font) + wrap_foot(ball_txt, body_font)
         height += len(foot_lines) * 26 + 14
 
-        img = Image.new("RGB", (width, height), (255, 255, 255))
+        img = Image.new("RGB", (width, height), DS_BG)
         d = ImageDraw.Draw(img)
         y = pad
-        _dtext(d, (pad, y), f"{name} 的宠物商店", font=title_font, fill=(20, 20, 20))
+        _dtext(d, (pad, y), f"{name} 的宠物商店", font=title_font, fill=DS_ACCENT)
         y += title_h
         # 1.7.6：标题下方金币余额
         if coins is not None:
-            _dtext(d, (pad, y), f"💰 金币余额：{coins}", font=body_font, fill=(140, 90, 0))
+            _dtext(d, (pad, y), f"💰 金币余额：{coins}", font=body_font, fill=DS_GOLD)
             y += coin_h
 
         for typ, item_plans in cat_plans:
             # 类别名（居中；坐标必须转 int）
             cx = int(pad + (width - 2 * pad - tw(typ, cat_font)) / 2)
-            _dtext(d, (cx, y), typ, font=cat_font, fill=(60, 60, 60))
+            _dtext(d, (cx, y), typ, font=cat_font, fill=DS_TEXT_2)
             y += cat_h
             # 分隔线（居中）
-            d.line([(pad + 20, y), (width - pad - 20, y)], fill=(200, 200, 200), width=2)
+            d.line([(pad + 20, y), (width - pad - 20, y)], fill=DS_BORDER, width=2)
             y += rule_h
             for g in range(0, len(item_plans), cols):
                 group = item_plans[g:g + cols]
                 gh = max(p[2] for p in group)
                 for j, (it, rows, _, _) in enumerate(group):
                     x0 = pad + j * (card_w + gap)
-                    d.rectangle([x0, y, x0 + card_w, y + gh], outline=(200, 200, 200), width=1)
+                    d.rectangle([x0, y, x0 + card_w, y + gh], outline=DS_BORDER, width=1)
                     yy = y + inner
                     rule_y = None
                     price_y = y + gh - n_pad - price_h  # 价格基线（贴底边 N）
                     for row in rows:
                         kind = row[0]
                         if kind == "pair":
-                            _dtext(d, (int(x0 + inner), yy), row[1], font=name_font, fill=(20, 20, 20))
+                            _dtext(d, (int(x0 + inner), yy), row[1], font=name_font, fill=DS_TEXT)
                             _dtext(d, (int(x0 + card_w - inner - tw(row[2], body_font)), yy + 4),
-                                   row[2], font=body_font, fill=(140, 90, 0))
+                                   row[2], font=body_font, fill=DS_GOLD)
                             yy += name_h
                         elif kind == "plain":
                             for wl in wrap(row[1], body_font):
-                                _dtext(d, (int(x0 + inner), yy), wl, font=body_font, fill=(70, 70, 70))
+                                _dtext(d, (int(x0 + inner), yy), wl, font=body_font, fill=DS_TEXT_2)
                                 yy += line_h
                         elif kind == "rule":
                             rule_y = price_y - n_pad  # 分割线固定在价格上方 N 距离
@@ -1784,17 +1822,17 @@ class PetMixin:
                             right_x = int(x0 + card_w - inner - tw(real_text, price_font))
                             if orig_text:
                                 _dtext(d, (int(right_x - 6 - tw(orig_text, small_price_font)), price_y + 4),
-                                       orig_text, font=small_price_font, fill=(150, 150, 150))
-                            _dtext(d, (right_x, price_y), real_text, font=price_font, fill=(192, 0, 0))
+                                       orig_text, font=small_price_font, fill=DS_MUTED)
+                            _dtext(d, (right_x, price_y), real_text, font=price_font, fill=DS_DANGER)
                             break
                     if rule_y is not None:
-                        d.line([(x0 + 8, rule_y), (x0 + card_w - 8, rule_y)], fill=(200, 200, 200), width=1)
+                        d.line([(x0 + 8, rule_y), (x0 + card_w - 8, rule_y)], fill=DS_BORDER, width=1)
                 y += gh + gap
 
         # 底部：特殊道具提示（自动换行，不溢出图片）
         y += 8
         for ln in foot_lines:
-            _dtext(d, (pad, y), ln, font=body_font, fill=(120, 120, 120))
+            _dtext(d, (pad, y), ln, font=body_font, fill=DS_MUTED)
             y += 26
 
         return _save_temp_image(img, "_shop_", "商店")
@@ -2815,11 +2853,14 @@ class PetMixin:
         Image, ImageDraw = _ensure_pillow()
         if Image is None:
             return None
-        # 字号语义：标题 32 / 信息 20 / 一级分类 26 / 名称 22 / 正文 18 / 页尾大字 26 / 二级分类 20
-        fonts = _load_fonts(32, 20, 26, 22, 18, 26)
+        # 字号语义：标题 36（衬线）/ 信息 20 / 一级分类 26 / 名称 22 / 正文 18 / 页尾大字 26 / 二级分类 20
+        fonts = _load_fonts(20, 26, 22, 18, 26)
         if fonts is None:
             return None
-        title_font, info_font, l1_font, name_font, body_font, big_font = fonts
+        info_font, l1_font, name_font, body_font, big_font = fonts
+        title_font = _title_font(kind="bag")
+        if title_font is None:
+            return None
         l2_font = info_font
 
         tw = _text_measurer()
@@ -2827,7 +2868,7 @@ class PetMixin:
             return None
 
         pad = 20
-        title_h = 50
+        title_h = 74
         info_h = 30
         head_gap = 12      # 标题区与内容区之间的距离
         l1_h = 38
@@ -2847,8 +2888,8 @@ class PetMixin:
         wrap = _make_wrapper(tw, content_w)
         word_wrap = _make_wrapper(tw, content_w, mode="word")
 
-        DEBT_COLOR = (255, 109, 109)   # #FF6D6D
-        SELL_COLOR = (192, 0, 0)       # #C00000
+        DEBT_COLOR = (255, 109, 109)   # #FF6D6D 负债红（暖调）
+        SELL_COLOR = DS_DANGER       # #C00000
 
         def _card_plan(card):
             """返回 (行列表, 卡片高度)。行 = (kind, text, extra)"""
@@ -2921,20 +2962,20 @@ class PetMixin:
         foot_h = inner * 2 + 36 + 6 + 26
         height += gap + foot_h + pad + 12
 
-        img = Image.new("RGB", (width, height), (255, 255, 255))
+        img = Image.new("RGB", (width, height), DS_BG)
         d = ImageDraw.Draw(img)
         y = pad
 
         # ---- 标题区 ----
-        _dtext(d, (pad, y), f"{name} 的背包", font=title_font, fill=(20, 20, 20))
+        _dtext(d, (pad, y), f"{name} 的背包", font=title_font, fill=DS_ACCENT)
         fav_txt = f"好感 Lv.{header['fav_lv']}"
         _dtext(d, (int(width - pad - tw(fav_txt, info_font)), y + 10), fav_txt,
-               font=info_font, fill=(140, 90, 0))
+               font=info_font, fill=DS_GOLD)
         y += title_h
         # 金币 + 负债
         x = pad
         coin_txt = f"金币 {header['coins']}"
-        _dtext(d, (x, y), coin_txt, font=info_font, fill=(20, 20, 20))
+        _dtext(d, (x, y), coin_txt, font=info_font, fill=DS_TEXT)
         x += int(tw(coin_txt, info_font))
         if header["debt"] > 0:
             debt_txt = f"｜负债 {header['debt']}"
@@ -2944,61 +2985,61 @@ class PetMixin:
         if header["pet"]:
             p = header["pet"]
             pet_txt = f"宠物 {p['name']} Lv.{p['level']}"
-            _dtext(d, (pad, y), pet_txt, font=info_font, fill=(20, 20, 20))
+            _dtext(d, (pad, y), pet_txt, font=info_font, fill=DS_TEXT)
             st_txt = "异常" if p["abnormal"] else "正常"
-            st_color = DEBT_COLOR if p["abnormal"] else (90, 160, 60)
+            st_color = DEBT_COLOR if p["abnormal"] else DS_GREEN_SOFT
             _dtext(d, (pad + int(tw(pet_txt, info_font)) + 10, y), st_txt, font=info_font, fill=st_color)
         else:
-            _dtext(d, (pad, y), "未领养宠物", font=info_font, fill=(120, 120, 120))
+            _dtext(d, (pad, y), "未领养宠物", font=info_font, fill=DS_MUTED)
         y += info_h
         # 农场行
         if header["farm"]:
             f = header["farm"]
             _dtext(d, (pad, y),
                    f"农场 Lv.{f['level']}　空闲 {f['idle']} 块｜占用 {f['occupied']} 块｜成熟 {f['mature']} 块",
-                   font=info_font, fill=(20, 20, 20))
+                   font=info_font, fill=DS_TEXT)
         else:
-            _dtext(d, (pad, y), "未解锁农场", font=info_font, fill=(120, 120, 120))
+            _dtext(d, (pad, y), "未解锁农场", font=info_font, fill=DS_MUTED)
         y += info_h + head_gap
 
         # ---- 内容区（两级分类） ----
         for l1, sub_plans in group_plans:
             # 一级分类名（居中）+ 分割线（居中）
             cx = int(pad + (page_w - tw(l1, l1_font)) / 2)
-            _dtext(d, (cx, y), l1, font=l1_font, fill=(30, 30, 30))
+            _dtext(d, (cx, y), l1, font=l1_font, fill=DS_TEXT)
             y += l1_h
-            d.line([(pad, y), (width - pad, y)], fill=(120, 120, 120), width=2)
+            d.line([(pad, y), (width - pad, y)], fill=DS_MUTED, width=2)
             y += l1_rule_h
             for l2, plans in sub_plans:
                 # 二级分类名（居中）+ 分割线（居中，更细更浅）
                 cx = int(pad + (page_w - tw(l2, l2_font)) / 2)
-                _dtext(d, (cx, y), l2, font=l2_font, fill=(90, 90, 90))
+                _dtext(d, (cx, y), l2, font=l2_font, fill=DS_MUTED)
                 y += l2_h
-                d.line([(pad + 20, y), (width - pad - 20, y)], fill=(210, 210, 210), width=1)
+                d.line([(pad + 20, y), (width - pad - 20, y)], fill=DS_BORDER, width=1)
                 y += l2_rule_h
                 for g in range(0, len(plans), cols):
                     group = plans[g:g + cols]
                     gh = max(p[2] for p in group)
                     for j, (card, rows, _) in enumerate(group):
                         x0 = pad + j * (card_w + gap)
-                        d.rectangle([x0, y, x0 + card_w, y + gh], outline=(200, 200, 200), width=1)
+                        d.rectangle([x0, y, x0 + card_w, y + gh], outline=DS_BORDER, width=1)
                         yy = y + inner
                         for row in rows:
                             kind = row[0]
                             if kind == "pair":
-                                _dtext(d, (int(x0 + inner), yy), row[1], font=name_font, fill=(20, 20, 20))
+                                _dtext(d, (int(x0 + inner), yy), row[1], font=name_font, fill=DS_TEXT)
                                 _dtext(d, (int(x0 + card_w - inner - tw(row[2], body_font)), yy + 4),
-                                       row[2], font=body_font, fill=(140, 90, 0))
+                                       row[2], font=body_font, fill=DS_GOLD)
                                 yy += name_h
                             elif kind == "plain_name":
-                                _dtext(d, (int(x0 + inner), yy), row[1], font=name_font, fill=(20, 20, 20))
+                                _dtext(d, (int(x0 + inner), yy), row[1], font=name_font, fill=DS_TEXT)
                                 yy += name_h - 4
                             elif kind == "plain":
-                                _dtext(d, (int(x0 + inner), yy), row[1], font=body_font, fill=(70, 70, 70))
+                                _dtext(d, (int(x0 + inner), yy), row[1], font=body_font, fill=DS_TEXT_2)
                                 yy += line_h
                             elif kind == "rule":
                                 yy += n_pad
-                                d.line([(x0 + 8, yy), (x0 + card_w - 8, yy)], fill=(200, 200, 200), width=1)
+                                d.line([(x0 + 8, yy), (x0 + card_w - 8, yy)], fill=DS_BORDER, width=1)
                                 yy += 1
                             elif kind == "sell":
                                 _dtext(d, (int(x0 + card_w - inner - tw(row[1], info_font)), yy + 2),
@@ -3009,13 +3050,13 @@ class PetMixin:
             y += gap      # 一级分类间距
 
         # ---- 页尾大卡片 ----
-        d.rectangle([pad, y, pad + page_w, y + foot_h], outline=(160, 160, 160), width=2)
+        d.rectangle([pad, y, pad + page_w, y + foot_h], outline=DS_BORDER_2, width=2)
         yy = y + inner
         total_txt = f"仓库总价值 {footer['wh_total']}"
-        _dtext(d, (pad + inner, yy), total_txt, font=big_font, fill=(20, 20, 20))
+        _dtext(d, (pad + inner, yy), total_txt, font=big_font, fill=DS_TEXT)
         net = footer["net"]
         net_txt = f"｜今日净收益 {'+' if net >= 0 else ''}{net}"
-        net_color = DEBT_COLOR if net < 0 else (70, 70, 70)
+        net_color = DEBT_COLOR if net < 0 else DS_TEXT_2
         _dtext(d, (pad + inner + int(tw(total_txt, big_font)) + 8, yy + 6), net_txt,
                font=body_font, fill=net_color)
         yy += 36 + 6
@@ -3024,6 +3065,6 @@ class PetMixin:
             return f"第{r}名" if r else "未上榜"
         rank_txt = (f"金币排行 {_rk(footer['coins_rank'])}｜宠物排行 {_rk(footer['pet_rank'])}"
                     f"｜农场排行 {_rk(footer['farm_rank'])}")
-        _dtext(d, (pad + inner, yy), rank_txt, font=info_font, fill=(70, 70, 70))
+        _dtext(d, (pad + inner, yy), rank_txt, font=info_font, fill=DS_TEXT_2)
 
         return _save_temp_image(img, "_bag_", "背包")

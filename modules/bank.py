@@ -283,10 +283,10 @@ class BankMixin:
             base = f"{ts} {reason}{sign}{delta}"
             tail = f"（余额 {balance}）"
             texts.append(base + (f"*{count}" if count > 1 else "") + tail)
-            segs = [(base, (70, 70, 70), False)]
+            segs = [(base, DS_TEXT_2, False)]
             if count > 1:
-                segs.append((f"*{count}", (255, 192, 0), False))
-            segs.append((tail, (70, 70, 70), False))
+                segs.append((f"*{count}", DS_GOLD, False))
+            segs.append((tail, DS_TEXT_2, False))
             rows.append(segs)
         img = self._render_rich_image(f"{name} 的金币账单（最近 {min(LEDGER_SHOW, len(ledger))} 条）", rows)
         if img is not None:

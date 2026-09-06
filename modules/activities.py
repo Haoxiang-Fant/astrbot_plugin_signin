@@ -37,14 +37,15 @@ class ActivityMixin:
         Image, ImageDraw = _ensure_pillow()
         if Image is None:
             return None
-        # 字号语义：标题 32 / 名称 26 / 正文 18
-        fonts = _load_fonts(32, 26, 18)
-        if fonts is None:
+        # 字号语义：标题 36（衬线）/ 名称 26 / 正文 18
+        title_font = _title_font(kind="activity")
+        fonts = _load_fonts(26, 18)
+        if title_font is None or fonts is None:
             return None
-        title_font, name_font, body_font = fonts
+        name_font, body_font = fonts
 
         pad = 20
-        title_h = 52
+        title_h = 72
         card_gap = 14
         inner = 12
         name_h = 40
@@ -78,26 +79,27 @@ class ActivityMixin:
         for a in activities:
             rows = []
             for ln in wrap(f"📌 {a.name}", name_font):
-                rows.append((ln, name_font, (20, 20, 20), True))
+                rows.append((ln, name_font, DS_TEXT, True))
             for ln in [f"🕐 {a.time_str()}", f"📝 {a.desc}", f"✅ 参与要求：{a.requirement}"]:
                 for wl in wrap(ln, body_font):
-                    rows.append((wl, body_font, (70, 70, 70), False))
+                    rows.append((wl, body_font, DS_TEXT_2, False))
             if a.commands:
                 for wl in wrap(f"💬 相关指令：{' / '.join(a.commands.keys())}", body_font):
-                    rows.append((wl, body_font, (70, 70, 70), False))
+                    rows.append((wl, body_font, DS_TEXT_2, False))
             h = inner * 2 + sum(name_h if is_name else line_h for _, _, _, is_name in rows)
             card_plans.append((rows, h))
 
         height = pad * 2 + title_h + sum(h for _, h in card_plans) + card_gap * (len(activities) - 1)
 
-        img = Image.new("RGB", (width, height), (255, 255, 255))
+        img = Image.new("RGB", (width, height), DS_BG)
         d = ImageDraw.Draw(img)
-        _dtext(d, (pad, pad), "🎯 活动中心", font=title_font, fill=(20, 20, 20))
+        _draw_underlined_title(d, (pad, pad), "活动中心", title_font, color=DS_ACCENT,
+                               width=width - pad * 2, gap=10)
         y = pad + title_h
 
         for rows, ch in card_plans:
-            # 卡片外框
-            d.rectangle([pad, y, width - pad, y + ch], outline=(200, 200, 200), width=2)
+            # 卡片外框（白底 + 米金描边）
+            d.rectangle([pad, y, width - pad, y + ch], fill=DS_SURFACE, outline=DS_BORDER, width=2)
             yy = y + inner
             for text, font, color, is_name in rows:
                 _dtext(d, (pad + inner, yy), text, font=font, fill=color)

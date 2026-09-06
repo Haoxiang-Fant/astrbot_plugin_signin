@@ -400,7 +400,7 @@ class FarmMixin:
     # ---- 农场富文本图片 ----
     def _render_seed_shop(self, name, farm, crops):
         rows = []
-        rows.append([(name, (20, 20, 20), False)])
+        rows.append([(name, DS_TEXT, False)])
         lv = int(farm.get("level", 0))
         mult = self._farm_seed_mult(farm)
         if mult > 1:
@@ -409,21 +409,21 @@ class FarmMixin:
             bonus = f"农场等级 Lv.{lv}：种子价格 -{int(round((1 - mult) * 100))}%"
         else:
             bonus = f"农场等级 Lv.{lv}：种子价格无加成"
-        rows.append([(bonus, (90, 90, 90), False)])
+        rows.append([(bonus, DS_MUTED, False)])
         rows.append([("", (0, 0, 0), False)])
         for c in crops:
             base = float(c["seed_price"])
             p = round(base * mult, 2)
             lv_req = f"（需 Lv.{c['min_level']}）" if c["min_level"] > 0 else ""
             if p > base:
-                rows.append([(f"{c['name']} {self._fmt_price(p)} 金币{lv_req}", (20, 20, 20), False)])
+                rows.append([(f"{c['name']} {self._fmt_price(p)} 金币{lv_req}", DS_TEXT, False)])
             elif p < base:
-                rows.append([(f"{c['name']} ", (20, 20, 20), False),
-                             (f"{self._fmt_price(base)}", (20, 20, 20), True),
+                rows.append([(f"{c['name']} ", DS_TEXT, False),
+                             (f"{self._fmt_price(base)}", DS_TEXT, True),
                              (" ", (0, 0, 0), False),
-                             (f"{self._fmt_price(p)} 金币{lv_req}", (192, 0, 0), False)])
+                             (f"{self._fmt_price(p)} 金币{lv_req}", DS_DANGER, False)])
             else:
-                rows.append([(f"{c['name']} {self._fmt_price(p)} 金币{lv_req}", (20, 20, 20), False)])
+                rows.append([(f"{c['name']} {self._fmt_price(p)} 金币{lv_req}", DS_TEXT, False)])
         return self._render_rich_image("种子商店", rows)
 
     def _farm_shop_seed_list(self, farm, crops, expanded=False, page=1, all_items=False):
@@ -462,14 +462,17 @@ class FarmMixin:
         Image, ImageDraw = _ensure_pillow()
         if Image is None:
             return None
-        # 字号语义：标题 32 / 分类 26 / 名称 26（大三号）/ 正文 18 / 价格 20（大一号）/ 原价 14（小一号）
-        fonts = _load_fonts(32, 26, 26, 18, 20, 14)
+        # 字号语义：标题 36（衬线）/ 分类 26 / 名称 26（大三号）/ 正文 18 / 价格 20（大一号）/ 原价 14（小一号）
+        fonts = _load_fonts(26, 26, 18, 20, 14)
         if fonts is None:
             return None
-        title_font, cat_font, name_font, body_font, price_font, small_price_font = fonts
+        cat_font, name_font, body_font, price_font, small_price_font = fonts
+        title_font = _title_font(kind="farm")
+        if title_font is None:
+            return None
 
         pad = 20
-        title_h = 52
+        title_h = 76
         cat_h = 30
         rule_h = 18
         gap = 12
@@ -604,22 +607,22 @@ class FarmMixin:
         for plans in (seed_plans, fert_plans):
             height += cat_h + rule_h + section_height(plans)
 
-        img = Image.new("RGB", (width, height), (255, 255, 255))
+        img = Image.new("RGB", (width, height), DS_BG)
         d = ImageDraw.Draw(img)
         y = pad
-        _dtext(d, (pad, y), f"{name} 的农场商店", font=title_font, fill=(20, 20, 20))
+        _dtext(d, (pad, y), f"{name} 的农场商店", font=title_font, fill=DS_ACCENT)
         y += title_h
         if subtitle:
-            _dtext(d, (pad, y), subtitle, font=body_font, fill=(150, 100, 0))
+            _dtext(d, (pad, y), subtitle, font=body_font, fill=DS_GOLD)
             y += 26
 
         for title, plans in (("🌱 种子", seed_plans), ("🧪 化肥", fert_plans)):
             # 类别名（居中）
             cx = int(pad + (width - 2 * pad - tw(title, cat_font)) / 2)
-            _dtext(d, (cx, y), title, font=cat_font, fill=(60, 60, 60))
+            _dtext(d, (cx, y), title, font=cat_font, fill=DS_TEXT_2)
             y += cat_h
             # 居中分隔线
-            d.line([(pad + 20, y), (width - pad - 20, y)], fill=(200, 200, 200), width=2)
+            d.line([(pad + 20, y), (width - pad - 20, y)], fill=DS_BORDER, width=2)
             y += rule_h
             for g in range(0, len(plans), cols):
                 group = plans[g:g + cols]
@@ -628,30 +631,30 @@ class FarmMixin:
                     x0 = pad + j * (card_w + gap)
                     # 灰卡（不可购买）
                     if grey:
-                        d.rectangle([x0, y, x0 + card_w, y + gh], fill=(217, 217, 217), outline=(180, 180, 180), width=1)
+                        d.rectangle([x0, y, x0 + card_w, y + gh], fill=DS_BORDER_2, outline=DS_BORDER_2, width=1)
                     else:
-                        d.rectangle([x0, y, x0 + card_w, y + gh], outline=(200, 200, 200), width=1)
+                        d.rectangle([x0, y, x0 + card_w, y + gh], outline=DS_BORDER, width=1)
                     yy = y + inner
                     rule_y = None  # 分割线 y 坐标（固定在价格上方 N 距离）
                     price_y = y + gh - n_pad - price_h  # 价格基线
                     for r in rows:
                         kind = r[0]
                         if kind == "pair":
-                            _dtext(d, (int(x0 + inner), yy), r[1], font=name_font, fill=(20, 20, 20))
+                            _dtext(d, (int(x0 + inner), yy), r[1], font=name_font, fill=DS_TEXT)
                             _dtext(d, (int(x0 + card_w - inner - tw(r[2], body_font)), yy + 4),
-                                   r[2], font=body_font, fill=(140, 90, 0))
+                                   r[2], font=body_font, fill=DS_GOLD)
                             yy += name_h
                         elif kind == "pair2":
                             # 左 + 右 两列文字（等级条件+成熟时间 / 售价+经验）
                             if r[1]:
-                                _dtext(d, (int(x0 + inner), yy), r[1], font=body_font, fill=(70, 70, 70))
+                                _dtext(d, (int(x0 + inner), yy), r[1], font=body_font, fill=DS_TEXT_2)
                             if r[2]:
                                 _dtext(d, (int(x0 + card_w - inner - tw(r[2], body_font)), yy + 2),
-                                       r[2], font=body_font, fill=(90, 90, 90))
+                                       r[2], font=body_font, fill=DS_MUTED)
                             yy += line_h
                         elif kind == "plain":
                             for wl in wrap(r[1], body_font):
-                                _dtext(d, (int(x0 + inner), yy), wl, font=body_font, fill=(70, 70, 70))
+                                _dtext(d, (int(x0 + inner), yy), wl, font=body_font, fill=DS_TEXT_2)
                                 yy += line_h
                         elif kind == "rule":
                             rule_y = price_y - n_pad  # 分割线固定在价格上方 N 距离
@@ -662,11 +665,11 @@ class FarmMixin:
                             right_x = int(x0 + card_w - inner - tw(real_text, price_font))
                             if orig_text:
                                 _dtext(d, (int(right_x - 6 - tw(orig_text, small_price_font)), price_y + 4),
-                                       orig_text, font=small_price_font, fill=(150, 150, 150))
-                            _dtext(d, (right_x, price_y), real_text, font=price_font, fill=(192, 0, 0))
+                                       orig_text, font=small_price_font, fill=DS_MUTED)
+                            _dtext(d, (right_x, price_y), real_text, font=price_font, fill=DS_DANGER)
                             break
                     if rule_y is not None:
-                        d.line([(x0 + 8, rule_y), (x0 + card_w - 8, rule_y)], fill=(200, 200, 200), width=1)
+                        d.line([(x0 + 8, rule_y), (x0 + card_w - 8, rule_y)], fill=DS_BORDER, width=1)
                 y += gh + gap
             y -= gap
 
@@ -676,10 +679,10 @@ class FarmMixin:
         wh = farm.get("warehouse", {})
         rows = []
         for key, label in [("crops", "作物"), ("seeds", "种子"), ("fertilizers", "肥料")]:
-            rows.append([(f"----{label}----", (60, 60, 60), False)])
+            rows.append([(f"----{label}----", DS_TEXT_2, False)])
             items = wh.get(key, {})
             if not items:
-                rows.append([("（空）", (140, 140, 140), False)])
+                rows.append([("（空）", DS_MUTED, False)])
                 continue
             for nm, cnt in items.items():
                 if key == "crops":
@@ -690,9 +693,9 @@ class FarmMixin:
                     price = c["seed_sell_price"] if c else 0.0
                 else:
                     # 化肥只能买和使用，不可卖（2.0.0 起按小时计量）
-                    rows.append([(f"{nm} ×{self._fmt_hours(cnt)} 小时（不可售）", (90, 90, 90), False)])
+                    rows.append([(f"{nm} ×{self._fmt_hours(cnt)} 小时（不可售）", DS_MUTED, False)])
                     continue
-                rows.append([(f"{nm} ×{cnt} 可售 {self._fmt_price(price)}金币", (20, 20, 20), False)])
+                rows.append([(f"{nm} ×{cnt} 可售 {self._fmt_price(price)}金币", DS_TEXT, False)])
         return self._render_rich_image("农场仓库", rows)
 
     def _unusable_ferts(self, plot, ferts):
@@ -717,11 +720,14 @@ class FarmMixin:
         Image, ImageDraw = _ensure_pillow()
         if Image is None:
             return None
-        # 字号语义：标题 32 / 等级 26 / 小字 18 / 经验 16（小两号）
-        fonts = _load_fonts(32, 26, 18, 16)
+        # 字号语义：标题 36（衬线）/ 等级 26 / 小字 18 / 经验 16（小两号）
+        fonts = _load_fonts(26, 18, 16)
         if fonts is None:
             return None
-        title_font, lv_font, small_font, exp_font = fonts
+        lv_font, small_font, exp_font = fonts
+        title_font = _title_font(kind="farm")
+        if title_font is None:
+            return None
         now = datetime.now().timestamp()
         plots = farm.get("plots", [])
         level = int(farm.get("level", 0))
@@ -851,7 +857,7 @@ class FarmMixin:
 
         height = pad * 2 + title_h + profit_h + lv_row_h + bar_h + rule_h + cards_h + steal_h + big_h
 
-        img = Image.new("RGB", (width, height), (255, 255, 255))
+        img = Image.new("RGB", (width, height), DS_BG)
         d = ImageDraw.Draw(img)
         y = pad
 
@@ -859,13 +865,13 @@ class FarmMixin:
         rank_text = self._farm_rank_text(uid, data) if data else ""
         title_line = f"{name} 的农场"
         if rank_text and tw(title_line, title_font) + 24 + tw(rank_text, small_font) <= width - pad * 2:
-            _dtext(d, (pad, y), title_line, font=title_font, fill=(20, 20, 20))
-            _dtext(d, (int(width - pad - tw(rank_text, small_font)), y + 14), rank_text,
-                   font=small_font, fill=(90, 90, 90))
+            _dtext(d, (pad, y), title_line, font=title_font, fill=DS_ACCENT)
+            _dtext(d, (int(width - pad - tw(rank_text, small_font)), y + 16), rank_text,
+                   font=small_font, fill=DS_MUTED)
         else:
-            _dtext(d, (pad, y), title_line, font=title_font, fill=(20, 20, 20))
+            _dtext(d, (pad, y), title_line, font=title_font, fill=DS_ACCENT)
             if rank_text:
-                _dtext(d, (pad, y + 28), rank_text, font=small_font, fill=(90, 90, 90))
+                _dtext(d, (pad, y + 28), rank_text, font=small_font, fill=DS_MUTED)
                 title_h = max(title_h, 52 + 22)
         y += title_h
 
@@ -874,27 +880,27 @@ class FarmMixin:
         if profit_delta:
             psign = "+" if profit_delta > 0 else ""
             profit_txt += f"　（本次 {psign}{int(profit_delta)}）"
-        _dtext(d, (pad, y), profit_txt, font=small_font, fill=(90, 90, 90))
+        _dtext(d, (pad, y), profit_txt, font=small_font, fill=DS_MUTED)
         y += profit_h
 
         # 等级行：Lv.X（左）+ 经验 Y/Z（右，字号小两号）
-        _dtext(d, (pad, y), f"Lv.{level}", font=lv_font, fill=(20, 20, 20))
+        _dtext(d, (pad, y), f"Lv.{level}", font=lv_font, fill=DS_TEXT)
         exp_text = f"经验 {exp:.0f}/{need:.0f}" if need > 0 else "已满级"
-        _dtext(d, (int(pad + bar_w - tw(exp_text, exp_font)), y + 6), exp_text, font=exp_font, fill=(70, 70, 70))
+        _dtext(d, (int(pad + bar_w - tw(exp_text, exp_font)), y + 6), exp_text, font=exp_font, fill=DS_TEXT_2)
         y += lv_row_h
 
         # 升级进度条（宽度与等级行相同，含百分比）
         bar_y = y
         ratio = min(1.0, exp / need) if need > 0 else 1.0
-        d.rectangle([pad, bar_y, pad + bar_w, bar_y + 14], outline=(200, 200, 200), width=1)
+        d.rectangle([pad, bar_y, pad + bar_w, bar_y + 14], outline=DS_BORDER, width=1)
         if ratio > 0:
-            d.rectangle([pad + 1, bar_y + 1, int(pad + 1 + (bar_w - 2) * ratio), bar_y + 13], fill=(52, 168, 83))
+            d.rectangle([pad + 1, bar_y + 1, int(pad + 1 + (bar_w - 2) * ratio), bar_y + 13], fill=DS_SUCCESS)
         pct_text = f"{int(ratio * 100)}%"
-        _dtext(d, (int(pad + bar_w - tw(pct_text, small_font) - 4), bar_y - 3), pct_text, font=small_font, fill=(40, 40, 40))
+        _dtext(d, (int(pad + bar_w - tw(pct_text, small_font) - 4), bar_y - 3), pct_text, font=small_font, fill=DS_TEXT)
         y += bar_h
 
         # 分割线
-        d.line([(pad, y), (width - pad, y)], fill=(200, 200, 200), width=2)
+        d.line([(pad, y), (width - pad, y)], fill=DS_BORDER, width=2)
         y += rule_h
 
         # 土地卡片（4 列，自动换行，同行取最高）
@@ -905,19 +911,19 @@ class FarmMixin:
             gh = max(h for _, h, _ in group)
             for j, (rows, _, color) in enumerate(group):
                 x0 = pad + j * (card_w + gap)
-                d.rectangle([x0, y, x0 + card_w, y + gh], fill=color, outline=(205, 205, 205), width=1)
+                d.rectangle([x0, y, x0 + card_w, y + gh], fill=color, outline=DS_BORDER, width=1)
                 yy = y + inner
                 for ln in rows:
-                    _dtext(d, (int(x0 + inner), yy), ln, font=small_font, fill=(40, 40, 40))
+                    _dtext(d, (int(x0 + inner), yy), ln, font=small_font, fill=DS_TEXT)
                     yy += line_h
             y += gh + gap
 
         # 偷菜信息区：分割线 + 标题行 + 表格
         if steal_lines:
-            d.line([(pad, y), (width - pad, y)], fill=(200, 200, 200), width=1)
+            d.line([(pad, y), (width - pad, y)], fill=DS_BORDER, width=1)
             y += 8
             title_line = steal_lines[0] if steal_lines else ""
-            _dtext(d, (pad, y), title_line, font=small_font, fill=(120, 120, 120))
+            _dtext(d, (pad, y), title_line, font=small_font, fill=DS_MUTED)
             y += line_h
             self._draw_steal_table(d, steal_table, pad, y, width - pad, small_font)
             y += steal_h - (8 + line_h)
@@ -927,10 +933,10 @@ class FarmMixin:
             big_y0 = y + 6
             big_h_real = big_pad * 2 + len(big_wrapped) * line_h
             d.rectangle([pad, big_y0, width - pad, big_y0 + big_h_real],
-                        fill=(243, 246, 250), outline=(205, 210, 218), width=1)
+                        fill=DS_SURFACE_2, outline=DS_BORDER, width=1)
             yy = big_y0 + big_pad
             for ln in big_wrapped:
-                _dtext(d, (int(pad + 12), yy), ln, font=small_font, fill=(60, 60, 60))
+                _dtext(d, (int(pad + 12), yy), ln, font=small_font, fill=DS_TEXT_2)
                 yy += line_h
 
         return _save_temp_image(img, "_farm_", "土地状态")
@@ -970,18 +976,18 @@ class FarmMixin:
         2.0.3：折叠次数 *N 用黄色 #FFC000 表示。"""
         line_h = 26
         y = y0
-        YELLOW = (255, 192, 0)
+        YELLOW = DS_GOLD_2
         for cells, crop_lines in table:
             name = cells[0]
             loss = cells[2]
             status = cells[3]
             # 颜色由状态决定
             if "失败" in status:
-                color = (127, 127, 127)
+                color = DS_MUTED
             elif "宠物" in status or "追回" in status:
-                color = (191, 144, 0)
+                color = DS_GOLD
             else:
-                color = (192, 0, 0)
+                color = DS_DANGER
             for k, crop_line in enumerate(crop_lines):
                 _dtext(d, (int(x0), y), name if k == 0 else "", font=font, fill=color)
                 # 折叠次数 *N（行尾的 *数字）用黄色绘制
