@@ -104,9 +104,7 @@ class BankMixin:
         parts = event.message_str.split(maxsplit=1)
 
         data = self._load()
-        settled, _ = self._bank_settle(data, key)
-        if settled > 0:
-            self._save(data)  # 即使后续存款失败，也要先持久化已到期的存单结算
+        # 2.2.0：存单到期结算由固定结算循环（BANK_SETTLE_HOUR）统一执行，此处不再懒结算
 
         max_store = self._max_bank_storage(data, key)
         if max_store <= 0:
@@ -176,9 +174,7 @@ class BankMixin:
         parts = event.message_str.split(maxsplit=1)
 
         data = self._load()
-        settled, _ = self._bank_settle(data, key)
-        if settled > 0:
-            self._save(data)  # 即使后续取款失败，也要先持久化已到期的存单结算
+        # 2.2.0：存单到期结算由固定结算循环统一执行，取款只读取已结算的成熟存单
 
         bank = data.get("bank", {}).get(key)
         if not bank or not bank.get("deposits"):
@@ -224,9 +220,7 @@ class BankMixin:
         name = event.get_sender_name()
         key = self._user_key(event)
         data = self._load()
-        settled, _ = self._bank_settle(data, key)
-        if settled > 0:
-            self._save(data)
+        # 2.2.0：存单到期结算由固定结算循环统一执行，统计只读取已结算结果
 
         max_store = self._max_bank_storage(data, key)
         bank = data.get("bank", {}).get(key, {})

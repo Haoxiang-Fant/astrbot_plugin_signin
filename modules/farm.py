@@ -313,23 +313,24 @@ class FarmMixin:
             return str(int(h))
         return f"{h:.2f}".rstrip("0").rstrip(".")
 
-    # ---- 2.0.0：施肥指令解析（土地编号 / 时间） ----
-    def _parse_fert_targets(self, raw, max_plots):
-        """解析「施肥」指令的土地编号与使用分钟数。
-        规则（不分全半角）：
-        - 括号包裹的编号：（20）→ 20 号地；（1，7）→ 1~7 号地（区间）
-        - 逗号/顿号分隔的编号：1，6 → 1 号、6 号地（逗号组内数字都视为土地编号）
-        - 括号区间：如 （1,7）→ 第 1 到第 7 号地
-        - 裸数字：≤ 最大土地数 → 土地编号；> 最大土地数 → 使用时间（分钟）
-        返回 (土地编号列表, 时间分钟 or None)。"""
+    # ---- 2.2.0：土地编号统一解析（单块 / 区间 / 列表，括号逗号不分全半角） ----
+    def _parse_plot_numbers(self, raw):
+        """2.2.0 土地编号统一解析（括号、逗号不分全角半角）：
+        - 单块土地：直接输入编号，如 土地升级 1
+        - 连续多块：区间表示法（1,8）→ 1~8 号地（括号内为最小编号,最大编号，顺序不限）
+        - 序号不连续：逗号分隔全部编号，如 1,3,5,7
+        返回 (编号列表, 裸数字列表)：
+        编号列表 = 全部解析出的土地编号（升序、去重、≥1，未校验上界，由调用方校验）；
+        裸数字列表 = 以「独立数字」形式出现的编号（括号组/逗号列表内的编号不属裸数字，
+        供调用方区分「数量」「时间」等语义，如 种植 的数量、施肥 的分钟数）。"""
         if raw is None:
-            return [], None
+            return [], []
         s = str(raw).strip().replace("，", ",").replace("、", ",").replace("（", "(").replace("）", ")")
         if not s:
-            return [], None
+            return [], []
         plots = []
-        time_min = None
-        # 1) 括号组：区间或单号
+        bare = []
+        # 1) 括号组：单号或区间
         rest = s
         while "(" in rest:
             a = rest.find("(")
@@ -340,22 +341,21 @@ class FarmMixin:
             rest = rest[:a] + " " + rest[b + 1:]
             if not grp:
                 continue
-            if "," in grp:
-                nums = []
-                for p in grp.split(","):
-                    try:
-                        nums.append(int(float(p.strip())))
-                    except (TypeError, ValueError):
-                        nums = []
-                        break
-                if len(nums) >= 2 and nums[0] <= nums[-1]:
-                    plots.extend(range(nums[0], nums[-1] + 1))
-            else:
+            nums = []
+            for p in grp.split(","):
                 try:
-                    plots.append(int(float(grp)))
+                    nums.append(int(float(p.strip())))
                 except (TypeError, ValueError):
-                    continue
-        # 2) 剩余文本：按空格切分（逗号组内数字均为土地编号）
+                    nums = []
+                    break
+            if not nums:
+                continue
+            if len(nums) >= 2:
+                lo, hi = min(nums), max(nums)
+                plots.extend(range(lo, hi + 1))
+            else:
+                plots.append(nums[0])
+        # 2) 剩余文本：逗号组内数字均视为土地编号；独立数字记录为裸数字
         for chunk in re.split(r"\s+", rest):
             chunk = chunk.strip().strip(",")
             if not chunk:
@@ -364,7 +364,7 @@ class FarmMixin:
                 # 逗号分隔 → 全部视为土地编号
                 for tok in chunk.split(","):
                     try:
-                        plots.append(int(float(tok)))
+                        plots.append(int(float(tok.strip())))
                     except (TypeError, ValueError):
                         continue
             else:
@@ -372,11 +372,9 @@ class FarmMixin:
                     n = int(float(chunk))
                 except (TypeError, ValueError):
                     continue
-                if n <= max_plots:
-                    plots.append(n)
-                else:
-                    time_min = n
-        # 3) 去重、排序
+                plots.append(n)
+                bare.append(n)
+        # 3) 去重、排序（仅保留 ≥1）
         seen = set()
         out = []
         for n in plots:
@@ -384,7 +382,40 @@ class FarmMixin:
                 seen.add(n)
                 out.append(n)
         out.sort()
-        return out, time_min
+        seen_b = set()
+        bare_out = []
+        for n in bare:
+            if n >= 1 and n not in seen_b:
+                seen_b.add(n)
+                bare_out.append(n)
+        return out, bare_out
+
+    # ---- 2.0.0：施肥指令解析（土地编号 / 时间） ----
+    def _parse_fert_targets(self, raw, max_plots):
+        """解析「施肥」指令的土地编号与使用分钟数（2.2.0 复用 _parse_plot_numbers）：
+        - 括号区间（1,7）→ 1~7 号地；逗号/顿号列表 1，6 → 1、6 号地；单号 1 → 1 号地
+        - 裸数字：≤ 最大土地数 → 土地编号；> 最大土地数 → 使用时间（分钟）
+        返回 (土地编号列表, 时间分钟 or None)。"""
+        if raw is None:
+            return [], None
+        plots, bare = self._parse_plot_numbers(raw)
+        time_cands = [n for n in bare if n > max_plots]
+        time_min = time_cands[-1] if time_cands else None
+        if time_cands:
+            plots = [n for n in plots if n not in time_cands]
+        return plots, time_min
+
+    @staticmethod
+    def _fmt_plot_nums(nums):
+        """格式化地块编号列表（1-based）：连续 → 编号 1~8；不连续 → 编号 1、3、5；单块 → 编号 3"""
+        nums = sorted(set(int(n) for n in nums))
+        if not nums:
+            return "编号 无"
+        if len(nums) == 1:
+            return f"编号 {nums[0]}"
+        if all(nums[j + 1] - nums[j] == 1 for j in range(len(nums) - 1)):
+            return f"编号 {nums[0]}~{nums[-1]}"
+        return "编号 " + "、".join(str(n) for n in nums)
 
     def _farm_rank_text(self, uid, data):
         """农场排行榜的排行积分文本（标题右侧）"""
@@ -1062,45 +1093,56 @@ class FarmMixin:
             coins_delta=-FARM_PLOT_COST)
 
     def _handle_farm_upgrade(self, event):
+        """土地升级（2.2.0 支持土地编号规则）：单块 土地升级 1 / 区间 土地升级 (1,8) /
+        列表 土地升级 1,3,5（括号、逗号不分全角半角）；批量升级统一扣费、全部校验通过后执行。"""
         name = event.get_sender_name()
         key = self._user_key(event)
         parts = event.message_str.split(maxsplit=1)
         if len(parts) < 2:
-            return "格式：土地升级 <土地编号>"
-        try:
-            num = int(parts[1].strip())
-        except ValueError:
+            return "格式：土地升级 <土地编号>（支持 1 / (1,8) / 1,3,5）"
+        nums, _ = self._parse_plot_numbers(parts[1])
+        if not nums:
             return "土地编号必须是整数。"
         data = self._load()
         err = self._farm_need(data, key, name)
         if err:
             return err
         farm = self._farm_of(data, key)
-        if num < 1 or num > len(farm["plots"]):
-            return f"没有编号为 {num} 的土地（当前共 {len(farm['plots'])} 块）。"
-        plot = farm["plots"][num - 1]
-        grade = int(plot.get("grade", 0))
-        if grade >= len(FARM_UPGRADE_COSTS):
-            return "这块地已经是最高等级（黑土地）了。"
-        if plot.get("crop") is not None:
-            return "这块土地正在种植中，收割后才能升级。"
-        cost = int(FARM_UPGRADE_COSTS[grade])
-        if self._coins_of(data, key) < cost:
-            return f"升级需要 {cost} 金币（当前 {self._coins_of(data, key)}）。"
-        self._add_coins(data, key, -cost, f"升级土地·{num}号")
-        plot["grade"] = grade + 1
-        # 盈利公式：升级土地计入成本
-        farm["total_profit"] = int(farm.get("total_profit", 0)) - cost
+        plots = farm["plots"]
+        bad = [n for n in nums if n < 1 or n > len(plots)]
+        if bad:
+            return f"土地编号无效（当前共 {len(plots)} 块，范围 1~{len(plots)}）。"
+        # 校验：种植中 / 已满级 / 金币充足（全部通过后才执行）
+        for n in nums:
+            plot = plots[n - 1]
+            if plot.get("crop") is not None:
+                return f"{n} 号土地正在种植中，收割后才能升级。"
+            if int(plot.get("grade", 0)) >= len(FARM_UPGRADE_COSTS):
+                return f"{n} 号土地已经是最高等级（黑土地）了。"
+        total = sum(int(FARM_UPGRADE_COSTS[int(plots[n - 1].get("grade", 0))]) for n in nums)
+        if self._coins_of(data, key) < total:
+            return f"升级需要 {total} 金币（当前 {self._coins_of(data, key)}）。"
+        actions = []
+        highlights = {}
+        for n in nums:
+            plot = plots[n - 1]
+            grade = int(plot.get("grade", 0))
+            cost = int(FARM_UPGRADE_COSTS[grade])
+            self._add_coins(data, key, -cost, f"升级土地·{n}号")
+            plot["grade"] = grade + 1
+            # 盈利公式：升级土地计入成本
+            farm["total_profit"] = int(farm.get("total_profit", 0)) - cost
+            ng = self._plot_grade(grade + 1)
+            actions.append(f"⬆️ {n} 号土地升级为 {ng[0]}（产量 +{int(ng[1] * 100)}%，时间 -{int(ng[2] * 100)}%）")
+            highlights[n] = "upgrade"
         self._save(data)
-        ng = self._plot_grade(grade + 1)
         # 2.0.0 纯图片回复：升级土地蓝色高亮（升级）+ 底部大卡片
-        actions = [f"⬆️ {num} 号土地升级为 {ng[0]}（产量 +{int(ng[1] * 100)}%，时间 -{int(ng[2] * 100)}%）"]
         return self._safe_render_plot_status(
             name, key, data, farm, self._load_crops(), self._load_fertilizers(),
-            highlights={num: "upgrade"},
-            profit_delta=-cost,
+            highlights=highlights,
+            profit_delta=-total,
             actions=actions,
-            coins_delta=-cost)
+            coins_delta=-total)
 
     def _seed_discount_map(self, crops):
         """种子每日折扣（2.0.3，默认关闭）：每天有概率让 1~3 款种子打八折（肥料不受影响）。
@@ -1248,32 +1290,52 @@ class FarmMixin:
             if have <= 0:
                 return f"{crop_name} 种子不足，发送「购买种子」购买。"
             targets = free[:min(len(free), have)]
-        elif len(args) == 2:
-            try:
-                count = int(args[1])
-            except ValueError:
-                return "数量必须是整数。"
-            if count <= 0:
-                return "数量必须为正整数。"
-            free = [i for i, p in enumerate(plots) if self._plot_free(p)]
-            if count > len(free):
-                return f"空闲土地只有 {len(free)} 块，无法种植 {count} 块。"
-            targets = free[:count]
-            if have < len(targets):
-                return f"{crop_name} 种子不足（需要 {len(targets)}，当前 {have}），发送「购买种子」购买。"
         else:
-            try:
-                start, end = int(args[1]), int(args[2])
-            except ValueError:
-                return "土地编号必须是整数。"
-            if start < 1 or end < start or end > len(plots):
-                return f"土地编号无效（当前共 {len(plots)} 块，范围 1~{len(plots)}）。"
-            targets = list(range(start - 1, end))
-            for i in targets:
-                if not self._plot_free(plots[i]):
-                    return f"{i + 1} 号土地不是空闲状态，无法种植。"
-            if have < len(targets):
-                return f"{crop_name} 种子不足（需要 {len(targets)}，当前 {have}），发送「购买种子」购买。"
+            # 2.2.0：全角括号/逗号归一化后再判定是否为土地编号写法（括号、逗号不分全角半角）
+            spec = ("".join(args[1:]).replace("（", "(").replace("）", ")").replace("，", ",")
+                    .replace("、", ","))
+            if "(" in spec or ")" in spec or "," in spec:
+                # 2.2.0 土地编号规则：区间 (1,8) / 不连续列表 1,3,5（括号、逗号不分全角半角）
+                nums, _ = self._parse_plot_numbers(spec)
+                if not nums:
+                    return "土地编号必须是整数。"
+                bad = [n for n in nums if n < 1 or n > len(plots)]
+                if bad:
+                    return f"土地编号无效（当前共 {len(plots)} 块，范围 1~{len(plots)}）。"
+                targets = [n - 1 for n in nums]
+                for i in targets:
+                    if not self._plot_free(plots[i]):
+                        return f"{i + 1} 号土地不是空闲状态，无法种植。"
+                if have < len(targets):
+                    return f"{crop_name} 种子不足（需要 {len(targets)}，当前 {have}），发送「购买种子」购买。"
+            elif len(args) == 2:
+                # 裸数字 = 数量：种下 count 块空闲土地（2.2.0 保留数量语义）
+                try:
+                    count = int(args[1])
+                except ValueError:
+                    return "数量必须是整数。"
+                if count <= 0:
+                    return "数量必须为正整数。"
+                free = [i for i, p in enumerate(plots) if self._plot_free(p)]
+                if count > len(free):
+                    return f"空闲土地只有 {len(free)} 块，无法种植 {count} 块。"
+                targets = free[:count]
+                if have < len(targets):
+                    return f"{crop_name} 种子不足（需要 {len(targets)}，当前 {have}），发送「购买种子」购买。"
+            else:
+                # 旧语法兼容：种植 <作物> <起> <止>（区间）
+                try:
+                    start, end = int(args[1]), int(args[2])
+                except ValueError:
+                    return "土地编号必须是整数。"
+                if start < 1 or end < start or end > len(plots):
+                    return f"土地编号无效（当前共 {len(plots)} 块，范围 1~{len(plots)}）。"
+                targets = list(range(start - 1, end))
+                for i in targets:
+                    if not self._plot_free(plots[i]):
+                        return f"{i + 1} 号土地不是空闲状态，无法种植。"
+                if have < len(targets):
+                    return f"{crop_name} 种子不足（需要 {len(targets)}，当前 {have}），发送「购买种子」购买。"
 
         now = datetime.now().timestamp()
         for i in targets:
@@ -1285,7 +1347,7 @@ class FarmMixin:
         # 2.0.0：纯图片回复——新种地块黄色高亮 + 底部大卡片（不再附带文本提示）
         ferts = self._load_fertilizers()
         actions = [f"🌱 在 {len(targets)} 块土地上种下 {crop_name}"
-                   f"（编号 {targets[0] + 1}~{targets[-1] + 1}）"]
+                   f"（{self._fmt_plot_nums([i + 1 for i in targets])}）"]
         return self._safe_render_plot_status(
             name, key, data, farm, crops, ferts,
             highlights={i + 1: "plant" for i in targets},
@@ -1777,8 +1839,9 @@ class FarmMixin:
             coins_delta=-coins_spent if coins_spent else None)
 
     def _handle_farm_harvest(self, event):
-        """收割 / 收获（1.7.6）：收割成熟作物并**自动售出**，图片回复（收获状况 + 获得资金）。
-        指定编号 = 收割并售出该块；不填 = 全部成熟作物。"""
+        """收割 / 收获（2.2.0）：**仅收割成熟作物入库，不再自动售出**（售卖请用「售卖」指令）。
+        土地编号规则（括号、逗号不分全角半角）：单块 1 / 连续区间 (1,8) / 不连续列表 1,3,5,7；
+        不填 = 全部成熟作物。图片回复：收割地块红色高亮 + 底部大卡片（入库提示）。"""
         name = event.get_sender_name()
         key = self._user_key(event)
         parts = event.message_str.split(maxsplit=1)
@@ -1790,46 +1853,32 @@ class FarmMixin:
         farm = self._farm_of(data, key)
         plots = farm["plots"]
         now = datetime.now().timestamp()
-        if len(parts) >= 2:
-            try:
-                num = int(parts[1].strip())
-            except ValueError:
+        if len(parts) >= 2 and parts[1].strip():
+            nums, _ = self._parse_plot_numbers(parts[1])
+            if not nums:
                 return "土地编号必须是整数。"
-            if num < 1 or num > len(plots):
+            bad = [n for n in nums if n < 1 or n > len(plots)]
+            if bad:
                 return f"土地编号无效（当前共 {len(plots)} 块）。"
-            targets = [num - 1]
+            targets = [n - 1 for n in nums]
         else:
             targets = None
         harvested, amounts, total_exp = self._harvest_mature(data, farm, crops, now, targets=targets)
         if not harvested:
+            if targets is not None:
+                return "所选土地没有可收割的成熟作物。"
             return "没有可收割的成熟作物。"
         lvl_msg = self._farm_gain_exp(farm, total_exp)
-        # 自动售出本次收割的全部作物
-        total_sold = 0
-        wh = farm["warehouse"].setdefault("crops", {})
-        for nm, cnt in amounts.items():
-            c = self._find_item(crops, nm)
-            gain = int(round(cnt * (float(c["crop_price"]) if c else 0.0)))
-            total_sold += gain
-            have = int(wh.get(nm, 0))
-            if have <= cnt:
-                wh.pop(nm, None)
-            else:
-                wh[nm] = have - cnt
-        self._add_coins(data, key, total_sold, "收割售卖")
-        farm["total_profit"] = int(farm.get("total_profit", 0)) + total_sold
         self._save(data)
-        # 2.0.0 纯图片回复：收割地块红色高亮（#FFC5C5）+ 底部大卡片（收割/售出 + 金币变化）
-        actions = [f"🌾 收割 {len(harvested)} 块地（编号 {'、'.join(str(n) for n in harvested)}），"
+        # 2.2.0：仅收割入库，不再自动售出；盈利不变化、金币不变化
+        actions = [f"🌾 收割 {len(harvested)} 块地（{self._fmt_plot_nums(harvested)}），"
                    f"农场经验 +{total_exp}{lvl_msg}",
-                   f"💰 自动售出本次收获，获得资金 +{total_sold} 金币"]
+                   f"📦 收获已存入仓库（发送「售卖」可卖出）"]
         steal_lines = self._steal_info_lines(farm, datetime.now().timestamp())
         return self._safe_render_plot_status(
             name, key, data, farm, crops, self._load_fertilizers(),
             highlights={n: "harvest" for n in harvested},
-            profit_delta=total_sold,
             actions=actions,
-            coins_delta=total_sold,
             steal_lines=steal_lines)
 
     # ================= 偷菜 =================
@@ -2286,35 +2335,43 @@ class FarmMixin:
         return lines
 
     def _handle_farm_cancel(self, event):
+        """取消种植（2.2.0 支持土地编号规则）：单块 取消种植 1 / 区间 (1,8) / 列表 1,3,5
+        （括号、逗号不分全角半角）。"""
         name = event.get_sender_name()
         key = self._user_key(event)
         parts = event.message_str.split(maxsplit=1)
         if len(parts) < 2:
-            return "格式：取消种植 <土地编号>"
-        try:
-            num = int(parts[1].strip())
-        except ValueError:
+            return "格式：取消种植 <土地编号>（支持 1 / (1,8) / 1,3,5）"
+        nums, _ = self._parse_plot_numbers(parts[1])
+        if not nums:
             return "土地编号必须是整数。"
         data = self._load()
         err = self._farm_need(data, key, name)
         if err:
             return err
         farm = self._farm_of(data, key)
-        if num < 1 or num > len(farm["plots"]):
-            return f"土地编号无效。"
-        plot = farm["plots"][num - 1]
-        if plot.get("crop") is None:
-            return f"{num} 号土地本来就是空闲的。"
-        self._clear_plot(plot)
+        plots = farm["plots"]
+        bad = [n for n in nums if n < 1 or n > len(plots)]
+        if bad:
+            return f"土地编号无效（当前共 {len(plots)} 块）。"
+        for n in nums:
+            if plots[n - 1].get("crop") is None:
+                return f"{n} 号土地本来就是空闲的。"
+        for n in nums:
+            self._clear_plot(plots[n - 1])
         self._save(data)
         # 2.0.0 纯图片回复：取消种植地块蓝色高亮 + 底部大卡片
-        actions = [f"🗑️ 已取消 {num} 号土地的种植"]
+        actions = [f"🗑️ 已取消 {len(nums)} 块土地的种植（{self._fmt_plot_nums(nums)}）"]
         return self._safe_render_plot_status(
             name, key, data, farm, self._load_crops(), self._load_fertilizers(),
-            highlights={num: "till"},
+            highlights={n: "till" for n in nums},
             actions=actions)
 
     def _handle_farm_sell(self, event):
+        """售卖（2.2.0）：**优先售卖仓库内的作物**；仅当用户仓库没有任何作物时，
+        使用该命令会触发「先收割后售卖」机制——收割全部成熟作物后直接售出。
+        - 售卖（不填）→ 卖出全部仓库作物；仓库无作物 → 先收割后售卖全部收获
+        - 售卖 <作物名> [数量] → 卖出仓库中的指定作物；仓库无任何作物 → 先收割后售卖该作物"""
         name = event.get_sender_name()
         key = self._user_key(event)
         parts = event.message_str.split(maxsplit=1)
@@ -2327,32 +2384,32 @@ class FarmMixin:
         wh = farm["warehouse"].setdefault("crops", {})
         ferts = self._load_fertilizers()
 
+        # ---- 不填参数：卖出全部仓库作物；仓库无作物 → 先收割后售卖 ----
         if len(parts) < 2 or not parts[1].strip():
-            if not wh:
-                return "仓库里没有作物。"
-            n_kinds = len(wh)
-            total = 0
-            for nm, cnt in list(wh.items()):
-                c = self._find_item(crops, nm)
-                total += int(round(int(cnt) * (float(c["crop_price"]) if c else 0.0)))
-            wh.clear()
-            self._add_coins(data, key, total, "售卖作物")
-            farm["total_profit"] = int(farm.get("total_profit", 0)) + total
-            self._save(data)
-            # 2.0.0 纯图片回复：卖出全部作物 + 底部大卡片
-            actions = [f"💼 卖出全部作物（共 {n_kinds} 种），获得 +{total} 金币"]
-            return self._safe_render_plot_status(
-                name, key, data, farm, crops, ferts,
-                profit_delta=total,
-                actions=actions,
-                coins_delta=total)
+            if wh:
+                n_kinds = len(wh)
+                total = 0
+                for nm, cnt in list(wh.items()):
+                    c = self._find_item(crops, nm)
+                    total += int(round(int(cnt) * (float(c["crop_price"]) if c else 0.0)))
+                wh.clear()
+                self._add_coins(data, key, total, "售卖作物")
+                farm["total_profit"] = int(farm.get("total_profit", 0)) + total
+                self._save(data)
+                # 2.0.0 纯图片回复：卖出全部作物 + 底部大卡片
+                actions = [f"💼 卖出全部作物（共 {n_kinds} 种），获得 +{total} 金币"]
+                return self._safe_render_plot_status(
+                    name, key, data, farm, crops, ferts,
+                    profit_delta=total,
+                    actions=actions,
+                    coins_delta=total)
+            # 仓库无作物 → 先收割后售卖（卖出全部收获）
+            return self._harvest_and_sell(name, key, data, farm, crops, ferts)
+
+        # ---- 指定作物 ----
         args = parts[1].split()
         crop_name = args[0]
-        if crop_name not in wh:
-            return f"仓库里没有「{crop_name}」。"
-        c = self._find_item(crops, crop_name)
-        price = float(c["crop_price"]) if c else 0.0
-        have = int(wh[crop_name])
+        cnt = None
         if len(args) >= 2:
             try:
                 cnt = int(args[1])
@@ -2360,22 +2417,93 @@ class FarmMixin:
                 return "数量必须是整数。"
             if cnt <= 0:
                 return "数量必须为正整数。"
+        if crop_name in wh:
+            # 仓库有该作物 → 直接卖仓库
+            c = self._find_item(crops, crop_name)
+            price = float(c["crop_price"]) if c else 0.0
+            have = int(wh[crop_name])
+            if cnt is None:
+                cnt = have
             if cnt > have:
                 return f"{crop_name} 只有 {have} 个。"
-        else:
-            cnt = have
-        gain = int(round(cnt * price))
+            gain = int(round(cnt * price))
+            self._add_coins(data, key, gain, f"售卖{crop_name}")
+            farm["total_profit"] = int(farm.get("total_profit", 0)) + gain
+            if cnt >= have:
+                wh.pop(crop_name, None)
+            else:
+                wh[crop_name] = have - cnt
+            self._save(data)
+            # 2.0.0 纯图片回复：卖出作物 + 底部大卡片
+            actions = [f"💼 卖出 {crop_name} ×{cnt}（单价 {self._fmt_price(price)} 金币），获得 +{gain} 金币"]
+            return self._safe_render_plot_status(
+                name, key, data, farm, crops, ferts,
+                profit_delta=gain,
+                actions=actions,
+                coins_delta=gain)
+        if wh:
+            # 仓库有其它作物但没有指定作物 → 仓库非空，不触发收割
+            return f"仓库里没有「{crop_name}」。"
+        # 仓库没有任何作物 → 先收割后售卖指定作物
+        return self._harvest_and_sell(name, key, data, farm, crops, ferts, crop_name, cnt)
+
+    def _harvest_and_sell(self, name, key, data, farm, crops, ferts, crop_name=None, cnt=None):
+        """2.2.0「售卖」仓库无作物时的先收割后售卖机制：
+        收割全部成熟作物入库，然后售出（crop_name=None = 卖出全部收获；否则卖出指定作物）。
+        返回土地状态图片（收割红高亮 + 底部大卡片）。"""
+        now = datetime.now().timestamp()
+        harvested, amounts, total_exp = self._harvest_mature(data, farm, crops, now)
+        if not harvested:
+            if crop_name:
+                return f"仓库里没有「{crop_name}」，且没有可收割的成熟作物。"
+            return "仓库里没有作物，且没有可收割的成熟作物。"
+        lvl_msg = self._farm_gain_exp(farm, total_exp)
+        wh = farm["warehouse"].setdefault("crops", {})
+        if crop_name is None:
+            # 卖出全部收获（仓库在本机制触发前为空，本次收获全部售出）
+            total = 0
+            for nm, cnt2 in amounts.items():
+                c = self._find_item(crops, nm)
+                total += int(round(int(cnt2) * (float(c["crop_price"]) if c else 0.0)))
+                wh.pop(nm, None)
+            self._add_coins(data, key, total, "售卖作物")
+            farm["total_profit"] = int(farm.get("total_profit", 0)) + total
+            self._save(data)
+            actions = [f"🌾 仓库无作物，先收割 {len(harvested)} 块地（{self._fmt_plot_nums(harvested)}），农场经验 +{total_exp}{lvl_msg}",
+                       f"💼 收割后直接售出全部收获，获得 +{total} 金币"]
+            return self._safe_render_plot_status(
+                name, key, data, farm, crops, ferts,
+                highlights={n: "harvest" for n in harvested},
+                profit_delta=total,
+                actions=actions,
+                coins_delta=total)
+        # 卖出指定作物（收割所得；其余收获继续留在仓库）
+        c = self._find_item(crops, crop_name)
+        price = float(c["crop_price"]) if c else 0.0
+        have = int(amounts.get(crop_name, 0))
+        if have <= 0:
+            # 收割了但没有这种作物 → 入库留存，提示用「售卖」卖出全部
+            self._save(data)
+            actions = [f"🌾 仓库无作物，先收割 {len(harvested)} 块地（{self._fmt_plot_nums(harvested)}），农场经验 +{total_exp}{lvl_msg}",
+                       f"📦 收获已存入仓库，但本次没有「{crop_name}」可卖（发送「售卖」可卖出全部）"]
+            return self._safe_render_plot_status(
+                name, key, data, farm, crops, ferts,
+                highlights={n: "harvest" for n in harvested},
+                actions=actions)
+        sell_cnt = have if cnt is None else min(cnt, have)
+        gain = int(round(sell_cnt * price))
         self._add_coins(data, key, gain, f"售卖{crop_name}")
         farm["total_profit"] = int(farm.get("total_profit", 0)) + gain
-        if cnt >= have:
+        if sell_cnt >= have:
             wh.pop(crop_name, None)
         else:
-            wh[crop_name] = have - cnt
+            wh[crop_name] = have - sell_cnt
         self._save(data)
-        # 2.0.0 纯图片回复：卖出作物 + 底部大卡片
-        actions = [f"💼 卖出 {crop_name} ×{cnt}（单价 {self._fmt_price(price)} 金币），获得 +{gain} 金币"]
+        actions = [f"🌾 仓库无作物，先收割 {len(harvested)} 块地（{self._fmt_plot_nums(harvested)}），农场经验 +{total_exp}{lvl_msg}",
+                   f"💼 收割后卖出 {crop_name} ×{sell_cnt}（单价 {self._fmt_price(price)} 金币），获得 +{gain} 金币"]
         return self._safe_render_plot_status(
             name, key, data, farm, crops, ferts,
+            highlights={n: "harvest" for n in harvested},
             profit_delta=gain,
             actions=actions,
             coins_delta=gain)

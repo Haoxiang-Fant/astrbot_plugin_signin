@@ -188,7 +188,7 @@
           <button id="btn-import-data" class="primary">导入</button>
           <span id="status-data" class="status"></span>
         </div>
-        <p class="hint">导出会把 **用户存档（data.json）+ 数值配置（game_items.json：商店/打工/玩耍/作物/肥料/贷款套餐）** 打包为单个 JSON 文件下载；导入会用所选文件覆盖以上全部文件（兼容旧版 txt 备份，建议先导出备份）。</p>
+        <p class="hint">导出会把 **用户存档（data.json）+ 记录数据（records.json：宠物属性变化/自动购买/自动打工/商店价格记录）+ 数值配置（game_items.json：商店/打工/玩耍/作物/肥料/贷款套餐）** 打包为单个 JSON 文件下载；导入会用所选文件覆盖以上全部文件（兼容旧版 txt 备份，建议先导出备份）。</p>
         <!-- 危险操作：恢复默认道具数据 -->
         <details class="param-group danger-zone">
           <summary>⚠️ 危险操作区（默认道具数据）</summary>
@@ -270,13 +270,44 @@
       <section id="panel-records-pets" class="panel hidden">
         <div class="toolbar">
           <input id="record-pets-search" class="search-box" type="text" placeholder="搜索 宠物名 / 昵称 / 用户ID…" />
+          <select id="record-pets-status" class="sort-select" title="按状态筛选">
+            <option value="">全部状态</option>
+            <option value="active">活跃中</option>
+            <option value="weak">已停用</option>
+          </select>
+          <select id="record-pets-tier" class="sort-select" title="按状态档位筛选">
+            <option value="">全部档位</option>
+            <option value="1">T1（最优）</option>
+            <option value="2">T2</option>
+            <option value="3">T3</option>
+            <option value="4">T4（最差）</option>
+          </select>
+          <select id="record-pets-sort" class="sort-select" title="排序方式">
+            <option value="default" selected>默认顺序</option>
+            <option value="tier_asc">档位从优到差</option>
+            <option value="tier_desc">档位从差到优</option>
+            <option value="level_desc">等级从高到低</option>
+            <option value="level_asc">等级从低到高</option>
+          </select>
           <button id="btn-load-record-pets">刷新</button>
           <span id="status-record-pets" class="status"></span>
         </div>
         <div id="records-pets-list" class="record-list">
           <p class="hint">点击「刷新」读取全部宠物的运行记录...</p>
         </div>
-        <p class="hint">展示<b>全部宠物</b>的当前状态（属性/档位/虚弱）、正在进行的活动与剩余时间，以及自动购买 / 自动打工信息（打工基准金币、最近购买·使用×N 记录、自动打工记录）。<b>点卡片上的「自动购买」「自动打工」开关（开/关）可直接切换该用户的开关</b>——开启自动购买会自动开启自动打工，未开自动购买不允许开自动打工。<b>虚弱宠物显示红色「停用」标签</b>（自动购买/自动打工暂停执行，需先「治疗宠物」）。</p>
+        <p class="hint">展示<b>全部宠物</b>的当前状态（属性/档位/虚弱）、正在进行的活动与剩余时间，以及自动购买 / 自动打工信息（打工基准金币、最近购买·使用×N 记录、自动打工记录）。<b>可按状态（活跃中/已停用）与状态档位（T1~T4）筛选，并按档位/等级排序</b>。<b>点卡片上的「自动购买」「自动打工」开关（开/关）可直接切换该用户的开关</b>——开启自动购买会自动开启自动打工，未开自动购买不允许开自动打工。<b>虚弱宠物显示红色「停用」标签</b>（自动购买/自动打工暂停执行，需先「治疗宠物」）。<b>点击宠物卡片进入宠物详情页</b>——分门别类展示该宠物的各项详细信息（基本档案 / 当前状态 / 特殊记录 / 自动化 / 仓库道具），以及<b>按操作时间排序的属性变化记录</b>（每日结算 / 打工 / 玩耍 / 使用道具 / 治疗 / 自动购买 / 自动打工，每条默认折叠、点击展开属性条可视化）。</p>
+      </section>
+
+      <!-- 运行记录：宠物详情（2.2.2：点击宠物记录卡片进入；模块化展示宠物详细信息 + 按时间排序的折叠属性变化记录） -->
+      <section id="panel-record-pet-detail" class="panel hidden">
+        <div class="toolbar">
+          <span id="record-pet-detail-title" class="panel-subtitle"></span>
+          <button id="btn-load-record-pet-detail">刷新</button>
+          <span id="status-record-pet-detail" class="status"></span>
+        </div>
+        <div id="record-pet-detail-box" class="record-list">
+          <p class="hint">加载宠物详情...</p>
+        </div>
       </section>
 
       <!-- 运行记录：用户信息（2.1.0：全部用户基础信息卡片，点击展开详细信息） -->
@@ -313,7 +344,7 @@
         <p class="hint">宠物商店价格固定偶数点刷新（0/2/4/…/22 整点），同窗口（2 小时）稳定；特价时段（10/12/18/0 时窗口）随机选取 <span id="price-discount-range">2~5</span> 件商品打 二~八折。此处展示当前窗口与最近的价格变动记录（购买按实时价结算）。</p>
       </section>
 
-      <footer class="page-foot">签到娱乐系统 · 2.1.1</footer>
+      <footer class="page-foot">签到娱乐系统 · 2.2.2</footer>
     </div>
 
     <script type="module" src="./app.js"></script>

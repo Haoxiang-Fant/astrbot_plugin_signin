@@ -56,7 +56,8 @@ class LoanMixin:
         return data.setdefault("loans", {}).setdefault(key, {
             "loans": [], "overdue_records": [],
             "overdue_year": 0, "overdue_year_key": str(date.today().year),
-            "ban": False, "daily_borrowed": 0, "daily_date": "", "daily_process_date": "",
+            "ban": False, "daily_borrowed": 0, "daily_date": "",
+            "daily_process_date": "", "daily_repay_date": "",
         })
 
     def _loan_unlocked(self, data, key):
@@ -118,6 +119,12 @@ class LoanMixin:
             user = data.get("users", {}).get(key, {})
             return {"code": 2, "max_amount": self._loan_short_max(self._level_of(float(user.get("favorability", 0.0)))),
                     "rate": LOAN_SHORT_RATE, "fav_req": 0, "pet_req": 0, "farm_req": 0, "special": False}
+        # 2.2.1：自动化专属贷款套餐（代码 AUTO_LOAN_CODE，默认 99）——仅限宠物自动化功能内部使用，
+        # 用户无法通过「借款」指令借出（_handle_loan_borrow 对该代码直接拒绝）。
+        if code == int(globals().get("AUTO_LOAN_CODE", 99) or 99):
+            return {"code": code, "max_amount": int(globals().get("AUTO_LOAN_MAX_AMOUNT", 2000) or 2000),
+                    "rate": float(globals().get("AUTO_LOAN_RATE", 0.01) or 0.01),
+                    "fav_req": 0, "pet_req": 0, "farm_req": 0, "special": False, "auto": True}
         for pkg in self._load_loan_packages():
             if pkg["code"] == code:
                 return {"code": code, "max_amount": pkg["max_amount"], "rate": pkg["rate"],
@@ -221,6 +228,56 @@ class LoanMixin:
             rec["ban"] = True
         return changed
 
+    # ================= 2.2.1：宠物自动化专属贷款 =================
+    def _auto_loan_owed_of(self, data: dict, key: str) -> float:
+        """该用户自动化贷款套餐未还清欠款总额（含利息；0 = 无欠款）。"""
+        rec = data.get("loans", {}).get(key)
+        if not rec:
+            return 0.0
+        now_ts = datetime.now().timestamp()
+        return round(sum(self._loan_owed(l, now_ts)
+                         for l in rec.get("loans", [])
+                         if l.get("auto") and l.get("remaining", 0) > 0), 2)
+
+    def _auto_loan_borrow(self, data: dict, key: str, need: int) -> int:
+        """宠物自动化资金不足时自动申请「自动化专属贷款套餐」（2.2.1）：
+        - 套餐仅限自动化功能使用，用户任何指令都无法直接借出（代码 AUTO_LOAN_CODE 不在 0~10 可选范围）；
+        - 单笔上限 AUTO_LOAN_MAX_AMOUNT（2000），单用户未还清欠款总额上限 AUTO_LOAN_MAX_DEBT（2500）；
+        - 逾期 AUTO_LOAN_DAYS（30 天），日息 AUTO_LOAN_RATE（0.01%）；可多次贷款；
+        - 贷款发放立即到账（_skip_auto_repay，不会立刻被拿去还旧账）；是否计入打工基准金币由调用方处理。
+        返回实际发放的金币；0 表示未能贷款（无需 / 未解锁贷款 / 已禁用 / 有逾期 / 超总额上限等）。"""
+        need = int(need or 0)
+        if need <= 0:
+            return 0
+        if not self._loan_unlocked(data, key):
+            return 0
+        rec = self._ensure_loans(data, key)
+        if rec.get("ban"):
+            return 0
+        now_ts = datetime.now().timestamp()
+        if self._has_overdue_now(rec, now_ts):
+            return 0  # 有逾期贷款时不再新增（与普通贷款一致）
+        owed = self._auto_loan_owed_of(data, key)
+        max_extra = max(0, int(float(globals().get("AUTO_LOAN_MAX_DEBT", 2500) or 2500)) - int(owed))
+        amount = min(need, int(float(globals().get("AUTO_LOAN_MAX_AMOUNT", 2000) or 2000)), max_extra)
+        if amount <= 0:
+            return 0
+        due = now_ts + int(float(globals().get("AUTO_LOAN_DAYS", 30) or 30)) * 86400
+        rec["loans"].append({
+            "package": int(globals().get("AUTO_LOAN_CODE", 99) or 99),
+            "auto": True,
+            "amount": amount,
+            "rate": float(globals().get("AUTO_LOAN_RATE", 0.01) or 0.01),
+            "borrow_ts": now_ts,
+            "free_until_ts": now_ts,
+            "due_ts": due,
+            "remaining": amount,
+            "overdue": False,
+            "special": False,
+        })
+        self._add_coins(data, key, amount, "自动化贷款", _skip_auto_repay=True)
+        return amount
+
     def _repay_loans(self, data, key, amount, code=None):
         """还款，返回实际还款金额；优先还逾期最久 / 即将到期的账单"""
         rec = self._ensure_loans(data, key)
@@ -245,7 +302,9 @@ class LoanMixin:
         return round(repaid, 2)
 
     def _loan_daily_process(self, data, key, now=None):
-        """每日逾期处置：好感度降低 + 23:00 自动卖仓库/自动签到还款（懒执行，一天一次）"""
+        """每日逾期处置：好感度降低（2.2.0：由固定结算循环在 DAILY_SETTLE_HOUR 统一执行，
+        替代原消息懒处理；23 点自动卖仓库/自动签到还款见 _loan_auto_repay_process）。
+        幂等标记 daily_process_date 在成功执行后才写入（异常中断可在下一巡检重试）。"""
         now = now or datetime.now()
         rec = self._ensure_loans(data, key)
         if not self._has_overdue_now(rec, now.timestamp()):
@@ -253,21 +312,34 @@ class LoanMixin:
         today = now.strftime("%Y-%m-%d")
         if rec.get("daily_process_date") == today:
             return False
-        rec["daily_process_date"] = today
         user = self._ensure_user(data, key)
         special = any(l.get("special") and l.get("remaining", 0) > 0 for l in rec.get("loans", []))
         lo, hi = LOAN_FAV_DROP_SPECIAL if special else LOAN_FAV_DROP_NORMAL
         drop = random.uniform(lo, hi)
         user["favorability"] = round(max(0.0, float(user.get("favorability", 0.0)) - drop), 2)
-        if (now.hour, now.minute) >= LOAN_AUTO_TIME:
-            farm = data.get("farms", {}).get(key)
-            if farm:
-                coins = self._sell_warehouse_all(data, key, farm)
-                if coins > 0:
-                    self._repay_loans(data, key, coins)
-            coins = self._auto_signin(data, key)
+        rec["daily_process_date"] = today
+        return True
+
+    def _loan_auto_repay_process(self, data, key, now=None):
+        """每日 LOAN_AUTO_TIME 自动还款：卖仓库全部 + 自动签到还款（2.2.0：由固定结算循环
+        在到达 LOAN_AUTO_TIME 后统一执行，替代原消息懒处理）。
+        幂等标记 daily_repay_date 在成功执行后才写入（异常中断可在下一巡检重试）。"""
+        now = now or datetime.now()
+        rec = self._ensure_loans(data, key)
+        if not self._has_overdue_now(rec, now.timestamp()):
+            return False
+        today = now.strftime("%Y-%m-%d")
+        if rec.get("daily_repay_date") == today:
+            return False
+        farm = data.get("farms", {}).get(key)
+        if farm:
+            coins = self._sell_warehouse_all(data, key, farm)
             if coins > 0:
                 self._repay_loans(data, key, coins)
+        coins = self._auto_signin(data, key)
+        if coins > 0:
+            self._repay_loans(data, key, coins)
+        rec["daily_repay_date"] = today
         return True
 
     def _sell_warehouse_all(self, data, key, farm):
@@ -381,6 +453,8 @@ class LoanMixin:
             amount = int(args[1])
         except ValueError:
             return "套餐代码和金额必须是整数。格式：借款 <套餐代码> <金额>"
+        if code == int(globals().get("AUTO_LOAN_CODE", 99) or 99):
+            return "该贷款套餐仅限宠物自动化功能使用，无法通过指令直接借款。"
         if code not in (0, 1, 2) and not (3 <= code <= 10):
             return "套餐代码无效（0=特别，1=一般，2=短期，3~10=自定义）。"
         if amount <= 0:
@@ -525,7 +599,7 @@ class LoanMixin:
         name = event.get_sender_name()
         key = self._user_key(event)
         data = self._load()
-        changed = self._loan_sync(data, key)
+        # 2.2.0：逾期标记由固定结算循环统一执行，查询只显示已结算结果
         rec = self._ensure_loans(data, key)
         lines = [f"🏦 {name} 的贷款账单："]
         loans = rec.get("loans", [])
@@ -535,17 +609,17 @@ class LoanMixin:
         for l in loans:
             days = max(0, int((now_ts - max(l.get("free_until_ts", l.get("borrow_ts", 0)), l.get("borrow_ts", 0))) // 86400))
             owed = self._loan_owed(l, now_ts)
-            st = "⚠️逾期" if l.get("overdue") else "✅正常"
-            lines.append(f"· 套餐{l['package']}｜借款 {l['amount']}｜利率 {l['rate']}%/日｜剩余 {l['remaining']}｜计息 {days} 天｜欠款 {owed}｜{st}")
-        if changed:
-            self._save(data)
+            # 2.2.0：逾期指示按到期时间只读计算（结算/记录仍由固定结算循环统一处理）
+            st = "⚠️逾期" if self._loan_is_overdue(l, now_ts) else "✅正常"
+            pkg_txt = "自动化贷款" if l.get("auto") else f"套餐{l['package']}"
+            lines.append(f"· {pkg_txt}｜借款 {l['amount']}｜利率 {l['rate']}%/日｜剩余 {l['remaining']}｜计息 {days} 天｜欠款 {owed}｜{st}")
         return "\n".join(lines)
 
     def _handle_my_credit(self, event):
         name = event.get_sender_name()
         key = self._user_key(event)
         data = self._load()
-        changed = self._loan_sync(data, key)
+        # 2.2.0：逾期标记由固定结算循环统一执行，查询只显示已结算结果
         rec = self._ensure_loans(data, key)
         lines = [f"🏦 {name} 的征信报告："]
         overdue = rec.get("overdue_records", [])
@@ -563,10 +637,10 @@ class LoanMixin:
             for l in loans:
                 owed = self._loan_owed(l, now_ts)
                 due = datetime.fromtimestamp(l["due_ts"]).strftime("%m-%d")
-                st = "⚠️逾期" if l.get("overdue") else "✅"
-                lines.append(f"· 套餐{l['package']}｜借款 {l['amount']}｜利率 {l['rate']}%｜欠款 {owed}｜逾期日 {due}｜{st}")
+                # 2.2.0：逾期指示按到期时间只读计算（结算/记录仍由固定结算循环统一处理）
+                st = "⚠️逾期" if self._loan_is_overdue(l, now_ts) else "✅"
+                pkg_txt = "自动化贷款" if l.get("auto") else f"套餐{l['package']}"
+                lines.append(f"· {pkg_txt}｜借款 {l['amount']}｜利率 {l['rate']}%｜欠款 {owed}｜逾期日 {due}｜{st}")
         if rec.get("ban"):
             lines.append("🚫 已因年度逾期超限被禁用贷款功能")
-        if changed:
-            self._save(data)
         return "\n".join(lines)

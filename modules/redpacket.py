@@ -157,6 +157,30 @@ class RedpacketMixin:
             return img
         return "\n".join(lines)
 
+    def _redpacket_cleanup_expired(self, data: dict, now_ts: float) -> int:
+        """清理过期红包：系统红包（owner_uid 以 system: 开头）过期剩余直接作废，
+        玩家红包退回发起人；全局红包（rain 标记）不受群隔离。
+        返回退回的玩家红包数量（0 = 无变动）。由固定结算循环定期执行 + 开红包时兜底调用。"""
+        rps = data.setdefault("redpackets", [])
+        refunds = []
+        keep = []
+        for rp in rps:
+            owner = rp.get("owner_uid", "")
+            is_system = isinstance(owner, str) and owner.startswith("system:")
+            is_expired = float(rp.get("expires_ts", 0)) <= now_ts
+            if is_expired and is_system:
+                continue  # 系统红包过期：作废不保留
+            if is_expired and int(rp.get("remain", 0)) > 0:
+                refunds.append(rp)
+            else:
+                keep.append(rp)
+        if not refunds and len(keep) == len(rps):
+            return 0
+        data["redpackets"] = keep
+        for rp in refunds:
+            self._add_coins(data, rp.get("owner_uid"), int(rp.get("remain", 0)), "红包过期退回")
+        return len(refunds)
+
     def _handle_redpacket_open(self, event) -> str:
         """开 / 开红包 / 抢红包：打开当前群所有能开的红包（每位用户每轮只能开一次），并懒清理过期红包。
         抢完 60 秒内提示「来晚一步」，否则无红包提示「本群暂时没有红包」。"""
@@ -168,29 +192,11 @@ class RedpacketMixin:
         data = self._load()
         now_ts = datetime.now().timestamp()
 
-        # 活动钩子：红包雨等（懒生成当轮系统红包）
+        # 活动钩子：红包雨等（懒生成当轮系统红包；固定结算循环已定时生成，此处兜底）
         hook_lines = self._redpacket_rain_hooks(event, data, key, gid)
-        rps = data.setdefault("redpackets", [])
-
-        # 懒清理：过期红包。系统红包（owner_uid 以 system: 开头）过期剩余直接作废，玩家红包退回发起人
-        # 全局红包（rain 标记）不受群隔离，过期后在任何群打开时都会被清理
-        refunds = []
-        keep = []
-        for rp in rps:
-            owner = rp.get("owner_uid", "")
-            is_system = isinstance(owner, str) and owner.startswith("system:")
-            is_expired = ((str(rp.get("group_id")) == str(gid) or rp.get("rain"))
-                          and float(rp.get("expires_ts", 0)) <= now_ts)
-            if is_expired and is_system:
-                continue  # 系统红包过期：作废不保留
-            if is_expired and int(rp.get("remain", 0)) > 0:
-                refunds.append(rp)
-            else:
-                keep.append(rp)
-        data["redpackets"] = keep
-        if refunds:
-            for rp in refunds:
-                self._add_coins(data, rp.get("owner_uid"), int(rp.get("remain", 0)), "红包过期退回")
+        # 懒清理：过期红包。系统红包（owner_uid 以 system: 开头）过期剩余直接作废，
+        # 玩家红包退回发起人；全局红包（rain 标记）不受群隔离（固定结算循环也会定期清理）
+        refunds = self._redpacket_cleanup_expired(data, now_ts)
 
         openable = [rp for rp in data["redpackets"]
                     if (str(rp.get("group_id")) == str(gid) or rp.get("rain"))
@@ -214,7 +220,7 @@ class RedpacketMixin:
                         and int(rp.get("remain", 0)) <= 0
                         and now_ts - float(rp.get("finished_ts", 0)) <= 60]
             if refunds:
-                lines = [f"↩️ {len(refunds)} 个过期红包的剩余金额已退回给发起人。"]
+                lines = [f"↩️ {refunds} 个过期红包的剩余金额已退回给发起人。"]
                 if finished:
                     lines.append("来晚一步，红包被人抢空了～")
                 img = self._render_text_image("金币红包", lines)
@@ -248,7 +254,7 @@ class RedpacketMixin:
         lines.append(f"{self._coin_line(data, key)}")
         if refunds:
             lines.append("")
-            lines.append(f"↩️ {len(refunds)} 个过期红包的剩余金额已退回给发起人。")
+            lines.append(f"↩️ {refunds} 个过期红包的剩余金额已退回给发起人。")
         img = self._render_text_image("金币红包", lines)
         if img is not None:
             return img

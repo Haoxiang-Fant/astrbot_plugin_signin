@@ -8,6 +8,9 @@ _register_runtime_module(_sys.modules[__name__])
 
 
 class WebUIMixin:
+    # 2.2.0：敏感运行参数 —— 不回传当前值；保存时留空 = 保持不变
+    _SENSITIVE_PARAMS = ("DEBUG_PASSWORD",)
+
     def _apply_runtime_params(self, params: dict):
         """校验并应用运行参数：更新模块全局常量（立即生效）+ 同步实例属性。
         返回 (applied, errors)；errors 为 {key: 未生效原因}，供 WebUI 提示管理员"""
@@ -20,6 +23,15 @@ class WebUIMixin:
             raw = params[key]
             label = spec["label"]
             try:
+                # 2.2.0：密码类参数留空 = 保持不变（前端不回显当前值）
+                if key in self._SENSITIVE_PARAMS and not str(raw).strip():
+                    continue
+                # 2.2.1：环境变量 SIGNIN_DEBUG_PASSWORD 优先级最高，运行参数不再覆盖（key 无害化）
+                if key in self._SENSITIVE_PARAMS and os.environ.get("SIGNIN_DEBUG_PASSWORD"):
+                    continue
+                if key in self._SENSITIVE_PARAMS and len(str(raw).strip()) < 4:
+                    errors[key] = f"「{label}」至少需要 4 位"
+                    continue
                 if spec["type"] == "int":
                     val = int(raw)
                 elif spec["type"] == "float":
@@ -94,7 +106,8 @@ class WebUIMixin:
             logger.warning(f"[插件] 加载活动参数失败: {e}")
 
     async def web_get_params(self):
-        """读取运行参数：返回参数 schema 列表（含当前值），前端据此渲染表单"""
+        """读取运行参数：返回参数 schema 列表（含当前值），前端据此渲染表单。
+        2.2.0：敏感参数（调试口令等）不回传当前值，前端只显示「已设置」，修改时提交新值。"""
         async with self._lock:
             data = self._load()
             saved = data.get("params") or {}
@@ -102,7 +115,7 @@ class WebUIMixin:
             for spec in RUNTIME_PARAMS:
                 key = spec["key"]
                 cur = saved.get(key, globals().get(key, spec.get("default")))
-                items.append({
+                item = {
                     "key": key,
                     "label": spec["label"],
                     "type": spec["type"],
@@ -112,7 +125,12 @@ class WebUIMixin:
                     "value": cur,
                     "min": spec.get("min"),
                     "max": spec.get("max"),
-                })
+                }
+                # 2.2.0：密码类参数不向访问终端回传任何值（哈希校验只在插件本地进行）
+                if key in self._SENSITIVE_PARAMS:
+                    item["value"] = ""
+                    item["masked"] = True
+                items.append(item)
             return json_response({"params": items})
 
     async def web_save_params(self):
@@ -798,13 +816,12 @@ class WebUIMixin:
             return json_response({"saved": True, "jobs": len(jobs), "plays": len(plays)})
 
     async def web_get_petshop(self):
-        """读取宠物商店商品（结构化，供 WebUI 表格编辑）。
-        保留旧字段 content/types（空字符串）仅为不破坏旧前端加载，新版前端使用 items。"""
+        """读取宠物商店商品（结构化，供 WebUI 表格编辑）。2.2.0：不再返回冗余空字段 types/content。"""
         async with self._lock:
             flat = self._read_items_json()
             if flat is None:
                 flat = self._items_normalized_to_flat(self._load_config())
-            return json_response({"items": flat["shop"], "types": [], "content": ""})
+            return json_response({"items": flat["shop"]})
 
     async def web_save_petshop(self):
         """保存宠物商店商品：{items: [...]}，校验后写入 game_items.json（立即生效）"""
@@ -888,19 +905,87 @@ class WebUIMixin:
             self._save(data)
             return json_response({"saved": True})
 
+    def _redact_export_text(self, text: str) -> str:
+        """导出前脱敏 data.json：移除局域网密码哈希/会话密钥/调试口令等敏感数据，
+        确保任何访问终端都收不到密码类数据。解析失败时原样返回。"""
+        try:
+            obj = json.loads(text)
+        except Exception:
+            return text
+        if not isinstance(obj, dict):
+            return text
+        lan = obj.get(LAN_DATA_KEY)
+        if isinstance(lan, dict):
+            lan.pop("password_hash", None)
+            lan.pop("secret", None)
+        params = obj.get("params")
+        if isinstance(params, dict):
+            for k in self._SENSITIVE_PARAMS:
+                params.pop(k, None)
+        return json.dumps(obj, ensure_ascii=False, indent=2)
+
+    def _snapshot_sensitive(self) -> dict:
+        """快照当前数据中的敏感字段（导入/恢复用）：局域网密码哈希、会话密钥、调试口令。"""
+        out = {}
+        try:
+            data = self._load()
+            lan = data.get(LAN_DATA_KEY) or {}
+            out["password_hash"] = lan.get("password_hash")
+            out["secret"] = lan.get("secret")
+            out["debug_password"] = (data.get("params") or {}).get("DEBUG_PASSWORD")
+        except Exception:
+            pass
+        return out
+
+    def _restore_sensitive(self, snapshot: dict) -> None:
+        """导入后恢复敏感字段：备份/导入内容缺失或为空时，保留导入前的值，
+        防止导入旧备份导致局域网访问失配或调试口令被清空。"""
+        if not snapshot:
+            return
+        try:
+            data = self._load()
+        except Exception:
+            return
+        changed = False
+        lan = data.setdefault(LAN_DATA_KEY, {})
+        if not isinstance(lan, dict):
+            lan = {}
+            data[LAN_DATA_KEY] = lan
+        if not lan.get("password_hash") and snapshot.get("password_hash"):
+            lan["password_hash"] = snapshot["password_hash"]
+            changed = True
+        if not lan.get("secret") and snapshot.get("secret"):
+            lan["secret"] = snapshot["secret"]
+            changed = True
+        params = data.setdefault("params", {})
+        if not isinstance(params, dict):
+            params = {}
+            data["params"] = params
+        if not params.get("DEBUG_PASSWORD") and snapshot.get("debug_password"):
+            params["DEBUG_PASSWORD"] = snapshot["debug_password"]
+            changed = True
+        if changed:
+            self._save(data)
+
     async def web_export_data(self):
         """导出全部数据：data.json + game_items.json（商店/打工/玩耍/作物/肥料/贷款套餐数值）。
-        打包为单个 JSON 文件（files: {文件名: 内容}），由前端下载。"""
+        打包为单个 JSON 文件（files: {文件名: 内容}），由前端下载。
+        2.2.0：data.json 导出前脱敏（局域网密码哈希/会话密钥/调试口令不随备份下发）。"""
         async with self._lock:
             files = {}
             for fn, path in self._exportable_files():
-                files[fn] = self._read_file(path)
+                text = self._read_file(path)
+                if fn == "data.json":
+                    text = self._redact_export_text(text)
+                files[fn] = text
             return json_response({"files": files})
 
     def _exportable_files(self):
-        """可导出的文件列表：存档 data.json + 数值配置 game_items.json"""
+        """可导出的文件列表：存档 data.json + 记录数据 records.json + 数值配置 game_items.json"""
+        from .data_migrate import RECORDS_FILE
         return [
             ("data.json", DATA_FILE),
+            ("records.json", RECORDS_FILE),
             ("game_items.json", ITEMS_JSON_FILE),
         ]
 
@@ -919,7 +1004,9 @@ class WebUIMixin:
 
     def _import_files(self, files: dict):
         """导入文件包：写入新格式文件；兼容旧版 txt 备份（还原后重新迁移为 game_items.json）。
-        返回 (ok, msg_or_written_list)"""
+        返回 (ok, msg_or_written_list)。
+        2.2.0：导入前后保护敏感字段（备份文件不含密码哈希/会话密钥/调试口令时保留现有值）。"""
+        sensitive = self._snapshot_sensitive()
         written = []
         for fn, path in self._exportable_files():
             if fn in files and isinstance(files[fn], str):
@@ -949,12 +1036,19 @@ class WebUIMixin:
                 self._migrate_items_to_json()
             except Exception as e:
                 logger.warning(f"[插件] 导入旧版 txt 备份后重迁移失败: {e}")
+        self._restore_sensitive(sensitive)
+        # 2.2.2：导入旧格式备份（记录字段内嵌在 data.json）后立即按新标准拆分
+        try:
+            from .data_migrate import check_and_migrate_data
+            check_and_migrate_data()
+        except Exception as e:
+            logger.warning(f"[插件] 导入后数据标准升级失败: {e}")
         return True, written
 
     async def web_import_data(self):
         """导入全部数据：JSON 请求体携带 files（{文件名: 内容}），覆盖写入对应文件。
         兼容旧格式：旧版 txt 备份（后台/宠物商店*.txt）还原后自动重新迁移为 game_items.json；
-        更旧格式：仅 data.json 的 content 字段。"""
+        更旧格式：仅 data.json 的 content 字段。2.2.0：导入后保留现有敏感字段。"""
         async with self._lock:
             payload = await request.json(default={})
             files = payload.get("files")
@@ -967,9 +1061,16 @@ class WebUIMixin:
             content = payload.get("content")
             if not isinstance(content, str):
                 return error_response("files 或 content 必须提供", status_code=400)
+            sensitive = self._snapshot_sensitive()
             ok, msg = self._write_data_text(content)
             if not ok:
                 return error_response(msg, status_code=400)
+            self._restore_sensitive(sensitive)
+            try:
+                from .data_migrate import check_and_migrate_data
+                check_and_migrate_data()
+            except Exception as e:
+                logger.warning(f"[插件] 导入后数据标准升级失败: {e}")
             return json_response({"imported": True})
 
     def _read_file(self, path):
@@ -1248,18 +1349,15 @@ class WebUIMixin:
         return ""
 
     async def web_get_record_pets(self):
-        """运行记录·宠物记录：全部宠物卡片（当前状态 / 正在进行的活动 / 自动购买·自动打工信息）。"""
+        """运行记录·宠物记录：全部宠物卡片（当前状态 / 正在进行的活动 / 自动购买·自动打工信息）。
+        2.2.0：宠物每日结算由固定结算循环统一执行，此处只读取已结算结果。"""
         async with self._lock:
             data = self._load()
-            today = date.today().isoformat()
-            dirty = False
+            now_ts = datetime.now().timestamp()
             pets = []
             for uid, pet in (data.get("pets") or {}).items():
                 if not isinstance(pet, dict):
                     continue
-                if pet.get("last_settle_date") != today:
-                    dirty = True
-                    self._bring_pet_up_to_date(pet, today)
                 u = data.get("users", {}).get(uid) or {}
                 custom = self._custom_name_of(data, uid)
                 sat_max, thr_max, sta_max, mood_max = self._attr_max(pet["health"])
@@ -1286,7 +1384,8 @@ class WebUIMixin:
                 }
                 pets.append({
                     "uid": uid,
-                    "nick": custom or uid,
+                    # 2.2.2：主人ID显示平台昵称（自定义昵称 → 账户昵称 → uid）
+                    "nick": custom or self._record_account_name(data, uid) or uid,
                     "name": pet.get("name", "宠物"),
                     "level": pet.get("level", 0),
                     "exp": round(float(pet.get("exp", 0) or 0), 1),
@@ -1301,12 +1400,12 @@ class WebUIMixin:
                         "work_global": bool(globals().get("AUTO_WORK_ENABLED", True)),
                         "work_base": int(u.get("work_base", 0) or 0),
                         "work_next": float(u.get("auto_work_next", 0) or 0),
+                        # 2.2.1：自动化贷款当前未还清欠款总额（0 = 无欠款）
+                        "auto_loan_owed": self._auto_loan_owed_of(data, uid),
                         "feed_logs": (u.get("auto_feed_logs") or [])[-5:],
                         "work_logs": (u.get("auto_work_logs") or [])[-5:],
                     },
                 })
-            if dirty:
-                self._save(data)
             return json_response({"pets": pets})
 
     async def web_toggle_record_auto(self):
@@ -1374,12 +1473,133 @@ class WebUIMixin:
                 "work_base": int(u.get("work_base", 0) or 0),
             })
 
+    async def web_get_record_pet_detail(self):
+        """运行记录·宠物记录·详情（2.2.1）：POST {uid} → 单只宠物的完整详情
+        （当前状态/基本档案/每日结算/自动化/特殊记录 + 每种行为的属性变化记录 attr_log），
+        宠物记录页点击宠物卡片进入详情页时按需拉取。"""
+        try:
+            payload = await request.json(default={})
+        except Exception:
+            payload = {}
+        uid = str(payload.get("uid") or "").strip()
+        if not uid:
+            return error_response("uid 不能为空", status_code=400)
+        try:
+            async with self._lock:
+                data = self._load()
+                pet = data.get("pets", {}).get(uid)
+                if not isinstance(pet, dict):
+                    return json_response({"pet": None})
+                return json_response({"pet": self._record_pet_detail_payload(data, uid, pet)})
+        except Exception as e:
+            logger.error(f"[插件] 运行记录·宠物详情 读取失败: {e}")
+            return json_response({"pet": None, "error": str(e)})
+
+    def _record_pet_detail_payload(self, data: dict, uid: str, pet: dict) -> dict:
+        """（同步，锁内调用）单只宠物的完整详情数据（2.2.1）：
+        分类展示宠物各项信息（基本档案/当前状态/每日结算/自动化/特殊记录/仓库道具），
+        以及每种行为（每日结算/打工/玩耍/使用道具/治疗/自动购买/自动打工）造成的属性变化记录。"""
+        u = data.get("users", {}).get(uid) or {}
+        custom = self._custom_name_of(data, uid)
+        now_ts = datetime.now().timestamp()
+        sat_max, thr_max, sta_max, mood_max = self._attr_max(pet["health"])
+        busy_until = self._pet_busy_until(pet)
+        busy = None
+        if busy_until > now_ts:
+            busy = {
+                "activity": pet.get("busy_activity"),
+                "item": pet.get("busy_item"),
+                "until": busy_until,
+                "remaining_min": int((busy_until - now_ts) // 60),
+            }
+        tickets = {
+            "sat": pet.get("satiety", 0), "thr": pet.get("thirst", 0),
+            "sta": pet.get("stamina", 0), "mood": pet.get("mood", 0),
+            "health": pet.get("health", 0),
+            "sat_max": sat_max, "thr_max": thr_max, "sta_max": sta_max,
+            "mood_max": mood_max, "health_max": PET_MAX_HEALTH,
+            "sat_red": self._attr_is_red("饱食", pet.get("satiety", 0)),
+            "thr_red": self._attr_is_red("口渴", pet.get("thirst", 0)),
+            "mood_red": self._attr_is_red("心情", pet.get("mood", 0)),
+            "health_red": self._attr_is_red("健康", pet.get("health", 0)),
+        }
+        level, exp_got, exp_need = self._pet_exp_progress(float(pet.get("exp", 0) or 0))
+        # 属性变化记录（attr_log，最新在前）
+        logs = []
+        for it in (pet.get("attr_log") or []):
+            if not isinstance(it, dict):
+                continue
+            logs.append({
+                "time": str(it.get("time", "") or ""),
+                "ts": float(it.get("ts", 0) or 0),
+                "cat": str(it.get("cat", "其他") or "其他"),
+                "behavior": str(it.get("behavior", "") or ""),
+                "changes": it.get("changes", {}) or {},
+                "extra": str(it.get("extra", "") or ""),
+                # 2.2.2：变动后属性快照（属性条可视化用；旧记录可能没有）
+                "after": it.get("after", {}) or {},
+                # 2.2.2：变动发生时的属性上限快照（旧记录可能没有）
+                "max": it.get("max", {}) or {},
+            })
+        logs.reverse()
+        ls = pet.get("last_settle") or {}
+        return {
+            "uid": uid,
+            # 2.2.2：主人ID显示平台昵称（自定义昵称 → 账户昵称 → uid）
+            "nick": custom or self._record_account_name(data, uid) or uid,
+            "name": pet.get("name", "宠物"),
+            "level": level,
+            "exp": round(float(pet.get("exp", 0) or 0), 1),
+            "exp_got": round(exp_got, 1),
+            "exp_need": round(exp_need, 1),
+            "tier": self._worst_tier(pet.get("satiety", 0), pet.get("thirst", 0), pet.get("mood", 0)),
+            "weak": bool(pet.get("weak")),
+            "guard": bool(pet.get("guard")),
+            "attrs": tickets,
+            "busy": busy,
+            "last_settle_date": str(pet.get("last_settle_date", "") or ""),
+            "last_settle": {
+                "date": str(ls.get("date", "") or ""),
+                "satiety_d": ls.get("satiety_d", 0),
+                "thirst_d": ls.get("thirst_d", 0),
+                "stamina_d": ls.get("stamina_d", 0),
+                "mood_d": ls.get("mood_d", 0),
+                "health_d": ls.get("health_d", 0),
+                "tier": ls.get("tier", 0),
+                "rested_well": bool(ls.get("rested_well")),
+                "sick": bool(ls.get("sick")),
+            } if ls else None,
+            "pill": {
+                "used": int(pet.get("pill_used_count", 0) or 0),
+                "limit": int(getattr(self, "pill_daily_limit", 3) or 3),
+                "today": str(pet.get("pill_used_date", "") or ""),
+            },
+            "money_event": {
+                "count": int(pet.get("money_event_count", 0) or 0),
+                "max": int(getattr(self, "money_event_max_per_day", 5) or 5),
+                "today": str(pet.get("money_event_date", "") or ""),
+            },
+            "bag": [{"name": str(k), "qty": int(v)} for k, v in (pet.get("inventory") or {}).items()],
+            "auto": {
+                "purchase_on": bool(u.get("auto_feed_enabled")),
+                "purchase_global": bool(globals().get("AUTO_FEED_ENABLED", False)),
+                "work_on": bool(u.get("auto_work_enabled")),
+                "work_global": bool(globals().get("AUTO_WORK_ENABLED", True)),
+                "work_base": int(u.get("work_base", 0) or 0),
+                "work_next": float(u.get("auto_work_next", 0) or 0),
+                "auto_loan_owed": self._auto_loan_owed_of(data, uid),
+                "feed_logs": (u.get("auto_feed_logs") or [])[-5:],
+                "work_logs": (u.get("auto_work_logs") or [])[-5:],
+            },
+            "attr_log": logs,
+            "attr_labels": dict(ATTR_SHORT),
+        }
+
     async def web_get_record_users(self):
-        """运行记录·用户信息（2.1.0）：全部用户的信息卡片。
-        基础信息：金币 / 好感等级 / 宠物等级 / 农场等级 / 最后活跃时间；点击卡片后展开用户详细信息，
-        每个模块（仓库/农场/宠物/银行/自动化）为独立附属卡片。
-        排序键（昵称首拼/首字笔画）由后端计算随用户数据返回，前端本地排序（不依赖 query）。
-        昵称回退链：自定义昵称 → 账户昵称（任意群聊记录的昵称）→ uid。"""
+        """运行记录·用户信息（2.1.0）：全部用户的信息卡片（基础信息）。
+        2.2.0：列表只返回卡片级基础字段（昵称/金币/好感等级/宠物·农场等级/银行汇总/活跃时间/排序键），
+        仓库/农场地块/存单明细等完整详情由「records/users/detail」按需拉取，避免全量下发给终端。
+        排序键（昵称首拼/首字笔画）由后端计算随用户数据返回，前端本地排序（不依赖 query）。"""
         try:
             async with self._lock:
                 return self._record_users_payload()
@@ -1387,8 +1607,133 @@ class WebUIMixin:
             logger.error(f"[插件] 运行记录·用户信息 读取失败: {e}")
             return json_response({"users": [], "error": str(e)})
 
+    async def web_get_record_user_detail(self):
+        """运行记录·用户信息·详情（2.2.0）：POST {uid} → 单个用户的完整详情
+        （仓库/农场地块/宠物/银行存单/自动化），页面展开卡片时才拉取。"""
+        try:
+            payload = await request.json(default={})
+        except Exception:
+            payload = {}
+        uid = str(payload.get("uid") or "").strip()
+        if not uid:
+            return error_response("uid 不能为空", status_code=400)
+        try:
+            async with self._lock:
+                data = self._load()
+                u = data.get("users", {}).get(uid)
+                if not isinstance(u, dict):
+                    return json_response({"user": None})
+                return json_response({"user": self._record_user_detail_payload(data, uid, u)})
+        except Exception as e:
+            logger.error(f"[插件] 运行记录·用户详情 读取失败: {e}")
+            return json_response({"user": None, "error": str(e)})
+
+    def _record_user_detail_payload(self, data: dict, uid: str, u: dict) -> dict:
+        """（同步，锁内调用）单个用户的完整详情数据（2.2.0：按需拉取，替代全量下发的详情字段）。"""
+        pet = data.get("pets", {}).get(uid)
+        farm = data.get("farms", {}).get(uid)
+        bank = data.get("bank", {}).get(uid)
+        # ---- 宠物状态（详情独立附属卡片用） ----
+        pet_info = None
+        if isinstance(pet, dict):
+            pet_info = {
+                "name": pet.get("name", "宠物"),
+                "level": pet.get("level", 0),
+                "weak": bool(pet.get("weak")),
+                "exp": round(float(pet.get("exp", 0) or 0), 1),
+                "busy_activity": pet.get("busy_activity"),
+                "busy_item": pet.get("busy_item"),
+                "busy_until": float(pet.get("busy_until", 0) or 0),
+            }
+        # ---- 农场实时状态（详情独立附属卡片用：每块土地） ----
+        farm_info = None
+        if isinstance(farm, dict):
+            now_ts = datetime.now().timestamp()
+            plots = []
+            for i, p in enumerate((farm.get("plots") or []), start=1):
+                if not isinstance(p, dict):
+                    continue
+                crop = p.get("crop")
+                if crop is None:
+                    plots.append({"no": i, "grade": int(p.get("grade", 0) or 0),
+                                  "crop": None, "mature": False, "remain_min": 0})
+                else:
+                    mature = now_ts >= float(p.get("mature_ts", 0) or 0)
+                    remain = max(0, float(p.get("mature_ts", 0) or 0) - now_ts)
+                    plots.append({"no": i, "grade": int(p.get("grade", 0) or 0),
+                                  "crop": str(crop), "mature": mature,
+                                  "remain_min": int(remain // 60)})
+            farm_info = {
+                "level": int(farm.get("level", 0) or 0),
+                "exp": round(float(farm.get("exp", 0) or 0), 1),
+                "plots": plots,
+            }
+        # ---- 仓库（宠物背包，详情独立附属卡片用） ----
+        bag = []
+        if isinstance(pet, dict):
+            inv = pet.get("inventory") or {}
+            if isinstance(inv, dict):
+                for nm, cnt in inv.items():
+                    n = int(cnt or 0)
+                    if n > 0:
+                        bag.append({"name": str(nm), "qty": n})
+                bag.sort(key=lambda x: (-x["qty"], x["name"]))
+        # ---- 银行（详情独立附属卡片用：存单列表 + 汇总） ----
+        bank_info = None
+        if isinstance(bank, dict) and bank.get("deposits"):
+            deposits = []
+            for d in (bank["deposits"] or []):
+                if not isinstance(d, dict):
+                    continue
+                deposits.append({
+                    "amount": int(d.get("amount", 0) or 0),
+                    "interest": int(d.get("interest", 0) or 0),
+                    "status": d.get("status", "locked"),
+                    "hours": int(d.get("hours", 0) or 0),
+                    "deposit_time": d.get("deposit_time", ""),
+                    "base_rate": float(d.get("base_rate", 0) or 0),
+                    "bonus_rate": float(d.get("bonus_rate", 0) or 0),
+                })
+            locked_sum = sum(x["amount"] for x in deposits if x["status"] == "locked")
+            matured_sum = sum(x["amount"] for x in deposits if x["status"] == "matured")
+            interest_sum = sum(x["interest"] for x in deposits)
+            bank_info = {
+                "total_count": len(deposits),
+                "locked_count": sum(1 for x in deposits if x["status"] == "locked"),
+                "matured_count": sum(1 for x in deposits if x["status"] == "matured"),
+                "locked_sum": locked_sum, "matured_sum": matured_sum,
+                "interest_sum": interest_sum,
+                "deposits": deposits[:8],  # 最近 8 笔，前端折叠展示
+            }
+        return {
+            "uid": uid,
+            "nick": self._record_user_nick(data, uid),
+            "fav": round(float(u.get("favorability", 0) or 0), 1),
+            "fav_level": self._level_of(float(u.get("favorability", 0) or 0)),
+            "coins": int(u.get("coins", 0) or 0),
+            "pet": pet_info,
+            "farm": farm_info,
+            "bag": bag,
+            "bank": bank_info,
+            "auto": {
+                "purchase_on": bool(u.get("auto_feed_enabled")),
+                "work_on": bool(u.get("auto_work_enabled")),
+                "work_base": int(u.get("work_base", 0) or 0),
+                # 2.2.1：自动化贷款当前未还清欠款总额（0 = 无欠款）
+                "auto_loan_owed": self._auto_loan_owed_of(data, uid),
+            },
+        }
+
+    def _record_user_nick(self, data: dict, uid: str) -> str:
+        """用户昵称回退链：自定义昵称 → 账户昵称 → uid。"""
+        custom = self._custom_name_of(data, uid)
+        if custom:
+            return custom
+        acc = self._record_account_name(data, uid)
+        return acc or str(uid)
+
     def _record_users_payload(self):
-        """（同步，锁内调用）组装全部用户信息卡片数据：含各模块附属卡片字段与排序键。"""
+        """（同步，锁内调用）组装全部用户信息卡片的基础数据（2.2.0：详情字段按需拉取）。"""
         data = self._load()
         now_ts = datetime.now().timestamp()
         users = []
@@ -1414,77 +1759,21 @@ class WebUIMixin:
                     la_text = f"{int(diff // 3600)} 小时前"
                 else:
                     la_text = f"{int(diff // 86400)} 天前"
-            # ---- 宠物状态（详情独立附属卡片用） ----
-            pet_info = None
+            # ---- 卡片级汇总字段（详情字段由 records/users/detail 按需拉取） ----
+            pet_summary = None
             if isinstance(pet, dict):
-                pet_info = {
-                    "name": pet.get("name", "宠物"),
-                    "level": pet.get("level", 0),
+                pet_summary = {
+                    "level": int(pet.get("level", 0) or 0),
                     "weak": bool(pet.get("weak")),
-                    "exp": round(float(pet.get("exp", 0) or 0), 1),
-                    "busy_activity": pet.get("busy_activity"),
-                    "busy_item": pet.get("busy_item"),
-                    "busy_until": float(pet.get("busy_until", 0) or 0),
                 }
-            # ---- 农场实时状态（详情独立附属卡片用：每块土地） ----
-            farm_info = None
+            farm_summary = None
             if isinstance(farm, dict):
-                plots = []
-                for i, p in enumerate((farm.get("plots") or []), start=1):
-                    if not isinstance(p, dict):
-                        continue
-                    crop = p.get("crop")
-                    if crop is None:
-                        plots.append({"no": i, "grade": int(p.get("grade", 0) or 0),
-                                      "crop": None, "mature": False, "remain_min": 0})
-                    else:
-                        mature = now_ts >= float(p.get("mature_ts", 0) or 0)
-                        remain = max(0, float(p.get("mature_ts", 0) or 0) - now_ts)
-                        plots.append({"no": i, "grade": int(p.get("grade", 0) or 0),
-                                      "crop": str(crop), "mature": mature,
-                                      "remain_min": int(remain // 60)})
-                farm_info = {
-                    "level": int(farm.get("level", 0) or 0),
-                    "exp": round(float(farm.get("exp", 0) or 0), 1),
-                    "plots": plots,
-                }
-            # ---- 仓库（宠物背包，详情独立附属卡片用） ----
-            bag = []
-            if isinstance(pet, dict):
-                inv = pet.get("inventory") or {}
-                if isinstance(inv, dict):
-                    for nm, cnt in inv.items():
-                        n = int(cnt or 0)
-                        if n > 0:
-                            bag.append({"name": str(nm), "qty": n})
-                    bag.sort(key=lambda x: (-x["qty"], x["name"]))
-            # ---- 银行（2.1.0 详情独立附属卡片用：存单列表 + 汇总） ----
-            bank_info = None
-            if isinstance(bank, dict) and bank.get("deposits"):
-                deposits = []
-                for d in (bank["deposits"] or []):
-                    if not isinstance(d, dict):
-                        continue
-                    deposits.append({
-                        "amount": int(d.get("amount", 0) or 0),
-                        "interest": int(d.get("interest", 0) or 0),
-                        "status": d.get("status", "locked"),
-                        "hours": int(d.get("hours", 0) or 0),
-                        "deposit_time": d.get("deposit_time", ""),
-                        "base_rate": float(d.get("base_rate", 0) or 0),
-                        "bonus_rate": float(d.get("bonus_rate", 0) or 0),
-                    })
-                locked_sum = sum(x["amount"] for x in deposits if x["status"] == "locked")
-                matured_sum = sum(x["amount"] for x in deposits if x["status"] == "matured")
-                interest_sum = sum(x["interest"] for x in deposits)
-                bank_info = {
-                    "total_count": len(deposits),
-                    "locked_count": sum(1 for x in deposits if x["status"] == "locked"),
-                    "matured_count": sum(1 for x in deposits if x["status"] == "matured"),
-                    "locked_sum": locked_sum, "matured_sum": matured_sum,
-                    "interest_sum": interest_sum,
-                    "deposits": deposits[:8],  # 最近 8 笔，前端折叠展示
-                }
+                farm_summary = {"level": int(farm.get("level", 0) or 0)}
+            bank_summary = None
+            if isinstance(bank, dict):
+                locked_sum = sum(self._dep_amount(d) for d in (bank.get("deposits") or []) if d.get("status") == "locked")
+                matured_sum = sum(self._dep_amount(d) for d in (bank.get("deposits") or []) if d.get("status") == "matured")
+                bank_summary = {"locked_sum": locked_sum, "matured_sum": matured_sum}
             users.append({
                 "uid": uid,
                 "nick": nick,
@@ -1492,10 +1781,9 @@ class WebUIMixin:
                 "coins": int(u.get("coins", 0) or 0),
                 "fav": round(float(u.get("favorability", 0) or 0), 1),
                 "fav_level": self._level_of(float(u.get("favorability", 0) or 0)),
-                "pet": pet_info,
-                "farm": farm_info,
-                "bag": bag,
-                "bank": bank_info,
+                "pet": pet_summary,
+                "farm": farm_summary,
+                "bank": bank_summary,
                 "last_active": la,
                 "last_active_text": la_text,
                 "auto": {
