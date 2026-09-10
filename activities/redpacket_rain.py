@@ -33,7 +33,12 @@ class RedpacketRainActivity(BaseActivity):
         self.plugin = plugin
 
     def on_redpacket_open(self, event, data, key, gid, now_ts):
-        """开红包前懒生成当轮红包雨（每个时段每天只生成一次），返回提示或空字符串"""
+        """开红包前兜底生成当轮红包雨（2.2.0：固定结算循环已定时生成，此处保留兜底防循环未启动）。"""
+        return self.tick(data, now_ts)
+
+    def tick(self, data, now_ts):
+        """定时巡检：当前时间处于开启时段且当日该时段未生成 → 生成当轮红包雨，返回提示或空字符串。
+        由固定结算循环每分钟巡检调用；幂等标记 rain_generated[today] 防止重复生成。"""
         p = self.plugin
         # 开启时间：活动参数优先（留空 = 不开启）；未覆盖时回退主插件旧配置，再回退默认
         self_times = getattr(self, "times", None)

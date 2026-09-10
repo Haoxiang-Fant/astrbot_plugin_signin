@@ -1780,13 +1780,20 @@ input[type="file"] {
   margin-bottom: var(--space-3);
 }
 
-/* 2.1.0：宠物记录 / 用户信息每行固定两只卡片（宽屏），窄屏自动降为单列 */
+/* 2.1.0：宠物记录 / 用户信息两列（2.2.2：改多列流式布局——两列相互独立，
+   任一列的卡片纵向排列与间距不受旁边队列高度影响；窄屏自动降为单列） */
 .rec-grid.cols-2 {
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  display: block;
+  columns: 2;
+  column-gap: var(--space-3);
+}
+.rec-grid.cols-2 > .rec-card {
+  break-inside: avoid;
+  margin-bottom: var(--space-3);
 }
 @media (max-width: 900px) {
   .rec-grid.cols-2 {
-    grid-template-columns: 1fr;
+    columns: 1;
   }
 }
 
@@ -1823,13 +1830,23 @@ input[type="file"] {
 .user-card {
   cursor: pointer;
 }
+/* 2.2.1：宠物记录卡片（点击进入宠物详情页；开关芯片不触发） */
+.pet-card {
+  cursor: pointer;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+.pet-card:hover {
+  border-color: var(--gold);
+  box-shadow: var(--shadow-2);
+}
 .user-card .rec-card-head {
   flex-wrap: wrap;
 }
-/* 2.1.0：展开的卡片横跨整行（拉出详情空间），同行其它卡片顺延平移到被拉出的空白位置、
-   不遮挡且本身不展开；管理员可同时展开多张（各自占一整行） */
+/* 2.1.0：展开的卡片横跨整行（拉出详情空间），其它卡片顺延平移到被拉出的空白位置、
+   不遮挡且本身不展开；管理员可同时展开多张（各自占一整行）。
+   2.2.2：多列布局下用 column-span 横跨两列 */
 .user-card.expanded {
-  grid-column: 1 / -1;
+  column-span: all;
   border-color: var(--gold);
   box-shadow: var(--shadow-2);
 }
@@ -1868,6 +1885,19 @@ input[type="file"] {
   color: var(--accent);
   padding-bottom: 3px;
   border-bottom: 1px solid var(--border);
+}
+/* 2.2.2：宠物详情页网格——上方三卡（基本档案/当前状态/特殊记录）高度与同一行最高的卡片绑定（默认拉伸），
+   自动化卡整行加宽（三卡宽度 + 两间隙） */
+.detail-grid.pet-detail-grid {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+.detail-grid.pet-detail-grid .detail-card.span-all {
+  grid-column: 1 / -1;
+}
+@media (max-width: 900px) {
+  .detail-grid.pet-detail-grid {
+    grid-template-columns: 1fr;
+  }
 }
 .user-detail .rec-block-title {
   color: var(--accent);
@@ -2112,4 +2142,87 @@ input[type="file"] {
 
 .rec-line.muted {
   color: var(--muted);
+}
+
+/* 2.2.2：属性变化记录折叠项（默认折叠；点击展开属性条可视化） */
+.attr-log-item {
+  border-bottom: 1px dashed var(--border-2);
+  padding: 4px 2px;
+}
+.attr-log-item:last-child {
+  border-bottom: none;
+}
+.attr-log-item summary {
+  cursor: pointer;
+  list-style: none;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px 6px;
+  font-size: 12px;
+  color: var(--text-2);
+  line-height: 1.55;
+}
+.attr-log-item summary::-webkit-details-marker {
+  display: none;
+}
+.attr-log-item summary::before {
+  content: "▸";
+  color: var(--accent);
+  margin-right: 2px;
+  transition: transform 0.15s ease;
+}
+.attr-log-item[open] summary::before {
+  transform: rotate(90deg);
+}
+.attr-bars {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 6px 0 2px 16px;
+}
+.attr-bar-row {
+  display: grid;
+  grid-template-columns: 42px 1fr 58px;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+}
+.attr-bar-label {
+  color: var(--text-2);
+}
+/* 2.2.2：属性条（血条式）——轨道 0→上限；稳定段（标准主色）= 0→较小值；淡绿/淡红 = 增长/减少区 */
+.attr-bar-track {
+  position: relative;
+  height: 6px;
+  background: var(--accent-soft);
+  overflow: hidden;
+}
+.attr-bar-track i {
+  display: block;
+  position: absolute;
+  top: 0;
+  left: 0;
+  height: 100%;
+}
+.attr-bar-track i.base {
+  background: var(--accent);
+}
+.attr-bar-track i.delta.pos {
+  background: var(--success);
+  opacity: 0.45;
+}
+.attr-bar-track i.delta.neg {
+  background: var(--danger);
+  opacity: 0.45;
+}
+.attr-bar-num {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+}
+.attr-bar-num.pos {
+  color: var(--success);
+}
+.attr-bar-num.neg {
+  color: var(--danger);
 }

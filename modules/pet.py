@@ -44,6 +44,41 @@ def _parse_attr_max_ranges():
 
 
 class PetMixin:
+    # 2.2.1：每只宠物的「属性变化记录」上限（超出丢弃最旧；WebUI 宠物记录详情页展示）
+    _ATTR_LOG_MAX = 300
+
+    def _pet_attr_log(self, pet: dict, cat: str, behavior: str, changes: dict, extra: str = "", ts=None):
+        """2.2.1：追加一条宠物属性变化记录（WebUI「运行记录 → 宠物记录 → 宠物详情」展示）。
+        cat = 行为分类（每日结算/打工/玩耍/使用道具/治疗/自动购买/自动打工）；
+        behavior = 具体行为描述；changes = {属性key: 变化量}（仅记录非零项）；
+        extra = 附加信息（金币/经验等）。"""
+        if not changes:
+            return
+        if ts is None:
+            ts = datetime.now().timestamp()
+        try:
+            ts = float(ts)
+        except (TypeError, ValueError):
+            ts = datetime.now().timestamp()
+        log = pet.setdefault("attr_log", [])
+        sat_max, thr_max, sta_max, mood_max = self._attr_max(pet["health"])
+        log.append({
+            "ts": ts,
+            "time": datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M"),
+            "cat": cat,
+            "behavior": behavior,
+            "changes": {k: round(float(v), 2) for k, v in changes.items() if abs(float(v)) > 1e-9},
+            "extra": extra or "",
+            # 2.2.2：变动后的属性绝对值快照（WebUI 属性条可视化：基础=变动前=after-changes）。
+            # 本函数总在属性变更后立即调用，pet 当前值即为变动后状态。
+            "after": {k: round(float(pet.get(k, 0)), 2) for k in ATTR_LABELS},
+            # 2.2.2：变动发生时的各属性上限快照（上限随健康度动态变化，旧记录无此字段）
+            "max": {"satiety": sat_max, "thirst": thr_max, "stamina": sta_max,
+                    "mood": mood_max, "health": PET_MAX_HEALTH},
+        })
+        if len(log) > self._ATTR_LOG_MAX:
+            del log[:len(log) - self._ATTR_LOG_MAX]
+
     _SETTLE_ATTR_MAP = {"饱食": "satiety", "口渴": "thirst", "体力": "stamina", "心情": "mood", "健康": "health"}
     # 2.0.1：宠物状态结算固定四档（T1~T4，按饱食/口渴/心情最差档），每档定义全部五属性变化范围
     _SETTLE_DEFAULT_RANGES = {
@@ -221,6 +256,7 @@ class PetMixin:
         health_extra = int(math.ceil(excess_total / exchange)) if excess_total > 0 else 0
 
         # 3. 应用（先按当前健康度的上限 clamp 属性，再改健康度，最后统一 clamp）
+        before = {a: pet[a] for a in ATTR_LABELS}  # 2.2.2：变动前快照（记录实际生效的变化量）
         sat_max, thr_max, sta_max, mood_max = self._attr_max(health)
         pet["satiety"] = round(self._clamp(pet["satiety"] + sat_d, 0, sat_max), 2)
         pet["thirst"] = round(self._clamp(pet["thirst"] + thr_d, 0, thr_max), 2)
@@ -242,6 +278,10 @@ class PetMixin:
             "sick": pet["health"] <= 39.0,
             "tier": tier,   # 1.7.6：1-4 档（3/4 为状态差，签到时提醒）
         }
+        # 2.2.2：记录实际生效的属性变化（clamp 后 after−before；超出 0/上限的部分不虚记）
+        self._pet_attr_log(pet, "每日结算", f"每日结算（T{tier}）",
+                           {a: round(pet[a] - before[a], 2) for a in ATTR_LABELS
+                            if abs(pet[a] - before[a]) > 1e-9})
 
         # 虚弱判定：连续两天结算健康均为 0 → 宠物进入「虚弱」状态（治疗宠物 可解除）
         if pet["health"] <= 0.5:
@@ -385,8 +425,7 @@ class PetMixin:
         pet = data.get("pets", {}).get(key)
         if not pet:
             return f"{name} 还没有宠物，发送「解锁宠物」（需 {self.pet_unlock_cost} 金币）领养一只吧。"
-        self._bring_pet_up_to_date(pet, date.today().isoformat())
-        self._save(data)
+        # 2.2.0：宠物每日结算由固定结算循环统一执行，查询只显示结算结果
 
         # 2.0.0 消息合并：预留位是「即时消息」——每条消息的有效显示次数 = 1，
         # 仅在产生新变化的那次响应显示一次（work/play/use 响应已显示 → shown=True，
@@ -470,11 +509,15 @@ class PetMixin:
         if self._coins_of(data, key) < WEAK_HEAL_COST:
             return (f"{name} 治疗虚弱宠物需要 {WEAK_HEAL_COST} 金币"
                     f"（当前 {self._coins_of(data, key)}），发送「签到」获取金币。")
+        before = {a: pet[a] for a in ATTR_LABELS}
         self._add_coins(data, key, -WEAK_HEAL_COST, "治疗虚弱宠物")
         pet["satiety"] = pet["thirst"] = pet["stamina"] = pet["mood"] = pet["health"] = 40.0
         pet["weak"] = False
         pet["weak_streak"] = 0
         self._clamp_attrs(pet)
+        # 2.2.1：记录治疗造成的属性变化
+        changes = {a: round(pet[a] - before[a], 2) for a in ATTR_LABELS if abs(pet[a] - before[a]) > 1e-9}
+        self._pet_attr_log(pet, "治疗", "治疗虚弱宠物", changes, extra=f"花费 {WEAK_HEAL_COST} 金币")
         self._save(data)
         return (f"💊 {name} 花费 {WEAK_HEAL_COST} 金币治疗了宠物「{pet.get('name', '宠物')}」，"
                 f"虚弱状态已解除！所有数值恢复至 40。\n{self._pet_state_snippet(pet)}")
@@ -518,7 +561,6 @@ class PetMixin:
         pet = data.get("pets", {}).get(key)
         if not pet:
             return f"{name} 还没有宠物，发送「解锁宠物」领养一只吧。"
-        self._bring_pet_up_to_date(pet, date.today().isoformat())
 
         # 冷却检查：打工/玩耍共用一个计时器，冷却期内不能进行新的打工或玩耍
         now_ts = datetime.now().timestamp()
@@ -557,6 +599,9 @@ class PetMixin:
         pet["busy_item"] = job["name"]
         pet["_progress_done_notified"] = False  # 新一轮进度条开始，重置「满后第一次响应」标记
         changes = {a: round(pet[a] - before[a], 2) for a in ATTR_LABELS if abs(pet[a] - before[a]) > 1e-9}
+        # 2.2.1：记录本次打工造成的属性变化
+        self._pet_attr_log(pet, "打工", f"打工「{job['name']}」", changes,
+                           extra=f"金币+{int(job['coins'])}，经验+{job['exp']:.1f}")
         pet["last_activity"] = {
             "msg": f"{pet['name']} 去「{job['name']}」打工成功！",
             "changes": changes,
@@ -670,7 +715,6 @@ class PetMixin:
         pet = data.get("pets", {}).get(key)
         if not pet:
             return f"{name} 还没有宠物，发送「解锁宠物」领养一只吧。"
-        self._bring_pet_up_to_date(pet, date.today().isoformat())
 
         # 冷却检查：打工/玩耍共用一个计时器，冷却期内不能进行新的打工或玩耍
         now_ts = datetime.now().timestamp()
@@ -721,6 +765,9 @@ class PetMixin:
         pet["busy_item"] = play["name"]
         pet["_progress_done_notified"] = False  # 新一轮进度条开始，重置「满后第一次响应」标记
         changes = {a: round(pet[a] - before[a], 2) for a in ATTR_LABELS if abs(pet[a] - before[a]) > 1e-9}
+        # 2.2.1：记录本次玩耍造成的属性变化
+        self._pet_attr_log(pet, "玩耍", f"玩耍「{play['name']}」", changes,
+                           extra=f"经验+{play['exp']:.1f}" + (f"，捡到钱+{money_gain}金币" if money_gain else ""))
         pet["last_activity"] = {
             "msg": f"{pet['name']} 去「{play['name']}」玩耍成功！",
             "changes": changes,
@@ -1955,7 +2002,6 @@ class PetMixin:
         pet = data.get("pets", {}).get(key)
         if not pet:
             return f"{name} 还没有宠物，发送「解锁宠物」领养一只吧。"
-        self._bring_pet_up_to_date(pet, date.today().isoformat())
 
         user = data.get("users", {}).get(key, {})
         fav_level = self._level_of(float(user.get("favorability", 0.0)))
@@ -1975,6 +2021,7 @@ class PetMixin:
             have = int(inv.get(PILL_NAME, 0))
             if have < qty:
                 return f"属性丸不足：需要 {qty} 个，当前 {have} 个（签到有几率获得）。"
+            before = {a: pet[a] for a in ATTR_LABELS}  # 2.2.2：变动前快照（记录实际生效的变化量）
             boosts = {}
             for _ in range(qty):
                 for attr in random.sample(list(ATTR_LABELS), int(self.pill_attr_count or 2)):  # 随机 N 个属性
@@ -1986,7 +2033,10 @@ class PetMixin:
                 inv.pop(PILL_NAME, None)
             pet["pill_used_count"] = used + qty
             self._clamp_attrs(pet)
-            changes = dict(boosts)
+            # 2.2.2：实际生效的变化量（clamp 后 after−before，超出上限的部分不虚记）
+            changes = {a: round(pet[a] - before[a], 2) for a in ATTR_LABELS if abs(pet[a] - before[a]) > 1e-9}
+            # 2.2.1：记录使用属性丸造成的属性变化
+            self._pet_attr_log(pet, "使用道具", f"使用「{PILL_NAME}」×{qty}", changes)
             msg = f"{pet['name']} 使用「属性丸」×{qty} 成功！"
             pet["last_activity"] = {"msg": msg, "changes": changes,
                                     "reason": f"使用「属性丸」×{qty}",
@@ -2037,6 +2087,7 @@ class PetMixin:
             else:
                 return f"你没有足够的「{item_name}」：需要 {qty} 个，当前 {have} 个。发送「购买 {item_name} {qty}」购买。"
 
+        before = {a: pet[a] for a in ATTR_LABELS}  # 2.2.2：变动前快照（记录实际生效的变化量）
         changes = {}
         for _ in range(qty):
             for attr in ATTR_LABELS:
@@ -2048,12 +2099,17 @@ class PetMixin:
                 else:
                     continue
                 pet[attr] = round(pet[attr] + applied, 2)
-                changes[attr] = round(changes.get(attr, 0) + applied, 2)
 
         inv[item_name] = have - qty
         if inv[item_name] <= 0:
             inv.pop(item_name, None)
         self._clamp_attrs(pet)
+        # 2.2.2：实际生效的变化量（clamp 后 after−before，超出 0/上限的部分不虚记）
+        changes = {a: round(pet[a] - before[a], 2) for a in ATTR_LABELS if abs(pet[a] - before[a]) > 1e-9}
+        # 2.2.1：记录使用商店道具造成的属性变化
+        if changes:
+            self._pet_attr_log(pet, "使用道具", f"使用「{item_name}」×{qty}", changes,
+                               extra=(f"缺货自动购买 {auto_buy_note[0]} 个，花费 {auto_buy_note[1]} 金币" if auto_buy_note else ""))
         msg = f"{pet['name']} 使用「{item_name}」×{qty} 成功！"
         if auto_buy_note:
             msg += f"（缺货自动购买 {auto_buy_note[0]} 个，花费 {auto_buy_note[1]} 金币）"
@@ -2100,9 +2156,9 @@ class PetMixin:
         return data.get("pets", {}).get(key) is not None
 
     def _auto_purchase_due(self, data: dict, key: str) -> bool:
-        """自动购买触发判定（2.1.0）：饱食/口渴/心情 任一属性进入第 3/4 档时触发。
-        （第三/四档：饱食/口渴/心情 < 该属性二档下限，同宠物状态条标红判定；健康不在触发条件中，
-        仅在三属性补充后的收尾判定：健康 < 40（第一档）才补。）
+        """自动购买触发判定（2.2.1）：按 饱食→口渴→心情→健康 顺序检查，
+        任一属性进入第 3/4 档即触发（第三/四档：饱食/口渴/心情 < 该属性二档下限；
+        健康无档位定义，低于 AUTO_FEED_HEALTH_TIER_MIN（默认 40）视为 3/4 档，同状态条标红判定）。
         若上次触发时金币不足未能补满，则进入冷却（AUTO_PURCHASE_COOLDOWN_MIN 分钟）防止反复尝试。"""
         if not self._auto_feed_enabled_for(data, key):
             return False
@@ -2112,37 +2168,88 @@ class PetMixin:
         if pet.get("weak"):
             return False  # 虚弱期间不自动购买（与「购买/使用」锁定一致）
         if self._attr_is_red("饱食", pet["satiety"]) or self._attr_is_red("口渴", pet["thirst"]) \
-                or self._attr_is_red("心情", pet["mood"]):
+                or self._attr_is_red("心情", pet["mood"]) \
+                or float(pet.get("health", 0) or 0) < float(globals().get("AUTO_FEED_HEALTH_TIER_MIN", 40.0) or 40.0):
             u = data.get("users", {}).get(key) or {}
             cool = float(u.get("auto_purchase_cool", 0) or 0)
             return datetime.now().timestamp() >= cool
         return False
 
-    def _auto_purchase_pet(self, data: dict, key: str, pet: dict, cost_mult: float):
-        """自动购买例程（2.1.0 重做，按规格伪代码）：
-        - 补充顺序：饱食→口渴→心情；每属性仅当处于第 3/4 档时补（不在档位则跳到下一个）；
-        - 每属性：目标 = 满值 − 当前值；选择「效果最接近目标」的道具（饱食=食物类、口渴=饮料类、
-          心情=玩具类、健康=药物类），每次用 1 个（仓库已有道具优先免费，不足购买实时价×倍率），
-          判定是否补满，未满则回到步骤 2 重新计算目标继续选道具，直到补满；
-        - 三属性处理完后收尾：健康 < 40（第一档）→ 用药物类补健康（目标=满值）。
-        返回 (消耗明细 [(名称, 数量, 花费, 来源)], 总花费)——来源 ∈ 使用/购买，仓库消耗 花费=0。"""
-        shop = self._load_config()["shop"]
+    def _auto_target_for(self, attr: str, pet: dict) -> float:
+        """自动购买目标值（2.2.1，可在 WebUI「设置 → 宠物 → 自动购买」调整）：
+        目标 = max(属性上限 × 目标百分比, 该属性二档最低值)（取两者最大值）。
+        饱食/口渴/心情的二档最低值来自档位阈值（二档下限）；健康无档位定义，
+        「二档最低值」沿用健康低阈值 AUTO_FEED_HEALTH_TIER_MIN（默认 40）。"""
         sat_max, thr_max, sta_max, mood_max = self._attr_max(pet["health"])
+        tb = self._settle_tier_bounds()
+        if attr == "satiety":
+            return max(sat_max * float(globals().get("AUTO_FEED_TARGET_SATIETY_PCT", 0.8) or 0.8),
+                       float(tb["饱食"][1]))
+        if attr == "thirst":
+            return max(thr_max * float(globals().get("AUTO_FEED_TARGET_THIRST_PCT", 0.8) or 0.8),
+                       float(tb["口渴"][1]))
+        if attr == "mood":
+            return max(mood_max * float(globals().get("AUTO_FEED_TARGET_MOOD_PCT", 0.8) or 0.8),
+                       float(tb["心情"][1]))
+        if attr == "health":
+            return max(PET_MAX_HEALTH * float(globals().get("AUTO_FEED_TARGET_HEALTH_PCT", 0.3) or 0.3),
+                       float(globals().get("AUTO_FEED_HEALTH_TIER_MIN", 40.0) or 40.0))
+        return 0.0
+
+    def _auto_item_usable(self, it: dict, attr: str) -> bool:
+        """仓库道具可用性（2.2.1 仓库优先规则）：道具对目标属性的效果占其全部正面效果的比例
+        ≥ AUTO_FEED_ITEM_EFF_MIN（默认 90%）才视为可用；比例不足视为不可用状态，
+        自动购买不消耗该道具，转而使用仓库内其他可用道具；仓库无可用道具才在商店购买。
+        （商店购买逻辑保留原样，不受本可用性过滤限制。）"""
+        try:
+            eff = float((it.get("effects") or {}).get(attr, 0) or 0)
+        except (TypeError, ValueError):
+            return False
+        if eff <= 0:
+            return False
+        total = 0.0
+        for a in ("satiety", "thirst", "stamina", "mood", "health"):
+            try:
+                v = float((it.get("effects") or {}).get(a, 0) or 0)
+            except (TypeError, ValueError):
+                v = 0.0
+            if v > 0:
+                total += v
+        if total <= 0:
+            return False
+        return eff / total >= float(globals().get("AUTO_FEED_ITEM_EFF_MIN", 0.9) or 0.9)
+
+    def _auto_purchase_pet(self, data: dict, key: str, pet: dict, cost_mult: float):
+        """自动购买例程（2.2.1 重做）：
+        - 检查顺序：饱食 → 口渴 → 心情 → 健康；每属性仅当处于第 3/4 档时补（不在档位则跳到下一个）；
+        - 每属性目标 = max(属性上限 × 目标百分比, 二档最低值)（WebUI 可编辑）；
+          目标缺口 = 目标值 − 当前值，选择「效果最接近目标」的道具（饱食=食物类、口渴=饮料类、
+          心情=玩具类、健康=药物类），每次用 1 个，判定是否达到目标，未到则重新计算继续选道具；
+        - 仓库优先规则：优先消耗仓库中「可用」的道具（免费）；若仓库道具对该属性生效率
+          < AUTO_FEED_ITEM_EFF_MIN（90%）视为不可用，转用仓库其他可用道具；仓库无可用道具才购买
+          （购买保留原商店逻辑：实时价 × 倍率）；
+        - 资金不足应对：自动申请自动化专属贷款（_auto_loan_borrow）补足差额，贷款计入打工基准金币。
+        返回 (消耗明细 [(名称, 数量, 花费, 来源)], 总花费, 贷款总额)
+        ——来源 ∈ 使用/购买，仓库消耗 花费=0。"""
+        shop = self._load_config()["shop"]
         spends = []
         total_cost = 0
+        total_loan = 0
         inv = pet.setdefault("inventory", {})
         _TYPE_MAP = {"satiety": "食物", "thirst": "饮料", "mood": "玩具", "health": "药物"}
-        _HEALTH_TIER1 = 40.0  # 健康第一档下限（同状态条标红阈值）
 
         def _pick(attr, need):
-            """选择效果最接近目标的道具（限该属性对应类别、单件效果 > 0）；
+            """商店购买选品（保留原购买逻辑）：选择效果最接近目标的道具（限该属性对应类别、单件效果 > 0）；
             同效果取价格更低者。返回 (效果, 道具) 或 None"""
             typ = _TYPE_MAP.get(attr, "")
             best = None
             for it in shop:
                 if (str(it.get("type") or "").strip() != typ):
                     continue
-                eff = float((it.get("effects") or {}).get(attr, 0) or 0)
+                try:
+                    eff = float((it.get("effects") or {}).get(attr, 0) or 0)
+                except (TypeError, ValueError):
+                    continue
                 if eff <= 0:
                     continue
                 diff = abs(eff - need)
@@ -2151,49 +2258,76 @@ class PetMixin:
                     best = (key2, eff, it)
             return (best[1], best[2]) if best else (None, None)
 
-        def _fill(attr, amax):
-            """按伪代码步骤 2~4：循环选择最接近目标的道具补满该属性。"""
-            nonlocal total_cost
+        def _fill(attr, target):
+            """把属性补到目标值：仓库可用道具优先（免费）→ 商店购买（原逻辑）→ 资金不足自动贷款。"""
+            nonlocal total_cost, total_loan
             cur = float(pet.get(attr, 0) or 0)
             guard = 0
-            while cur < amax - 0.5 and guard < 30:  # 防御：最多 30 轮，防止无解死循环
-                need = amax - cur
+            while cur < target - 0.5 and guard < 30:  # 防御：最多 30 轮，防止无解死循环
+                need = target - cur
+                # 1) 仓库优先：效果最接近目标的「可用」道具（生效率 ≥ 90%，免费）
+                best_wh = None
+                for it in shop:
+                    if (str(it.get("type") or "").strip() != _TYPE_MAP.get(attr, "")):
+                        continue
+                    if not self._auto_item_usable(it, attr):
+                        continue
+                    have = int(inv.get(it["name"], 0) or 0)
+                    if have <= 0:
+                        continue
+                    try:
+                        eff = float((it.get("effects") or {}).get(attr, 0) or 0)
+                    except (TypeError, ValueError):
+                        continue
+                    if eff <= 0:
+                        continue
+                    diff = abs(eff - need)
+                    key2 = (diff, int(it.get("price", 0) or 0), it["name"])
+                    if best_wh is None or key2 < best_wh[0]:
+                        best_wh = (key2, eff, it)
+                if best_wh is not None:
+                    _eff, _it = best_wh[1], best_wh[2]
+                    have = int(inv.get(_it["name"], 0) or 0)
+                    inv[_it["name"]] = have - 1
+                    if inv[_it["name"]] <= 0:
+                        inv.pop(_it["name"], None)
+                    pet[attr] = round(min(target, cur + _eff), 2)
+                    cur = pet[attr]
+                    spends.append((_it["name"], 1, 0, "使用"))
+                    guard += 1
+                    continue
+                # 2) 仓库无可用道具 → 商店购买（保留原购买逻辑：实时价 × 倍率）
                 eff, it = _pick(attr, need)
                 if it is None:
                     break  # 没有可用道具 → 放弃该属性
-                # 仓库已有优先（免费）
-                have = int(inv.get(it["name"], 0) or 0)
-                if have > 0:
-                    inv[it["name"]] = have - 1
-                    if inv[it["name"]] <= 0:
-                        inv.pop(it["name"], None)
-                    pet[attr] = round(min(amax, cur + eff), 2)
-                    cur = pet[attr]
-                    spends.append((it["name"], 1, 0, "使用"))
-                    guard += 1
-                    continue
-                # 购买 1 个（实时价 × 倍率）
                 price = self._pet_shop_price(it)[1]
                 cost = int(round(price * cost_mult))
                 coins = self._coins_of(data, key)
                 if coins < cost:
-                    break  # 金币不足 → 放弃该属性（触发冷却等待）
+                    # 3) 资金不足 → 自动申请自动化专属贷款（本套餐），贷款计入打工基准金币
+                    got = self._auto_loan_borrow(data, key, cost - coins)
+                    if got <= 0:
+                        break  # 无法贷款（超限/逾期/禁用等）→ 放弃该属性（触发冷却等待）
+                    coins = self._coins_of(data, key)
+                    if coins < cost:
+                        break  # 贷款仍不足（受套餐上限/总额度限制）→ 放弃该属性
+                    total_loan += got
                 self._add_coins(data, key, -cost, f"自动购买·{it['name']}")
                 inv[it["name"]] = int(inv.get(it["name"], 0) or 0) + 1
                 total_cost += cost
                 spends.append((it["name"], 1, cost, "购买"))
-                pet[attr] = round(min(amax, cur + eff), 2)
+                pet[attr] = round(min(target, cur + eff), 2)
                 cur = pet[attr]
                 guard += 1
 
-        # 补充顺序：饱食 → 口渴 → 心情（每属性仅在 3/4 档时补）
-        for attr, amax, label in (("satiety", sat_max, "饱食"), ("thirst", thr_max, "口渴"), ("mood", mood_max, "心情")):
-            if not self._attr_is_red(label, pet[attr]):
+        # 检查顺序：饱食 → 口渴 → 心情 → 健康（每属性仅在 3/4 档时补）
+        for attr, label in (("satiety", "饱食"), ("thirst", "口渴"), ("mood", "心情"), ("health", "健康")):
+            if attr == "health":
+                if float(pet.get("health", 0) or 0) >= float(globals().get("AUTO_FEED_HEALTH_TIER_MIN", 40.0) or 40.0):
+                    continue
+            elif not self._attr_is_red(label, pet[attr]):
                 continue
-            _fill(attr, amax)
-        # 健康收尾（伪代码步骤 7）：健康 < 第一档（40）→ 用药物类补健康
-        if float(pet.get("health", 0) or 0) < _HEALTH_TIER1:
-            _fill("health", PET_MAX_HEALTH)
+            _fill(attr, self._auto_target_for(attr, pet))
         self._clamp_attrs(pet)
         # 聚合同道具同来源的明细（日志显示 ×N 数量标记）
         agg = {}
@@ -2204,7 +2338,7 @@ class PetMixin:
                 agg[k][2] += c
             else:
                 agg[k] = [nm, q, c, s]
-        return list(agg.values()), total_cost
+        return list(agg.values()), total_cost, total_loan
 
     def _auto_purchase_settle(self, data: dict, key: str, trigger: str = "档位触发"):
         """自动购买触发结算（2.0.4，调用方在锁内保存）：先把宠物结算到今日，再按档位触发自动补满；
@@ -2217,7 +2351,10 @@ class PetMixin:
         today = date.today().isoformat()
         self._bring_pet_up_to_date(pet, today)
         mult = float(globals().get("AUTO_FEED_PRICE_MULT", 1.2) or 1.2)
-        spends, total = self._auto_purchase_pet(data, key, pet, mult)
+        # 2.2.1：记录自动购买前后的属性（用于属性变化记录）
+        before = {a: pet[a] for a in ATTR_LABELS}
+        spends, total, total_loan = self._auto_purchase_pet(data, key, pet, mult)
+        after = {a: pet[a] for a in ATTR_LABELS}
         u = data.setdefault("users", {}).setdefault(key, {})
         if not spends:
             # 完全没买到/没用到（金币不足或无道具）→ 冷却后再触发
@@ -2230,14 +2367,20 @@ class PetMixin:
                  "ts": datetime.now().strftime("%Y-%m-%d %H:%M"),
                  "trigger": trigger,
                  "items": [{"name": n, "qty": q, "cost": c, "src": s} for n, q, c, s in spends],
-                 "total": total, "mult": round(mult, 2)}
+                 "total": total, "mult": round(mult, 2),
+                 "loan": int(total_loan or 0)}
         logs.append(entry)
         cap = int(globals().get("AUTO_FEED_LOG_MAX", 30) or 30)
         if len(logs) > cap:
             del logs[:len(logs) - cap]
+        # 2.2.1：记录本次自动购买造成的属性变化
+        changes = {a: round(after[a] - before[a], 2) for a in ATTR_LABELS if abs(after[a] - before[a]) > 1e-9}
+        self._pet_attr_log(pet, "自动购买", f"自动购买（{trigger}）", changes,
+                           extra=f"花费 {total} 金币" + (f"，自动化贷款 {total_loan} 金币" if total_loan else ""))
         u["auto_purchase_cool"] = 0
-        # 自动购买消耗的金币 → 打工基准金币；自动购买开启 → 自动开启自动打工
-        u["work_base"] = int(u.get("work_base", 0) or 0) + total
+        # 自动购买消耗的金币 → 打工基准金币；2.2.1：自动化贷款也计入基准（未花掉的贷款余额一并计入，
+        # 使宠物持续打工还贷）；自动购买开启 → 自动开启自动打工
+        u["work_base"] = int(u.get("work_base", 0) or 0) + max(int(total), int(total_loan or 0))
         u["auto_work_enabled"] = True
         self._ensure_auto_work_loop()
         # 仍处于第 3/4 档（只补了一部分/金币用完）→ 冷却后再尝试，避免每消息反复购买
@@ -2283,9 +2426,12 @@ class PetMixin:
         if on:
             mult = globals().get("AUTO_FEED_PRICE_MULT", 1.2)
             return (f"✅ {name} 已开启自动购买：判定时间 = 自动打工时 / 每日固定结算时 / 打开自动购买时；"
-                    f"当 饱食/口渴/心情 任一进入第 3/4 档时，按 饱食→口渴→心情 顺序补满"
-                    f"（每次选效果最接近缺口的道具，饱食=食物/口渴=饮料/心情=玩具；"
-                    f"仓库已有免费优先，购买为原价 {mult} 倍）；三属性补完后健康 < 40 才补健康；"
+                    f"当 饱食/口渴/心情/健康 任一进入第 3/4 档时，按 饱食→口渴→心情→健康 顺序补到目标值"
+                    f"（目标 = 属性上限 × 百分比 与 二档最低值取最大，可在 WebUI 调整；"
+                    f"仓库「生效率≥90%」的道具优先免费使用，仓库无可用道具才购买，购买为原价 {mult} 倍；"
+                    f"金币不足时自动申请自动化专属贷款（上限 {globals().get('AUTO_LOAN_MAX_AMOUNT', 2000)}/次、"
+                    f"欠款总额 {globals().get('AUTO_LOAN_MAX_DEBT', 2500)}、逾期 {globals().get('AUTO_LOAN_DAYS', 30)} 天、日息 {globals().get('AUTO_LOAN_RATE', 0.01)}%，"
+                    f"获得金币优先自动还贷，还清前宠物持续自动打工）；"
                     f"自动打工已同步开启（只给金币不给经验）。发送「结算日志」查看记录。{extra}")
         return f"⏹️ {name} 已关闭自动购买（自动打工同步关闭）。"
 
@@ -2313,7 +2459,8 @@ class PetMixin:
             msg = (f"✅ {name} 已开启自动打工：自动选择报酬最接近打工基准金币（当前 {base}）的打工项目；"
                    f"经验收益：{'开启（×' + str(globals().get('AUTO_WORK_EXP_MULT', 0.5)) + ' 倍）' if globals().get('AUTO_WORK_EXP_ENABLED', False) else '关闭（只给金币）'}；"
                    f"冷却结束 {globals().get('AUTO_WORK_DELAY_MIN', 10)} 分钟后自动安排下一次；"
-                   f"基准金币 ≤ {pause} 时暂停，下次自动购买超过 {pause} 后自动恢复。")
+                   f"基准金币 ≤ {pause} 时暂停（存在未还清的自动化贷款时不暂停，宠物继续打工还贷），"
+                   f"下次自动购买超过 {pause} 后自动恢复。")
         else:
             msg = f"⏹️ {name} 已关闭自动打工。"
         self._save(data)
@@ -2347,7 +2494,10 @@ class PetMixin:
         lines.append(f"· 自动购买：{'✅ 已开启' if (g_feed and feed_on) else ('总开关关闭' if not g_feed else '未开启')}")
         lines.append(f"· 自动打工：{'✅ 已开启' if (g_feed and g_work and feed_on and work_on) else ('未开启/未满足条件' if not (g_feed and feed_on) else '未开启')}"
                      f"{'（经验：开 ×' + str(globals().get('AUTO_WORK_EXP_MULT', 0.5)) + '）' if (g_work and globals().get('AUTO_WORK_EXP_ENABLED', False)) else '（经验：关）' if g_work else ''}")
-        lines.append(f"· 打工基准金币：{base}（{'≤' + str(pause) + '，自动打工暂停，下次自动购买超过后恢复' if base <= pause else '可自动打工'}）")
+        auto_owed = self._auto_loan_owed_of(data, key)
+        if auto_owed > 0:
+            lines.append(f"· 自动化贷款：欠 {auto_owed:.0f} 金币（获得金币自动优先还贷，还清前宠物持续自动打工）")
+        lines.append(f"· 打工基准金币：{base}（{'≤' + str(pause) + '，自动打工暂停，下次自动购买超过后恢复' if (base <= pause and auto_owed <= 0) else '可自动打工'}）")
         nxt = float(u.get("auto_work_next", 0) or 0)
         now = datetime.now().timestamp()
         if nxt and nxt > now:
@@ -2357,7 +2507,8 @@ class PetMixin:
         if fl:
             lg = fl[-1]
             items = "、".join(f"{'🛒' if it.get('src') == '购买' else '📦'}{it['name']}×{it['qty']}" for it in lg.get("items", []))
-            lines.append(f"· 最近购买：{lg.get('ts', lg.get('date', ''))} {items}（花 {lg.get('total', 0)} 金币）")
+            loan_txt = f"｜自动化贷款 {int(lg.get('loan', 0) or 0)}" if int(lg.get("loan", 0) or 0) > 0 else ""
+            lines.append(f"· 最近购买：{lg.get('ts', lg.get('date', ''))} {items}（花 {lg.get('total', 0)} 金币{loan_txt}）")
         if wl:
             lg = wl[-1]
             _exp_txt = f"，经验 +{lg.get('exp', 0)}" if float(lg.get("exp", 0) or 0) > 0 else ""
@@ -2386,18 +2537,25 @@ class PetMixin:
             "",
             "【自动购买】指令：自动购买 开 / 自动购买 关",
             "· 判定时间：自动打工时 / 每日固定结算时 / 打开自动购买时（不占用平时互动）；",
-            "· 触发条件：饱食/口渴/心情 任一进入第 3/4 档即触发（健康不参与触发，仅收尾判定）；",
-            "· 补充顺序：饱食→口渴→心情（每属性仅在 3/4 档时补，不在档位则跳下一个）；",
-            "· 每属性：目标 = 满值 − 当前值，选「效果最接近目标」的道具逐次补满"
-            "（饱食=食物类 / 口渴=饮料类 / 心情=玩具类；仓库已有道具优先免费，不足再购买实时价×可调倍率）；",
-            "· 三属性补完后收尾：健康 < 40（第一档）→ 用药物类补健康；",
+            "· 触发条件：饱食/口渴/心情/健康 任一进入第 3/4 档即触发（第三/四档：< 二档最低值；健康 < 40）；",
+            "· 检查顺序：饱食→口渴→心情→健康（每属性仅在 3/4 档时补，不在档位则跳下一个）；",
+            "· 每属性目标 = max(属性上限 × 目标百分比, 二档最低值)（WebUI「设置 → 宠物 → 自动购买」可调），"
+            "目标缺口 = 目标 − 当前值，选「效果最接近缺口」的道具逐次补到目标"
+            "（饱食=食物类 / 口渴=饮料类 / 心情=玩具类 / 健康=药物类）；",
+            "· 仓库优先规则：优先消耗仓库中「生效率 ≥ 90%」的可用道具（免费）；仓库道具生效率不足视为"
+            "不可用，转用其他可用道具；仓库无可用道具才在商店购买（保留原购买逻辑：实时价 × 可调倍率）；",
+            "· 资金不足应对：自动申请自动化专属贷款（单笔 ≤ %s、欠款总额 ≤ %s、逾期 %s 天、日息 %s%%），"
+            "贷款计入打工基准金币；获得金币时自动优先偿还本套餐欠款，还清前宠物持续自动打工；" % (
+                globals().get("AUTO_LOAN_MAX_AMOUNT", 2000), globals().get("AUTO_LOAN_MAX_DEBT", 2500),
+                globals().get("AUTO_LOAN_DAYS", 30), globals().get("AUTO_LOAN_RATE", 0.01)),
             "· 购买/使用记录带数量标记（🛒/📦 ×N），消耗的金币 → 打工基准金币（work_base）。",
             "",
             "【自动打工】指令：自动打工 开 / 自动打工 关",
             "· 开启自动购买的用户自动同步开启自动打工（未开自动购买不允许单独开启）；",
             "· 自动选择报酬最接近打工基准金币的打工项目；默认只给金币不给经验，管理员可在"
             "WebUI「设置 → 宠物 → 自动打工」开启经验收益（经验 = 打工项目经验 × 0.1~1 倍，默认 0.5 倍）；",
-            "· 报酬溢出计入基准（新基准 = |基准 − 报酬|）；基准金币 ≤ %s 自动暂停，下次自动购买超过后恢复；" % pause,
+            "· 报酬溢出计入基准（新基准 = |基准 − 报酬|）；基准金币 ≤ %s 自动暂停（存在未还清的自动化贷款时"
+            "不暂停，宠物继续打工还贷）；" % pause,
             "· 独立计时器：打工冷却结束 + %s 分钟后自动安排下一次，循环往复。" % delay,
             "",
             "【固定刷新时间】",
@@ -2472,6 +2630,9 @@ class PetMixin:
         changes = {a: round(pet[a] - before[a], 2) for a in ATTR_LABELS if abs(pet[a] - before[a]) > 1e-9}
         if exp_gain > 0 and "exp" not in changes:
             changes["exp"] = round(pet["exp"] - before_exp, 2)
+        # 2.2.1：记录本次自动打工造成的属性变化
+        self._pet_attr_log(pet, "自动打工", f"自动打工「{job['name']}」", changes,
+                           extra=f"金币+{int(job['coins'])}" + (f"，经验+{exp_gain:.1f}" if exp_gain > 0 else ""))
         pet["last_activity"] = {
             "msg": f"{pet['name']} 自动去「{job['name']}」打工成功！{lvl_msg}".strip(),
             "changes": changes,
@@ -2510,8 +2671,10 @@ class PetMixin:
                         if not self._auto_work_enabled_for(data, key):
                             continue
                         base = int(u.get("work_base", 0) or 0)
-                        if base <= pause:
-                            continue  # 打工基准金币 ≤ 100 → 暂停
+                        # 2.2.1：基准金币 ≤ 暂停线 且 无自动化贷款 → 暂停；
+                        # 存在自动化贷款未还清时，宠物继续自动打工赚取金币偿还贷款（获得金币自动优先还贷）
+                        if base <= pause and self._auto_loan_owed_of(data, key) <= 0:
+                            continue
                         nxt = float(u.get("auto_work_next", 0) or 0)
                         if nxt and now_ts < nxt:
                             continue
@@ -2560,54 +2723,138 @@ class PetMixin:
         except Exception as e:
             logger.warning(f"[插件] 启动自动打工计时器失败: {e}")
 
-    # ---- 固定结算循环（2.1.0：固定刷新时间） ----
+    # ---- 固定结算循环（2.1.0：固定刷新时间；2.2.0：全部结算收口到定时触发） ----
     async def _daily_settle_loop(self):
-        """固定结算循环（2.1.0）：每天 DAILY_SETTLE_HOUR（默认 0 点）固定开始结算插件数据，
-        每天 BANK_SETTLE_HOUR（默认 4 点）结算银行存款数据。每 DAILY_SETTLE_LOOP_INTERVAL 秒巡检一次，
-        到达对应整点后执行（当天首次巡检命中即结算，幂等标记防止同一天重复结算）。
-        - 0 点插件数据结算：全部宠物结算到今日 + 自动购买「每日结算」触发（饱食/口渴/心情 任一第 3/4 档即补满）；
-        - 4 点银行存款结算：解锁所有到期存单并发放利息（与懒结算一致，只处理 unlock_ts 已到期的存单）。"""
+        """固定结算循环：所有结算数据（宠物每日结算 / 自动购买每日触发 / 银行存款结算 /
+        贷款逾期处置与自动还款 / 红包过期清理 / 红包雨定时生成）均在指定时间自动触发，
+        前台（聊天指令与 WebUI）只读取结算结果，不再做任何懒结算。
+        - DAILY_SETTLE_HOUR（默认 0 点）：插件数据结算 —— 全部宠物结算到今日 + 自动购买「每日结算」触发
+          + 贷款逾期标记与每日好感度处置；
+        - BANK_SETTLE_HOUR（默认 4 点）：银行存款结算 —— 解锁到期存单并发放利息；
+        - LOAN_AUTO_TIME（默认 23:00）：贷款自动还款 —— 逾期用户卖仓库 + 自动签到还款；
+        - 每次巡检：清理过期红包（系统红包作废/玩家红包退回）+ 红包雨按开启时段定时生成。
+        幂等标记（settle_dates / last_settle_date / daily_process_date / daily_repay_date / rain_generated）
+        防止同一天重复结算；标记仅在对应分支全部成功后才写入，单个用户异常只记日志不阻断其他用户，
+        但会推迟当天标记，使异常用户在下一巡检自动重试。首次巡检立即执行（不再先休眠 60 秒）。"""
         while True:
             try:
-                interval = int(globals().get("DAILY_SETTLE_LOOP_INTERVAL", 60) or 60)
-                await asyncio.sleep(max(5, interval))
                 async with self._lock:
                     data = self._load()
                     now = datetime.now()
                     today = date.today().isoformat()
+                    now_ts = now.timestamp()
                     # 幂等标记：settle_dates 记录当天已执行的结算类型（防止同一天重复结算）
                     sd = data.setdefault("settle_dates", {})
                     changed = False
                     dh = int(globals().get("DAILY_SETTLE_HOUR", 0) or 0)
                     bh = int(globals().get("BANK_SETTLE_HOUR", 4) or 4)
                     # 1) 插件数据结算（默认 0 点）：全部宠物结算到今日 + 自动购买每日结算触发
+                    #    + 贷款逾期标记与每日好感度处置（2.2.0 由循环统一执行）
                     if now.hour >= dh and sd.get("plugin") != today:
-                        sd["plugin"] = today
+                        failed = False
                         for key, pet in list((data.get("pets") or {}).items()):
-                            if isinstance(pet, dict):
+                            if not isinstance(pet, dict):
+                                continue
+                            try:
                                 self._bring_pet_up_to_date(pet, today)
+                            except Exception as e:
+                                failed = True
+                                logger.error(f"[插件] 宠物每日结算异常 uid={key}: {e}")
                         # 自动购买「每日结算」触发：所有开启了自动购买且宠物处于 3/4 档的用户
                         for key, u in list((data.get("users") or {}).items()):
                             if not isinstance(u, dict):
                                 continue
-                            if self._auto_purchase_due(data, key):
-                                self._auto_purchase_settle(data, key, trigger="每日结算")
+                            try:
+                                if self._auto_purchase_due(data, key):
+                                    self._auto_purchase_settle(data, key, trigger="每日结算")
+                            except Exception as e:
+                                failed = True
+                                logger.error(f"[插件] 自动购买每日结算异常 uid={key}: {e}")
+                        # 贷款逾期标记 + 每日好感度扣减（只处理有贷款记录的用户）
+                        for key in list((data.get("loans") or {}).keys()):
+                            if not isinstance(data["loans"].get(key), dict):
+                                continue
+                            try:
+                                self._loan_sync(data, key)
+                                self._loan_daily_process(data, key)
+                            except Exception as e:
+                                failed = True
+                                logger.error(f"[插件] 贷款每日处置异常 uid={key}: {e}")
+                        if not failed:
+                            sd["plugin"] = today  # 全部成功才写入幂等标记
                         changed = True
                     # 2) 银行存款结算（默认 4 点）：解锁全部到期存单并发放利息
                     if now.hour >= bh and sd.get("bank") != today:
-                        sd["bank"] = today
+                        failed = False
                         for key in list((data.get("bank") or {}).keys()):
-                            settled, _ = self._bank_settle(data, key)
-                            if settled:
-                                changed = True
+                            try:
+                                settled, _ = self._bank_settle(data, key)
+                            except Exception as e:
+                                failed = True
+                                logger.error(f"[插件] 银行存款结算异常 uid={key}: {e}")
+                        if not failed:
+                            sd["bank"] = today  # 全部成功才写入幂等标记
                         changed = True
+                    # 3) 贷款自动还款（默认 23:00）：逾期用户卖仓库 + 自动签到还款
+                    la = globals().get("LOAN_AUTO_TIME", (23, 0))
+                    try:
+                        la_h, la_m = (int(la[0]), int(la[1])) if isinstance(la, (tuple, list)) and len(la) >= 2 else (23, 0)
+                    except (TypeError, ValueError):
+                        la_h, la_m = 23, 0
+                    if (now.hour, now.minute) >= (la_h, la_m) and sd.get("loan_repay") != today:
+                        failed = False
+                        for key in list((data.get("loans") or {}).keys()):
+                            rec = data["loans"].get(key)
+                            if not isinstance(rec, dict) or rec.get("daily_repay_date") == today:
+                                continue
+                            try:
+                                if self._loan_auto_repay_process(data, key, now):
+                                    changed = True
+                            except Exception as e:
+                                failed = True
+                                logger.error(f"[插件] 贷款自动还款异常 uid={key}: {e}")
+                        if not failed:
+                            sd["loan_repay"] = today  # 全部成功才写入幂等标记
+                        changed = True
+                    # 4) 红包：过期清理（系统红包作废 / 玩家红包退回发起人）
+                    before = len(data.get("redpackets") or [])
+                    refunded = self._redpacket_cleanup_expired(data, now_ts)
+                    if refunded > 0 or len(data.get("redpackets") or []) != before:
+                        changed = True
+                    # 5) 红包雨定时生成（活动启用且处于开启时段时自动生成）
+                    try:
+                        if self._redpacket_rain_tick(data, now_ts):
+                            changed = True
+                    except Exception as e:
+                        logger.warning(f"[插件] 红包雨定时生成异常: {e}")
                     if changed:
                         self._save(data)
             except asyncio.CancelledError:
                 break
             except Exception as e:
                 logger.error(f"[插件] 固定结算循环异常: {e}")
-                await asyncio.sleep(60)
+            try:
+                interval = int(globals().get("DAILY_SETTLE_LOOP_INTERVAL", 60) or 60)
+                await asyncio.sleep(max(5, interval))
+            except asyncio.CancelledError:
+                break
+
+    def _redpacket_rain_tick(self, data: dict, now_ts: float) -> bool:
+        """固定结算循环巡检：红包雨活动启用且处于开启时段时，按活动 tick 生成当轮红包。
+        返回是否生成了红包雨（需要保存）。"""
+        enabled = data.get("activities", {})
+        for act in (self._activities or []):
+            if act.id != "redpacket_rain":
+                continue
+            if not enabled.get(act.id, False):
+                return False
+            if not act.is_active_now():
+                return False
+            fn = getattr(act, "tick", None)
+            if fn is None:
+                return False
+            return bool(fn(data, now_ts))
+        return False
 
     def _ensure_daily_settle_loop(self):
         """懒启动固定结算循环（幂等）：只在有运行中的事件循环时创建。"""
@@ -2641,7 +2888,8 @@ class PetMixin:
                 items = "、".join(
                     f"{'🛒' if it.get('src') == '购买' else '📦'}{it['name']}×{it['qty']}" + (f"（{it['cost']}金）" if it.get('cost') else "")
                     for it in lg.get("items", []))
-                lines.append(f"购买 {lg.get('date', '')}（{trig}）：{items}，共花费 {lg['total']} 金币")
+                loan_txt = f"｜自动化贷款 {int(lg.get('loan', 0) or 0)}" if int(lg.get("loan", 0) or 0) > 0 else ""
+                lines.append(f"购买 {lg.get('date', '')}（{trig}）：{items}，共花费 {lg['total']} 金币{loan_txt}")
             else:
                 lines.append(f"购买 {lg.get('date', '')}（{trig}）：宠物状态良好，无需购买")
         for lg in reversed(wlogs[-5:]):

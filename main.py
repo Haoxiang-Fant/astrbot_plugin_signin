@@ -46,7 +46,7 @@ class _NameOverrideEvent:
         return self._override_name
 
 
-@register("astrbot_plugin_signin", "sishijiu", "群签到 + 左轮手枪 + 宠物养成 + 金币银行 + 农场", "2.1.1")
+@register("astrbot_plugin_signin", "sishijiu", "群签到 + 左轮手枪 + 宠物养成 + 金币银行 + 农场", "2.2.2")
 class SignInPlugin(Star, FarmMixin, PetMixin, BankMixin, RedpacketMixin, ActivityMixin, LoanMixin, RouletteMixin, RankMixin, LanMixin, WebUIMixin, CoreMixin):
     def __init__(self, context: Context, config: dict = None):
         super().__init__(context)
@@ -131,6 +131,14 @@ class SignInPlugin(Star, FarmMixin, PetMixin, BankMixin, RedpacketMixin, Activit
         # 应用 WebUI 保存过的活动参数覆盖（时间/要求/自定义参数）
         self._load_activity_configs()
 
+        # 2.2.2：数据系统升级（每次启动检查数据结构是否符合新标准：记录数据与用户数据分文件存储；
+        # 不符合则调用独立的数据系统升级模块把旧数据升级到新标准，幂等）
+        try:
+            from .modules.data_migrate import check_and_migrate_data
+            check_and_migrate_data()
+        except Exception as e:
+            logger.error(f"[插件] 数据系统升级失败: {e}")
+
         # 一次性迁移旧数据：按群（gid:uid）→ 跨群（uid）
         self._migrate_legacy_data()
 
@@ -176,9 +184,13 @@ class SignInPlugin(Star, FarmMixin, PetMixin, BankMixin, RedpacketMixin, Activit
             # 2.0.4：WebUI 运行记录页
             ("records/pets", "GET", self.web_get_record_pets, "运行记录：全部宠物卡片（状态/活动/自动信息）"),
             ("records/pets/auto", "POST", self.web_toggle_record_auto, "运行记录：切换用户自动购买/自动打工开关"),
+            # 2.2.1：宠物详情按需拉取（点击宠物记录卡片进入详情页，含每种行为的属性变化记录）
+            ("records/pets/detail", "POST", self.web_get_record_pet_detail, "运行记录：单只宠物完整信息（属性变化记录，按需）"),
             ("records/prices", "GET", self.web_get_record_prices, "运行记录：商店价格变动"),
             # 2.1.0：WebUI 运行记录页 · 用户信息
-            ("records/users", "GET", self.web_get_record_users, "运行记录：全部用户信息卡片"),
+            ("records/users", "GET", self.web_get_record_users, "运行记录：全部用户信息卡片（基础信息）"),
+            # 2.2.0：用户详情按需拉取（页面展开卡片时才请求，避免全量下发）
+            ("records/users/detail", "POST", self.web_get_record_user_detail, "运行记录：单个用户完整信息（按需）"),
         ]
         for path, method, handler, desc in _web_apis:
             if not path.startswith("lan/"):
@@ -197,7 +209,8 @@ class SignInPlugin(Star, FarmMixin, PetMixin, BankMixin, RedpacketMixin, Activit
             return
         head = text.split(maxsplit=1)[0]
         async with self._lock:
-            # 贷款逾期懒处理（标记逾期 + 每日好感度降低 / 23 点自动卖仓库签到还款）
+            # 2.2.0：所有结算（宠物每日结算/银行存款结算/贷款逾期处置）由固定结算循环
+            # （_daily_settle_loop）在指定时间统一执行，此处不再做任何懒结算，仅记录活跃与群成员。
             data = self._load()
             key = event.get_sender_id()
             # 2.0.3：自定义昵称（90 天有效期）优先级高于获取的昵称 → 包装事件替换发送者昵称
@@ -216,24 +229,11 @@ class SignInPlugin(Star, FarmMixin, PetMixin, BankMixin, RedpacketMixin, Activit
                 if _ts - float(_active_u.get("last_active", 0) or 0) > 300:
                     _active_u["last_active"] = _ts
                     dirty = True
-            if data.get("loans", {}).get(key):
-                sync_c = self._loan_sync(data, key)
-                daily_c = self._loan_daily_process(data, key)
-                if sync_c or daily_c:
-                    dirty = True
             # 本群成员注册：响应前标记（含本群昵称），确保首次查询排行榜时已能作为本群成员显示真名
             gid = event.get_group_id()
             if gid:
                 self._mark_group_member(data, gid, str(key), event.get_sender_name())
                 dirty = True
-            # 2.1.0：自动购买触发判定时间 = 每日结算时（当天首次互动懒结算完成后判定，兜底固定结算循环）
-            # 触发条件：饱食/口渴/心情 任一进入第 3/4 档时立即触发；健康仅在心情之后收尾判定
-            _pet_today = data.get("pets", {}).get(key)
-            if isinstance(_pet_today, dict) and _pet_today.get("last_settle_date") != date.today().isoformat():
-                self._bring_pet_up_to_date(_pet_today, date.today().isoformat())
-                if self._auto_purchase_due(data, key):
-                    self._auto_purchase_settle(data, key, trigger="每日结算")
-                    dirty = True
             # 2.0.4：自动打工独立计时器懒启动（仅在真正开启自动购买的用户存在时运行）
             self._ensure_auto_work_loop()
             # 2.1.0：固定结算循环懒启动（每天固定时间结算插件数据与银行存款数据）
@@ -457,7 +457,14 @@ class SignInPlugin(Star, FarmMixin, PetMixin, BankMixin, RedpacketMixin, Activit
         ("收割", "收获"): "_handle_farm_harvest",
     }
 
+    # 2.2.1：仅限管理员的数据管理类指令（鉴权——避免普通用户使用本应无权使用的功能）
+    _ADMIN_ONLY_HEADS = frozenset(("查看后台配置", "保存后台配置", "导出数据", "导入数据", "管理网址"))
+
     def _route(self, head: str, event: AstrMessageEvent):
+        # 2.2.1：鉴权拦截——数据管理类指令仅管理员可用（WebUI「设置 → 通用 → 管理员 UID」配置，
+        # 或回退 OneBot 群主/管理员角色、AstrBot 主人配置）
+        if head in self._ADMIN_ONLY_HEADS and not self._is_admin(event):
+            return "🔒 该指令仅限管理员使用（可在 WebUI「设置 → 通用 → 管理员 UID」配置管理员）。"
         # 功能开关拦截：对应模块关闭时返回提示（帮助类指令不受影响）
         mod = self.FEATURE_CMD_MAP.get(head)
         if mod is not None:
@@ -502,7 +509,7 @@ class SignInPlugin(Star, FarmMixin, PetMixin, BankMixin, RedpacketMixin, Activit
         return self._activity_command(head, event)
 
     # ================= 数据存取 =================
-    def _render_signin_snapshot(self, name: str, key: str, data: dict, extra_lines=None, bank_paid=0, signed_today=False):
+    def _render_signin_snapshot(self, name: str, key: str, data: dict, extra_lines=None, signed_today=False):
         """2.1.1 签到实时数据快照：信息流瀑布平铺（参考图片2.png 布局）——
         标题为按时段问候语（早上好/上午好/中午好/下午好/晚上好！/夜深了）+ 用户名；
         签到信息 | 好感度信息（同一行左右并排）、银行与征信 | 排行榜信息（同一行左右并排）、
@@ -577,7 +584,9 @@ class SignInPlugin(Star, FarmMixin, PetMixin, BankMixin, RedpacketMixin, Activit
             rows = []
             matured_sum = sum(self._dep_amount(d) for d in deposits if d.get("status") == "matured")
             locked_sum = sum(self._dep_amount(d) for d in deposits if d.get("status") == "locked")
-            rows.append((f"存款到期总额：{matured_sum}｜本次收益：+{bank_paid}", GOLD))
+            # 2.2.0：银行存款改为固定时间（BANK_SETTLE_HOUR）自动结算，快照只显示结算结果
+            ti = float(bank.get("total_interest", 0) or 0) if isinstance(bank, dict) else 0.0
+            rows.append((f"存款到期总额：{matured_sum}｜累计利息收益：+{ti:.0f}", GOLD))
             if locked_sum > 0:
                 nxt = min((float(d.get("unlock_ts", 0) or 0) for d in deposits
                            if d.get("status") == "locked"), default=0)
@@ -714,18 +723,15 @@ class SignInPlugin(Star, FarmMixin, PetMixin, BankMixin, RedpacketMixin, Activit
             reply = (f"{name}，你今天已经签到过啦～\n"
                      f"💰 当前金币：{user.get('coins', 0)}\n"
                      f"💗 当前好感度：{float(user.get('favorability', 0.0)):.2f}（Lv.{self._level_of(float(user.get('favorability', 0.0)))}）")
-            # 今天已签过：仍结算到期的存单
-            settled, bank_paid = self._bank_settle(data, key)
-            if settled > 0:
-                self._save(data)
-                reply += f"\n🏦 {settled} 笔存单已解锁，利息 +{bank_paid} 已自动入账，本金可发送「取款」取出。"
-            # 2.1.1：签到响应改为用户实时数据快照（瀑布平铺）
-            img = self._render_signin_snapshot(name, key, data, bank_paid=bank_paid, signed_today=True)
+            # 2.2.0：银行存单已在固定时间自动结算，此处仅展示结算结果
+            img = self._render_signin_snapshot(name, key, data, signed_today=True)
             return img if img is not None else reply
 
         if user is None:
             user = self._ensure_user(data, key)
 
+        # 2.2.2：「获得金币」改为最近一次签到获得的金币总额，每次签到先清零（双倍签到各次再累加）
+        user["signin_coins_total"] = 0
         lines = [f"✅ {name} 签到成功！"]
         lines += self._apply_signin_once(data, key, today)
         user["last_date"] = today
@@ -739,17 +745,12 @@ class SignInPlugin(Star, FarmMixin, PetMixin, BankMixin, RedpacketMixin, Activit
                 lines.append("")
                 lines.extend(settle_lines)
 
-        # ---- 银行：解锁到期的存单并发放利息 ----
-        settled, bank_paid = self._bank_settle(data, key)
-        if settled > 0:
-            lines.append(f"🏦 {settled} 笔存单已解锁，利息 +{bank_paid} 已自动入账，本金可发送「取款」取出。")
-
         # ---- 活动钩子：已启用且时间有效的活动可在签到后追加内容（如双倍签到） ----
         self._sign_in_activity_hooks(event, data, key, lines)
 
         self._save(data)
         # 2.1.1：签到响应改为用户实时数据快照（瀑布平铺）
-        img = self._render_signin_snapshot(name, key, data, extra_lines=lines, bank_paid=bank_paid)
+        img = self._render_signin_snapshot(name, key, data, extra_lines=lines)
         return img if img is not None else "\n".join(lines)
 
     def _signin_reward_chances(self):
@@ -801,8 +802,7 @@ class SignInPlugin(Star, FarmMixin, PetMixin, BankMixin, RedpacketMixin, Activit
 
         pet = data.get("pets", {}).get(key)
         if pet:
-            self._bring_pet_up_to_date(pet, today)
-
+            # 2.2.0：宠物每日结算由固定结算循环统一执行，签到不再懒结算
             exp_got = round(random.uniform(self.pet_signin_exp_min, self.pet_signin_exp_max), 2)
             pet["exp"] = round(float(pet.get("exp", 0.0)) + exp_got, 2)
             lvl_msg = self._apply_exp(pet)
@@ -837,8 +837,7 @@ class SignInPlugin(Star, FarmMixin, PetMixin, BankMixin, RedpacketMixin, Activit
                 self._add_coins(data, key, gain, "签到奖励转金币")
                 lines.append(f"🔄 抽到农场经验球 ×{cnt}（未开通农场，自动转为 {gain} 金币）")
 
-        # 2.1.1：累计签到统计（供「我的签到」实时数据快照展示）
-        # 注：signin_total 只在主签到路径累加（_handle_sign_in），避免双倍签到活动复用本函数导致次数翻倍
+        # 2.2.2：最近一次签到获得金币（_handle_sign_in 已清零；双倍签到多次运行累加 = 本次签到总额）
         user["signin_coins_total"] = int(user.get("signin_coins_total", 0) or 0) + coins_got
         user["signin_fav_total"] = round(float(user.get("signin_fav_total", 0) or 0) + fav_got, 2)
         if pet:
@@ -896,8 +895,8 @@ class SignInPlugin(Star, FarmMixin, PetMixin, BankMixin, RedpacketMixin, Activit
                 ("使用 <道具名> [数量]", "使用道具（不填数量 = 1 个，结果合入宠物总览图）"),
                 ("背包", "查看背包"),
                 ("治疗宠物", "治疗虚弱宠物（花 500 金币，所有数值恢复 40；仅虚弱状态可用）"),
-                ("自动购买 开/关", "开启/关闭自动购买（开启时立即判定一次；自动打工时/每日固定结算时判定；饱食/口渴/心情 任一进入第 3/4 档按 饱食→口渴→心情 补满；开启后自动同步开启自动打工）"),
-                ("自动打工 开/关", "自动打工开关（自动选择报酬最接近打工基准金币的项目，只给金币不给经验；基准 ≤ 100 自动暂停）"),
+                ("自动购买 开/关", "开启/关闭自动购买（开启时立即判定一次；自动打工时/每日固定结算时判定；饱食/口渴/心情/健康 任一进入第 3/4 档按 饱食→口渴→心情→健康 补到目标值；金币不足自动申请自动化贷款；开启后自动同步开启自动打工）"),
+                ("自动打工 开/关", "自动打工开关（自动选择报酬最接近打工基准金币的项目，只给金币不给经验；基准 ≤ 100 自动暂停，有自动化贷款未还清时持续打工）"),
                 ("自动化", "查看自动购买/自动打工状态与指令调用方法"),
                 ("自动化帮助", "自动购买 + 自动打工 玩法说明（含固定刷新时间）"),
                 ("结算日志", "查看自动购买/自动打工记录（购买/使用带数量标记与触发来源）"),
@@ -922,17 +921,18 @@ class SignInPlugin(Star, FarmMixin, PetMixin, BankMixin, RedpacketMixin, Activit
             ("农场", [
                 ("解锁农场", "花 1500 金币解锁农场（赠 2 块地）"),
                 ("购买土地", "花 800 金币开垦新土地（最多 24 块）"),
-                ("土地升级 <编号>", "升级土地等级"),
+                ("土地升级 <编号>", "升级土地等级（编号规则：单块 1 / 连续 (1,8) / 不连续 1,3,5，括号逗号不分全半角）"),
                 ("农场商店 [展开] [页]", "查看种子+化肥（展开=全部种子翻页）"),
                 ("购买 <种子名>种子 [数量]", "购买种子（必须带「种子」后缀，也可用「购买种子」）；「购买 <化肥名> <小时数>」按小时购买化肥（最小 1 小时）"),
-                ("种植 <作物> [起] [止/数量]", "种植（不填=种子够则种满空闲地，不够则全部种完）"),
+                ("种植 <作物> [数量]", "种植（不填=种子够则种满空闲地，不够则全部种完；裸数字=数量；指定土地用 (1,8) 区间或 1,3,5 列表）"),
                 ("种地 / 种植（不填作物）", "快捷种地：先收割成熟 → 仓库随机种子自动种 → 缺则自动购买 → 种满"),
                 ("施肥 <肥料> <土地编号> <分钟>", "施肥（2.0.0 起按分钟使用；缺肥料名→先用「化肥」再「有机化肥」；缺土地→全部可用地；缺时间→用到下一成长阶段所需时间；土地编号支持 1，6 / （20） / （1，7） / 裸数字≤最大地块数）"),
                 ("施肥（不填肥料）", "快捷施肥：所有种植中作物使用化肥推进到下一成长阶段（不可用则有机化肥，缺失自动购买）"),
-                ("收割 [编号] / 收获", "收割成熟作物并自动售出（不填=全部）"),
-                ("取消种植 <编号>", "取消种植"),
+                ("收割 [编号] / 收获", "仅收割成熟作物入库（不再自动售出；不填=全部；编号规则同上）"),
+                ("取消种植 <编号>", "取消种植（编号规则同上）"),
                 ("土地状态 / 农场仓库", "查看土地与仓库（农场指令回复均为纯图片：黄=种植 红=收割 蓝=开垦/施肥/升级）"),
-                ("售卖 / 售卖种子", "出售作物 / 种子"),
+                ("售卖 [作物] [数量]", "优先售卖仓库内作物；仓库无作物时自动先收割后售卖（不填=卖出全部）"),
+                ("售卖种子 [种子] [数量]", "出售种子（不填=卖出全部）"),
             ]),
         ]
         return self._build_help("农场帮助", sections)
@@ -963,8 +963,8 @@ class SignInPlugin(Star, FarmMixin, PetMixin, BankMixin, RedpacketMixin, Activit
                 ("购买 / 使用 <道具名> [数量]", "购买 / 使用道具（不填数量 = 1 个）"),
                 ("背包", "查看背包"),
                 ("治疗宠物", "治疗虚弱宠物（花 500 金币，所有数值恢复 40；仅虚弱状态可用）"),
-                ("自动购买 开/关", "开启/关闭自动购买（开启时立即判定一次；自动打工时/每日固定结算时判定；饱食/口渴/心情 任一进入第 3/4 档按 饱食→口渴→心情 补满；开启后自动同步开启自动打工）"),
-                ("自动打工 开/关", "自动打工开关（自动选择报酬最接近打工基准金币的项目，只给金币不给经验；基准 ≤ 100 自动暂停）"),
+                ("自动购买 开/关", "开启/关闭自动购买（开启时立即判定一次；自动打工时/每日固定结算时判定；饱食/口渴/心情/健康 任一进入第 3/4 档按 饱食→口渴→心情→健康 补到目标值；金币不足自动申请自动化贷款；开启后自动同步开启自动打工）"),
+                ("自动打工 开/关", "自动打工开关（自动选择报酬最接近打工基准金币的项目，只给金币不给经验；基准 ≤ 100 自动暂停，有自动化贷款未还清时持续打工）"),
                 ("自动化 / 自动化帮助", "查看自动化状态与玩法 / 自动购买+自动打工说明（含固定刷新时间）"),
                 ("结算日志", "查看自动购买/自动打工记录（购买/使用带数量标记与触发来源）"),
             ]),
@@ -978,19 +978,19 @@ class SignInPlugin(Star, FarmMixin, PetMixin, BankMixin, RedpacketMixin, Activit
             ]),
             ("农场", [
                 ("解锁农场 / 购买土地", "解锁农场 / 开垦土地"),
-                ("土地升级 <编号>", "升级土地等级"),
+                ("土地升级 <编号>", "升级土地等级（单块 1 / 区间 (1,8) / 列表 1,3,5）"),
                 ("农场商店 [展开] [页]", "查看种子+化肥（展开=全部种子翻页）"),
                 ("购买 <种子名>种子 [数量]", "购买种子（必须带「种子」后缀）；「购买 <化肥名> [数量]」购买化肥"),
-                ("种地 / 种植 / 施肥 / 收割 / 收获", "快捷种地（自动播种）/ 快捷施肥（自动购买）/ 收割并自动售出"),
+                ("种地 / 种植 / 施肥 / 收割 / 收获", "快捷种地（自动播种）/ 快捷施肥（自动购买）/ 收割仅入库（售卖用「售卖」指令）"),
                 ("土地状态 / 我的农场", "查看土地与仓库（农场属性）"),
-                ("售卖 / 售卖种子", "出售作物 / 种子"),
+                ("售卖 [作物] [数量] / 售卖种子", "优先卖仓库；仓库无作物时自动先收割后售卖 / 出售种子"),
                 ("偷菜 <@对方>", "偷走对方成熟作物（10%~20%）"),
                 ("自动偷菜", "每天 5 次：随机偷 4 位用户的成熟作物（无收益不扣次数，被宠物抓到当天锁定）"),
                 ("看家 开 / 看家 关", "开启/关闭宠物看家防护"),
             ]),
-            ("数据管理", [
-                ("查看后台配置 / 保存后台配置", "管理后台配置"),
-                ("导出数据 / 导入数据", "数据导入导出"),
+            ("数据管理（仅管理员可用）", [
+                ("查看后台配置 / 保存后台配置", "管理后台配置（管理员专属）"),
+                ("导出数据 / 导入数据", "数据导入导出（管理员专属）"),
             ]),
         ]
         return self._build_help("游戏帮助（全部指令）", sections)
@@ -1023,10 +1023,16 @@ class SignInPlugin(Star, FarmMixin, PetMixin, BankMixin, RedpacketMixin, Activit
         return f"✅ {msg}（打工 {len(flat['jobs'])} / 玩耍 {len(flat['plays'])} 条）" if ok else f"❌ {msg}"
 
     def _handle_export_data(self) -> str:
-        """导出全部数据（存档 + 自定义配置）到 plugin_data 备份文件，小数据直接返回内容"""
+        """导出全部数据（存档 + 自定义配置）到 plugin_data 备份文件，小数据直接返回内容。
+        2.2.0：导出内容经过脱敏（局域网密码哈希/会话密钥/调试口令等不随备份下发）。"""
         ts = datetime.now().strftime("%Y%m%d_%H%M%S")
         bak = os.path.join(os.path.dirname(DATA_FILE), f"signin_export_{ts}.json")
-        files = {fn: self._read_file(path) for fn, path in self._exportable_files()}
+        files = {}
+        for fn, path in self._exportable_files():
+            text = self._read_file(path)
+            if fn == "data.json":
+                text = self._redact_export_text(text)
+            files[fn] = text
         try:
             with open(bak, "w", encoding="utf-8") as f:
                 json.dump({"files": files}, f, ensure_ascii=False, indent=2)
@@ -1034,7 +1040,7 @@ class SignInPlugin(Star, FarmMixin, PetMixin, BankMixin, RedpacketMixin, Activit
             return f"❌ 导出失败: {e}"
         s = json.dumps({"files": files}, ensure_ascii=False)
         if len(s) <= 3500:
-            return f"✅ 数据已导出到：{bak}\n内容：\n{s}"
+            return f"✅ 数据已导出到：{bak}\n内容（已脱敏）：\n{s}"
         return f"✅ 数据已导出到：{bak}\n数据较大（{len(s)} 字符），请直接到上述路径取文件。"
 
     def _handle_import_data(self, event: AstrMessageEvent) -> str:
@@ -1061,7 +1067,17 @@ class SignInPlugin(Star, FarmMixin, PetMixin, BankMixin, RedpacketMixin, Activit
             if not ok:
                 return f"❌ {result}"
             return f"✅ 导入成功（{len(result)} 个文件已还原）！"
+        # 2.2.0：旧格式（仅 data.json 内容）导入时保留当前敏感值（密码哈希/会话密钥/调试口令）
+        sensitive = self._snapshot_sensitive()
         ok, msg = self._write_data_text(raw)
+        if ok:
+            self._restore_sensitive(sensitive)
+            # 2.2.2：导入旧格式备份（记录字段内嵌）后立即按新标准拆分
+            try:
+                from .modules.data_migrate import check_and_migrate_data
+                check_and_migrate_data()
+            except Exception as e:
+                logger.warning(f"[插件] 导入后数据标准升级失败: {e}")
         return "✅ 导入成功！" if ok else f"❌ {msg}"
 
     # ================= 金币银行 =================

@@ -327,6 +327,33 @@ AUTO_WORK_LOG_MAX = 30
 AUTO_WORK_EXP_ENABLED = False
 AUTO_WORK_EXP_MULT = 0.5
 
+# 2.2.1：自动购买目标设定（WebUI「设置 → 宠物 → 自动购买」可编辑）——
+# 每属性目标 = max(属性上限 × 目标百分比, 该属性二档最低值)；健康无档位定义，
+# 「二档最低值」沿用健康低阈值 AUTO_FEED_HEALTH_TIER_MIN（默认 40，同状态条标红阈值）。
+AUTO_FEED_TARGET_SATIETY_PCT = 0.8
+AUTO_FEED_TARGET_THIRST_PCT = 0.8
+AUTO_FEED_TARGET_MOOD_PCT = 0.8
+AUTO_FEED_TARGET_HEALTH_PCT = 0.3
+AUTO_FEED_HEALTH_TIER_MIN = 40.0
+# 2.2.1：仓库道具可用性 —— 道具对目标属性的效果占其全部正面效果的比例低于该值（默认 90%）
+# 视为「不可用」，自动购买不消耗该仓库道具，转而使用其他可用道具；仓库无可用道具才在商店购买。
+AUTO_FEED_ITEM_EFF_MIN = 0.9
+
+# 2.2.1：自动化专属贷款套餐（只能由宠物自动化功能产生；用户无法通过任何指令直接借出本套餐）。
+# 单笔上限 AUTO_LOAN_MAX_AMOUNT（2000），单用户未还清总欠款上限 AUTO_LOAN_MAX_DEBT（2500）；
+# 逾期 AUTO_LOAN_DAYS（30 天）后，日息 AUTO_LOAN_RATE（0.01%）；可多次贷款。
+# 贷款发放后计入打工基准金币（work_base）；每次获得金币优先自动偿还本套餐欠款；
+# 贷款未还清时宠物持续自动打工还款（不受打工基准暂停线影响）。
+AUTO_LOAN_CODE = 99
+AUTO_LOAN_MAX_AMOUNT = 2000
+AUTO_LOAN_MAX_DEBT = 2500
+AUTO_LOAN_DAYS = 30
+AUTO_LOAN_RATE = 0.01
+
+# 2.2.1：管理员 UID 列表（逗号分隔）。用于数据管理类指令（查看/保存后台配置、导入/导出数据、管理网址）的鉴权；
+# 留空时回退到 OneBot 群角色（owner/admin）与 AstrBot 主人配置判定。
+ADMIN_UIDS = ""
+
 # 2.1.0：固定刷新时间 —— 每天 DAILY_SETTLE_HOUR（默认 0 点）固定开始结算插件数据
 # （全部宠物每日结算 + 自动购买每日结算触发），每天 BANK_SETTLE_HOUR（默认 4 点）结算银行存款数据
 # （解锁到期存单并发放利息）。由固定结算循环（_daily_settle_loop）执行，可在 WebUI「设置 → 固定结算」调整。
@@ -502,8 +529,11 @@ RECALL_AFTER = 15
 # 全局撤回总开关：False 时所有消息都不撤回（WebUI 运行参数「撤回设置→通用」可改，默认开启）
 RECALL_ENABLED = True
 
-# 调试模式口令（管理员在对话框输入后解锁 WebUI 调试按钮）
-DEBUG_PASSWORD = "88224646"
+# 调试模式口令（管理员在对话框输入后解锁 WebUI 调试按钮）。
+# 2.2.1（key 无害化）：优先从环境变量 SIGNIN_DEBUG_PASSWORD 读取（推荐），
+# 其次取 WebUI「运行参数 → 调试 → 口令」保存值（保存后运行时同步覆盖），
+# 最后回退到内置默认值（仅为兼容旧版本；默认口令属公开明文，生产环境请务必改用环境变量或 WebUI 修改）。
+DEBUG_PASSWORD = os.environ.get("SIGNIN_DEBUG_PASSWORD") or "88224646"
 
 # 金币账单最多展示条数
 LEDGER_SHOW = 30
@@ -686,6 +716,33 @@ RUNTIME_PARAMS = [
      "desc": "自动打工是否产生经验收益（默认关闭 = 只给金币不给经验）；开启后经验 = 打工项目经验 × 可调倍率", "default": False},
     {"key": "AUTO_WORK_EXP_MULT", "label": "自动打工·经验收益倍率", "type": "float", "group": "宠物", "subgroup": "自动打工",
      "desc": "自动打工经验 = 该打工项目经验 × 此倍率（0.1~1 倍，默认 0.5 = 手动打工经验的一半；仅在开启经验收益时生效）", "default": 0.5, "min": 0.1, "max": 1.0},
+    # ---- 宠物（补充）2.2.1：自动购买目标设定 + 自动化贷款 ----
+    {"key": "AUTO_FEED_TARGET_SATIETY_PCT", "label": "自动购买·饱食目标百分比", "type": "float", "group": "宠物", "subgroup": "自动购买",
+     "desc": "饱食补到目标 = max(当前健康档饱食上限 × 该百分比, 饱食二档最低值)（0.8 = 上限的 80%）", "default": 0.8, "min": 0.1, "max": 1.0},
+    {"key": "AUTO_FEED_TARGET_THIRST_PCT", "label": "自动购买·口渴目标百分比", "type": "float", "group": "宠物", "subgroup": "自动购买",
+     "desc": "口渴补到目标 = max(当前健康档口渴上限 × 该百分比, 口渴二档最低值)（0.8 = 上限的 80%）", "default": 0.8, "min": 0.1, "max": 1.0},
+    {"key": "AUTO_FEED_TARGET_MOOD_PCT", "label": "自动购买·心情目标百分比", "type": "float", "group": "宠物", "subgroup": "自动购买",
+     "desc": "心情补到目标 = max(当前健康档心情上限 × 该百分比, 心情二档最低值)（0.8 = 上限的 80%）", "default": 0.8, "min": 0.1, "max": 1.0},
+    {"key": "AUTO_FEED_TARGET_HEALTH_PCT", "label": "自动购买·健康目标百分比", "type": "float", "group": "宠物", "subgroup": "自动购买",
+     "desc": "健康补到目标 = max(健康最大值 × 该百分比, 健康低阈值)（0.3 = 上限的 30%）", "default": 0.3, "min": 0.1, "max": 1.0},
+    {"key": "AUTO_FEED_HEALTH_TIER_MIN", "label": "自动购买·健康二档最低值", "type": "float", "group": "宠物", "subgroup": "自动购买",
+     "desc": "健康无档位定义，「第二档最低值」沿用该低阈值（默认 40，同状态条标红阈值）；低于该值视为第 3/4 档并触发自动购买", "default": 40.0, "min": 1, "max": 200},
+    {"key": "AUTO_FEED_ITEM_EFF_MIN", "label": "自动购买·仓库道具生效率下限", "type": "float", "group": "宠物", "subgroup": "自动购买",
+     "desc": "仓库道具对目标属性的效果占其全部正面效果的比例低于该值（0.9 = 90%）视为不可用，自动购买不消耗它，改用其他可用道具；仓库无可用道具才在商店购买", "default": 0.9, "min": 0.1, "max": 1.0},
+    # ---- 自动化贷款（2.2.1：宠物自动化专属套餐） ----
+    {"key": "AUTO_LOAN_CODE", "label": "自动化贷款·套餐代码", "type": "int", "group": "贷款", "subgroup": "自动化贷款",
+     "desc": "自动化专属贷款套餐代码（默认 99，不在 0~10 用户可选范围内，任何指令都无法直接借出本套餐）", "default": 99, "min": 11, "max": 999},
+    {"key": "AUTO_LOAN_MAX_AMOUNT", "label": "自动化贷款·单笔上限", "type": "int", "group": "贷款", "subgroup": "自动化贷款",
+     "desc": "自动化每次申请贷款的最大金额（默认 2000；可多次贷款）", "default": 2000, "min": 1, "max": 100000},
+    {"key": "AUTO_LOAN_MAX_DEBT", "label": "自动化贷款·单用户欠款总上限", "type": "int", "group": "贷款", "subgroup": "自动化贷款",
+     "desc": "自动化贷款套餐单个用户未还清欠款总额上限（默认 2500），达到后不再放款", "default": 2500, "min": 1, "max": 1000000},
+    {"key": "AUTO_LOAN_DAYS", "label": "自动化贷款·逾期天数", "type": "int", "group": "贷款", "subgroup": "自动化贷款",
+     "desc": "自动化贷款到期天数（默认 30 天），逾期后按普通贷款规则处理", "default": 30, "min": 1, "max": 365},
+    {"key": "AUTO_LOAN_RATE", "label": "自动化贷款·日利率", "type": "float", "group": "贷款", "subgroup": "自动化贷款",
+     "desc": "自动化贷款日利率（%/日，默认 0.01%），贷款发放后按日计息", "default": 0.01, "min": 0, "max": 100},
+    # ---- 通用（2.2.1：管理员鉴权） ----
+    {"key": "ADMIN_UIDS", "label": "管理员 UID（逗号分隔）", "type": "string", "group": "通用", "subgroup": "鉴权",
+     "desc": "可调用数据管理类指令（查看/保存后台配置、导出/导入数据、管理网址）的管理员 UID，多个用逗号分隔；留空时回退到 OneBot 群角色（群主/管理员）与 AstrBot 主人配置判定", "default": ""},
     # ---- 固定结算（2.1.0：固定刷新时间） ----
     {"key": "DAILY_SETTLE_HOUR", "label": "插件数据结算时间（时）", "type": "int", "group": "固定结算", "subgroup": "每日结算",
      "desc": "每天该整点固定开始结算插件数据：全部宠物每日结算 + 自动购买「每日结算」触发（默认 0 = 零点）", "default": 0, "min": 0, "max": 23},
@@ -1697,6 +1754,13 @@ class CoreMixin:
             # 同义口令：没有该键时写入默认同义词（用户可在 WebUI 编辑）
             if not isinstance(data.get("alias_cmds"), dict):
                 data["alias_cmds"] = {**DEFAULT_ALIAS_CMDS}
+            # 2.2.2：记录数据（attr_log / auto_feed_logs / auto_work_logs / shop_price_records）
+            # 与用户数据分文件存储 → 从 records.json 回填到内存 data
+            try:
+                from .data_migrate import RECORDS_FILE, merge_records, _read_json
+                merge_records(data, _read_json(RECORDS_FILE))
+            except Exception as e:
+                logger.error(f"[插件] 回填记录数据失败: {e}")
             # 旧数据迁移：宠物等级按新经验体系重算（所需经验 = 当前等级 × 100）
             self._migrate_pet_levels(data)
             return data
@@ -1721,10 +1785,17 @@ class CoreMixin:
             self._debug_data = data
             return
         try:
+            # 2.2.2：记录数据与用户数据分文件存储（内存 data 含记录字段，写盘时剥离）
+            from .data_migrate import RECORDS_FILE, split_records
+            user_data, records = split_records(data)
             tmp = DATA_FILE + ".tmp"
             with open(tmp, "w", encoding="utf-8") as f:
-                json.dump(data, f, ensure_ascii=False, indent=2)
+                json.dump(user_data, f, ensure_ascii=False, indent=2)
             os.replace(tmp, DATA_FILE)
+            rtmp = RECORDS_FILE + ".tmp"
+            with open(rtmp, "w", encoding="utf-8") as f:
+                json.dump(records, f, ensure_ascii=False, indent=2)
+            os.replace(rtmp, RECORDS_FILE)
         except Exception as e:
             logger.error(f"[插件] 保存数据失败: {e}")
 
@@ -1794,6 +1865,40 @@ class CoreMixin:
         # 数据按用户维度存储，跨群聊共享
         return event.get_sender_id()
 
+    def _is_admin(self, event) -> bool:
+        """鉴权（2.2.1）：判断消息调用者是否为管理员（用于 查看/保存后台配置、导出/导入数据、
+        管理网址 等数据管理类指令，避免普通用户使用本应仅限管理员的功能）。
+        判定顺序：
+        ① WebUI「设置 → 通用 → 管理员 UID」配置的 ADMIN_UIDS（逗号分隔）命中；
+        ② OneBot 群角色为群主/管理员（owner/admin）；
+        ③ AstrBot 主人配置（admin_qq / master_qq / owner_qq / admin，尽力兼容，读取失败忽略）。
+        全部不命中时返回 False（拒绝访问）。"""
+        try:
+            sid = str(event.get_sender_id())
+        except Exception:
+            return False
+        uids = str(globals().get("ADMIN_UIDS", "") or "").strip()
+        if uids:
+            admin_set = {u.strip() for u in uids.replace("，", ",").split(",") if u.strip()}
+            if sid in admin_set:
+                return True
+        try:
+            sender = getattr(getattr(event, "message_obj", None), "sender", None)
+            role = getattr(sender, "role", None) if sender is not None else None
+            if role in ("owner", "admin"):
+                return True
+        except Exception:
+            pass
+        try:
+            conf = self.context.astrbot_config_mgr.get_conf(None)
+            for k in ("admin_qq", "master_qq", "owner_qq", "admin"):
+                v = getattr(conf, k, None)
+                if v is not None and str(v) == sid:
+                    return True
+        except Exception:
+            pass
+        return False
+
     def _custom_name_of(self, data: dict, key: str) -> str:
         """返回用户在有效期内的自定义昵称（2.0.3）；未设置或已过期返回空串。"""
         u = data.get("users", {}).get(key)
@@ -1862,11 +1967,25 @@ class CoreMixin:
         user["bag_base"] = {"date": today, "score": score}
         return score, True
 
-    def _add_coins(self, data: dict, key: str, amount: int, reason: str = "") -> int:
+    def _add_coins(self, data: dict, key: str, amount: int, reason: str = "", _skip_auto_repay: bool = False) -> int:
         """增加/扣除金币并记录流水（只有 reason 非空且金额变动才记）。amount 正为获得、负为消费。返回变动后的余额。
-        有逾期贷款时，获得金币自动划扣 20% 还款（划扣部分是还贷，不重复记流水）。"""
+        2.2.1：存在宠物自动化贷款（套餐 AUTO_LOAN_CODE）时，获得金币优先全额自动偿还本套餐欠款
+        （还清后剩余部分才入账）；随后仍有逾期贷款时，剩余金额再自动划扣 20% 还款
+        （划扣部分是还贷，不重复记流水）。自动化贷款发放自身使用 _skip_auto_repay=True，避免刚借出的
+        金币被立刻拿去还旧账。"""
         # 1.7.8：当日第一笔金币变动前先记录背包净收益零点基线（保证红包/利息等全部计入）
         self._ensure_bag_base(data, key)
+        if amount > 0 and not _skip_auto_repay and data.get("loans", {}).get(key):
+            rec = data["loans"][key]
+            now_ts = datetime.now().timestamp()
+            auto_owed = sum(self._loan_owed(l, now_ts)
+                            for l in rec.get("loans", [])
+                            if l.get("auto") and l.get("remaining", 0) > 0)
+            if auto_owed > 0:
+                take = min(int(amount), int(auto_owed))
+                if take > 0:
+                    repaid = self._repay_loans(data, key, take, code=AUTO_LOAN_CODE)
+                    amount -= int(repaid)
         if amount > 0 and data.get("loans", {}).get(key):
             rec = data["loans"][key]
             if self._has_overdue_now(rec, datetime.now().timestamp()):
@@ -2399,6 +2518,18 @@ __all__ = [
     "AUTO_WORK_LOG_MAX",
     "AUTO_WORK_EXP_ENABLED",
     "AUTO_WORK_EXP_MULT",
+    "AUTO_FEED_TARGET_SATIETY_PCT",
+    "AUTO_FEED_TARGET_THIRST_PCT",
+    "AUTO_FEED_TARGET_MOOD_PCT",
+    "AUTO_FEED_TARGET_HEALTH_PCT",
+    "AUTO_FEED_HEALTH_TIER_MIN",
+    "AUTO_FEED_ITEM_EFF_MIN",
+    "AUTO_LOAN_CODE",
+    "AUTO_LOAN_MAX_AMOUNT",
+    "AUTO_LOAN_MAX_DEBT",
+    "AUTO_LOAN_DAYS",
+    "AUTO_LOAN_RATE",
+    "ADMIN_UIDS",
     "DAILY_SETTLE_HOUR",
     "BANK_SETTLE_HOUR",
     "DAILY_SETTLE_LOOP_INTERVAL",

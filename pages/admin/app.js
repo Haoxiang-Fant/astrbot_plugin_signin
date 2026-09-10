@@ -430,7 +430,8 @@ function closeCaptchaModal() {
   _captchaCode = "";
 }
 
-async function applyBenchmark() {
+function applyBenchmark() {
+  // 打开验证码弹窗（确认后才真正调用 items/apply_benchmark）
   openCaptchaModal();
 }
 
@@ -980,6 +981,14 @@ function renderParamItem(p) {
   }
   // 升级费用已并入「土地等级加成」表格，不再单独渲染
   if (p.key === "FARM_UPGRADE_COSTS") return "";
+  // 2.2.0：密码类参数不回显当前值，留空 = 保持不变（哈希校验只在插件本地进行）
+  if (p.masked) {
+    return `<label class="param-item">
+      <span class="param-label">${p.label}</span>
+      <span class="param-input"><input type="password" data-key="${p.key}" data-type="str" data-masked="1" data-label="${p.label}" value="" placeholder="已设置（留空保持不变）" autocomplete="off" /></span>
+      <small>${p.desc || ""}（已设置，不向访问终端回传；输入新值并保存即可修改）</small>
+    </label>`;
+  }
   const input =
     p.type === "int" || p.type === "float"
       ? `<input type="number" data-key="${p.key}" data-type="${p.type}" data-label="${p.label}" ${min}${max}value="${p.value}" />`
@@ -1003,6 +1012,10 @@ async function saveParams() {
     el.classList.remove("invalid");
     if (type === "bool") {
       params[key] = el.checked;
+      return;
+    }
+    // 2.2.0：密码类参数留空 = 保持不变（不提交，后端保留现有值）
+    if (el.dataset.masked === "1" && el.value === "") {
       return;
     }
     if (el.value === "") {
@@ -1293,22 +1306,21 @@ function recordPetCard(p) {
     const items = (lg.items || [])
       .map((it) => (it.src === "购买" ? "🛒" : "📦") + esc(it.name) + "×" + it.qty)
       .join("、");
-    return `<div class="rec-line">${esc(lg.ts || lg.date || "")}（${esc(lg.trigger || "档位触发")}）${items ? "：" + items : ""}${lg.total ? `（共 ${lg.total} 金币）` : ""}</div>`;
+    const loanTxt = lg.loan > 0 ? `（自动化贷款 ${lg.loan}）` : "";
+    return `<div class="rec-line">${esc(lg.ts || lg.date || "")}（${esc(lg.trigger || "档位触发")}）${items ? "：" + items : ""}${lg.total ? `（共 ${lg.total} 金币${loanTxt}）` : ""}</div>`;
   }).join("") || '<div class="rec-line muted">暂无购买记录</div>';
   const workLogs = (auto.work_logs || []).slice().reverse().map((lg) =>
     `<div class="rec-line">${esc(lg.ts || lg.date || "")}：自动打工「${esc(lg.job)}」+${lg.coins} 金币${(lg.exp && Number(lg.exp) > 0) ? ` +${lg.exp} 经验` : ""}，基准 ${lg.base_before} → ${lg.base_after}</div>`,
   ).join("") || '<div class="rec-line muted">暂无打工记录</div>';
   // 可点击开关芯片（2.0.4：运行记录页直接控制每个用户的自动购买/自动打工）：
-  // data-cur = 用户当前开关（0/1）；点击后向 records/pets/auto 切换
-  const toggleChip = (key, on, hint) =>
-    `<button type="button" class="rec-chip${on ? " on" : ""} toggle" data-auto="${key}" data-uid="${esc(p.uid)}" data-cur="${on ? 1 : 0}" title="${esc(hint)}">${on ? "开" : "关"}</button>`;
+  // data-cur = 用户当前开关（0/1）；点击后向 records/pets/auto 切换（芯片 HTML 直接硬编码于下方）
   const purchaseOn = !!auto.purchase_on;
   const workOn = !!auto.work_on;
   const purchaseHint = auto.purchase_global ? "自动购买（点击切换开/关）" : "自动购买 · ⚠️ 总开关未开启（设置 → 宠物 → 自动购买）";
   const workHint = !auto.purchase_on
     ? "自动打工 · 需先开启自动购买（点击无效）"
     : (auto.work_global ? "自动打工（点击切换开/关；只给金币不给经验）" : "自动打工 · 总开关未开启（设置 → 宠物 → 自动打工）");
-  return `<div class="rec-card">
+  return `<div class="rec-card pet-card" data-uid="${esc(p.uid)}">
     <div class="rec-card-head">
       <span class="rec-card-name">${esc(p.name || "宠物")}</span>
       <span class="rec-card-nick">${esc(p.nick || p.uid)}</span>
@@ -1323,9 +1335,11 @@ function recordPetCard(p) {
       <span class="rec-row-label">自动打工</span>
       <button type="button" class="rec-chip${workOn ? " on" : ""} toggle" data-auto="work" data-uid="${esc(p.uid)}" data-cur="${workOn ? 1 : 0}" data-allow="${(workOn || purchaseOn) ? 1 : 0}" title="${esc(workHint)}">${workOn ? "开" : "关"}</button>
       <span class="rec-chip gold">基准 ${fmtNum(auto.work_base)}</span>
+      ${auto.auto_loan_owed > 0 ? `<span class="rec-chip danger-chip" title="自动化专属贷款（获得金币自动优先还款；未还清前宠物持续自动打工）">自动化贷款 欠 ${fmtNum(auto.auto_loan_owed)}</span>` : ""}
     </div>
     <div class="rec-block"><div class="rec-block-title">购买 / 使用记录（×N 数量标记）</div>${feedLogs}</div>
     <div class="rec-block"><div class="rec-block-title">自动打工记录</div>${workLogs}</div>
+    <div class="rec-row muted"><span class="rec-chip toggle-expand">点击卡片查看宠物详情 ▸</span></div>
   </div>`;
 }
 
@@ -1362,21 +1376,31 @@ async function loadRecordPets() {
 
 let recordPetsCache = [];
 
-// 2.1.0：搜索框过滤宠物记录（宠物名 / 昵称 / 用户ID），每行两只宠物
+// 2.2.2：宠物记录卡片（搜索 + 状态筛选 + 档位筛选 + 排序，全部前端本地完成）
 function renderRecordPets() {
   const box = $("records-pets-list");
   const kw = ($("record-pets-search")?.value || "").trim().toLowerCase();
-  let list = recordPetsCache;
+  const st = $("record-pets-status")?.value || "";
+  const tier = $("record-pets-tier")?.value || "";
+  const sort = $("record-pets-sort")?.value || "default";
+  let list = recordPetsCache.slice();
   if (kw) {
     list = list.filter((p) =>
       String(p.name || "").toLowerCase().includes(kw) ||
       String(p.nick || "").toLowerCase().includes(kw) ||
       String(p.uid || "").toLowerCase().includes(kw));
   }
+  if (st === "active") list = list.filter((p) => !p.weak);
+  else if (st === "weak") list = list.filter((p) => !!p.weak);
+  if (tier) list = list.filter((p) => String(p.tier || "") === tier);
+  if (sort === "tier_asc") list.sort((a, b) => (a.tier || 5) - (b.tier || 5));
+  else if (sort === "tier_desc") list.sort((a, b) => (b.tier || 0) - (a.tier || 0));
+  else if (sort === "level_desc") list.sort((a, b) => (b.level || 0) - (a.level || 0));
+  else if (sort === "level_asc") list.sort((a, b) => (a.level || 0) - (b.level || 0));
   if (!list.length) {
     box.innerHTML = kw
       ? '<p class="hint">没有匹配「' + esc($("record-pets-search").value) + '」的宠物。</p>'
-      : '<p class="hint">暂无宠物记录（还没有宠物被领养）。</p>';
+      : '<p class="hint">当前筛选条件下暂无宠物（可以切换 状态 / 档位 筛选）。</p>';
     return;
   }
   box.innerHTML = `<div class="rec-grid cols-2">${list.map(recordPetCard).join("")}</div>`;
@@ -1395,8 +1419,187 @@ function renderRecordPets() {
     };
     box.addEventListener("click", box._autoToggleHandler);
   }
+  if (!box._petDetailHandler) {
+    // 2.2.1：点击宠物卡片（非开关芯片）→ 进入宠物详情页
+    box._petDetailHandler = (e) => {
+      const card = e.target.closest(".rec-card.pet-card");
+      if (!card) return;
+      if (e.target.closest(".rec-chip[data-auto]")) return; // 开关芯片不触发详情
+      openPanel({ id: "record-pet-detail", title: "运行记录 · 宠物详情", params: { uid: card.dataset.uid } });
+    };
+    box.addEventListener("click", box._petDetailHandler);
+  }
 }
 
+// ================= 运行记录：宠物详情（2.2.2：点击宠物记录卡片进入；模块化展示宠物详细信息 + 按时间排序的折叠属性变化记录） =================
+async function loadRecordPetDetail(uid) {
+  const title = $("record-pet-detail-title");
+  const box = $("record-pet-detail-box");
+  if (!uid) {
+    box.innerHTML = '<p class="hint">缺少宠物用户ID，无法加载详情。</p>';
+    return;
+  }
+  setStatus("status-record-pet-detail", "加载中...");
+  box.innerHTML = '<p class="hint">加载宠物详情...</p>';
+  try {
+    const r = await bridge.apiPost("records/pets/detail", { uid });
+    const d = (r && r.pet) || null;
+    if (!d) {
+      box.innerHTML = '<p class="hint">未找到该宠物（可能已解绑或数据不存在）。</p>';
+      setStatus("status-record-pet-detail", "❌ 无数据");
+      return;
+    }
+    if (title) title.textContent = "🐾 " + (d.name || "宠物") + "（" + (d.nick || d.uid) + "）";
+    renderRecordPetDetail(d);
+    setStatus("status-record-pet-detail", "✅ 属性变化记录共 " + ((d.attr_log || []).length) + " 条");
+  } catch (e) {
+    box.innerHTML = '<p class="hint">加载失败：' + esc(e.message) + "</p>";
+    setStatus("status-record-pet-detail", "❌ 加载失败");
+  }
+}
+
+// 2.2.2：属性变化明细（正=绿，负=红，按固定顺序；exp 显示为「经验」）
+const ATTR_CHG_ORDER = ["satiety", "thirst", "stamina", "mood", "health", "exp"];
+
+function attrLabel(k, labels) {
+  return (labels && labels[k]) || (k === "exp" ? "经验" : k);
+}
+
+function attrChangeHtml(changes, labels) {
+  const parts = [];
+  for (const k of ATTR_CHG_ORDER) {
+    const v = Number(changes[k]);
+    if (!Number.isFinite(v) || Math.abs(v) < 0.005) continue;
+    const color = v > 0 ? "var(--success)" : "var(--danger)";
+    parts.push('<span style="color:' + color + ';font-weight:600">' + esc(attrLabel(k, labels)) + (v > 0 ? "+" : "") + fmtNum(v) + "</span>");
+  }
+  return parts.length ? parts.join(" ") : '<span class="muted">无属性变化</span>';
+}
+
+// 2.2.2：属性变化记录 = 按操作时间排序的单列折叠列表（默认折叠，展开显示属性条可视化）
+// 属性条 = 血条式：轨道 0→上限；稳定段（标准主色）0→较小值（增加时=变动前、减少时=当前值），
+// 其后接淡绿增长区（升高）或淡红减少区（降低）。
+// 特殊情况：无变动前快照（after）的旧记录 → 展开显示「无数据」。
+function attrBarsHtml(lg, labels, maxOf) {
+  const after = lg.after;
+  if (!after || typeof after !== "object") {
+    return '<div class="attr-bars"><span class="muted">无数据</span></div>';
+  }
+  const rows = [];
+  for (const k of ATTR_CHG_ORDER) {
+    if (k === "exp") continue; // 经验无固定上限，只在文字记录中展示
+    const v = Number((lg.changes || {})[k]);
+    if (!Number.isFinite(v) || Math.abs(v) < 0.005) continue;
+    const scale = Number(lg.max && lg.max[k]) > 0 ? Number(lg.max[k])
+      : (Number(maxOf[k]) > 0 ? Number(maxOf[k]) : 100); // 2.2.2：优先用变动发生时的上限快照
+    const cls = v > 0 ? "pos" : "neg";
+    const a = Number(after[k]);
+    if (!Number.isFinite(a)) continue;
+    const p0 = Math.min(100, Math.max(0, ((a - v) / scale) * 100)); // 变动前
+    const p1 = Math.min(100, Math.max(0, (a / scale) * 100));       // 变动后
+    const base = Math.min(p0, p1); // 血条式稳定段：0 → 较小值
+    rows.push('<div class="attr-bar-row">'
+      + '<span class="attr-bar-label">' + esc(attrLabel(k, labels)) + "</span>"
+      + '<span class="attr-bar-track"><i class="base" style="width:' + base.toFixed(1) + '%"></i>'
+      + '<i class="delta ' + cls + '" style="left:' + base.toFixed(1) + '%;width:' + Math.max(Math.abs(p1 - p0), 1.2).toFixed(1) + '%"></i></span>'
+      + '<span class="attr-bar-num ' + cls + '">' + (v > 0 ? "+" : "") + fmtNum(v) + "</span>"
+      + "</div>");
+  }
+  return rows.length ? '<div class="attr-bars">' + rows.join("") + "</div>"
+    : '<div class="attr-bars"><span class="muted">无属性条（仅经验/其他变动，见上方文字）</span></div>';
+}
+
+function attrLogHtml(logs, labels, maxOf) {
+  if (!logs || !logs.length) return '<p class="hint">暂无属性变化记录（从记录机制启用后开始统计）。</p>';
+  // 2.2.2：按操作时间排序，新变动置于顶部、最旧的沉底
+  const list = logs.slice().sort((a, b) => (Number(b.ts) || 0) - (Number(a.ts) || 0));
+  return list.map((lg) => {
+    let line = '<span class="muted">' + esc(lg.time || "") + "</span> " + esc(lg.behavior || "");
+    line += "：" + attrChangeHtml(lg.changes || {}, labels);
+    if (lg.extra) line += ' <span class="muted">（' + esc(lg.extra) + "）</span>";
+    return '<details class="attr-log-item"><summary>' + line + "</summary>"
+      + attrBarsHtml(lg, labels, maxOf) + "</details>";
+  }).join("");
+}
+
+function renderRecordPetDetail(d) {
+  const a = d.attrs || {};
+  const auto = d.auto || {};
+  const busy = d.busy;
+  const labels = d.attr_labels || {};
+  const attrRows = [
+    attrCell("饱食", a.sat, a.sat_max, a.sat_red),
+    attrCell("口渴", a.thr, a.thr_max, a.thr_red),
+    attrCell("体力", a.sta, a.sta_max, false),
+    attrCell("心情", a.mood, a.mood_max, a.mood_red),
+    attrCell("健康", a.health, a.health_max, a.health_red),
+  ].join("");
+
+  // ── 基本档案 ──
+  const expPct = d.exp_need > 0 ? Math.min(100, Math.max(0, (d.exp_got / d.exp_need) * 100)) : 100;
+  const profileCard = `<div class="detail-card">
+    <div class="detail-card-title">📋 基本档案</div>
+    <div class="rec-line"><b>${esc(d.name || "宠物")}</b>（${esc(d.nick || d.uid)}）</div>
+    <div class="rec-line">等级 Lv.${fmtNum(d.level)} · 档位 ${tierLabel(d.tier)}${d.weak ? ' · <span style="color:var(--danger)">虚弱停用</span>' : ""}</div>
+    <div class="rec-line">经验 ${fmtNum(d.exp)}（本级 ${fmtNum(d.exp_got)}/${fmtNum(d.exp_need)}）</div>
+    <div class="rec-attr-bar" style="display:block;height:8px"><i style="width:${expPct}%"></i></div>
+    <div class="rec-line">看家：${d.guard ? '<span style="color:var(--success)">开</span>' : "关"}</div>
+    <div class="rec-line muted">最近结算日：${esc(d.last_settle_date || "-")}</div>
+  </div>`;
+
+  // ── 当前状态（2.2.2：不再显示 最近结算） ──
+  const statusCard = `<div class="detail-card">
+    <div class="detail-card-title">🐾 当前状态</div>
+    <div class="rec-attrs">${attrRows}</div>
+    <div class="rec-line">活动：${busy ? `正在${esc(busy.activity)}「${esc(busy.item)}」剩 ${busy.remaining_min} 分钟` : (d.weak ? "虚弱 · 自动购买/自动打工已暂停" : "空闲")}</div>
+  </div>`;
+
+  // ── 自动化信息（2.2.2：整行加宽，横跨上方三张卡片 + 两个间隙） ──
+  const feedLogs = (auto.feed_logs || []).slice().reverse().map((lg) => {
+    const items = (lg.items || []).map((it) => (it.src === "购买" ? "🛒" : "📦") + esc(it.name) + "×" + it.qty).join("、");
+    const loanTxt = lg.loan > 0 ? "（自动化贷款 " + lg.loan + "）" : "";
+    return '<div class="rec-line">' + esc(lg.ts || lg.date || "") + "（" + esc(lg.trigger || "档位触发") + "）" + (items ? "：" + items : "") + (lg.total ? "（共 " + lg.total + " 金币" + loanTxt + "）" : "") + "</div>";
+  }).join("") || '<div class="rec-line muted">暂无购买记录</div>';
+  const workLogs = (auto.work_logs || []).slice().reverse().map((lg) =>
+    '<div class="rec-line">' + esc(lg.ts || lg.date || "") + "：自动打工「" + esc(lg.job) + "」+" + lg.coins + " 金币" + ((lg.exp && Number(lg.exp) > 0) ? " +" + lg.exp + " 经验" : "") + "，基准 " + lg.base_before + " → " + lg.base_after + "</div>",
+  ).join("") || '<div class="rec-line muted">暂无打工记录</div>';
+  const autoCard = `<div class="detail-card span-all">
+    <div class="detail-card-title">⚙️ 自动化</div>
+    <div class="rec-line">自动购买：${auto.purchase_on ? '<span style="color:var(--success)">✅ 开</span>' : "关"}｜自动打工：${auto.work_on ? '<span style="color:var(--success)">✅ 开</span>' : "关"}</div>
+    <div class="rec-line">打工基准金币：${fmtNum(auto.work_base)}</div>
+    ${auto.auto_loan_owed > 0 ? '<div class="rec-line" style="color:var(--danger)">自动化贷款：欠 ' + fmtNum(auto.auto_loan_owed) + " 金币</div>" : ""}
+    <div class="rec-block"><div class="rec-block-title">购买 / 使用记录（×N）</div>${feedLogs}</div>
+    <div class="rec-block"><div class="rec-block-title">自动打工记录</div>${workLogs}</div>
+  </div>`;
+
+  // ── 特殊记录 + 仓库 ──
+  const pill = d.pill || {};
+  const me = d.money_event || {};
+  const bagChips = (d.bag || []).slice(0, 10).map((b) => '<span class="bag-chip">' + esc(b.name) + " ×" + b.qty + "</span>").join("");
+  const bagMore = (d.bag || []).length > 10 ? '<span class="bag-chip muted">…共 ' + (d.bag || []).length + " 种</span>" : "";
+  const miscCard = `<div class="detail-card">
+    <div class="detail-card-title">📊 特殊记录</div>
+    <div class="rec-line">属性丸（今日）：${fmtNum(pill.used)}/${fmtNum(pill.limit)}${pill.today ? "（" + esc(pill.today) + "）" : ""}</div>
+    <div class="rec-line">捡钱事件（今日）：${fmtNum(me.count)}/${fmtNum(me.max)}</div>
+    <div class="rec-block"><div class="rec-block-title">📦 仓库道具</div><div class="rec-row bag-row">${bagChips || '<span class="rec-line muted">仓库为空</span>'}${bagMore}</div></div>
+  </div>`;
+
+  // 2.2.2：属性条轨道上限（各属性 0→max，来自当前状态）
+  const maxOf = { satiety: a.sat_max, thirst: a.thr_max, stamina: a.sta_max, mood: a.mood_max, health: a.health_max };
+  const logsHtml = attrLogHtml(d.attr_log || [], labels, maxOf);
+
+  const box = $("record-pet-detail-box");
+  // 2.2.2：模块顺序 = 基本档案 / 当前状态 / 特殊记录（一行三卡），自动化整行加宽置于其下
+  box.innerHTML = `<div class="detail-grid pet-detail-grid">${profileCard}${statusCard}${miscCard}${autoCard}</div>
+    <div class="rec-card">
+      <div class="rec-card-head">
+        <span class="rec-card-name">📜 属性变化记录</span>
+        <span class="rec-card-nick">按操作时间排序（新变动在前，最多保留 300 条）· 点击条目展开属性条</span>
+        <span class="rec-card-tag gold">共 ${fmtNum((d.attr_log || []).length)} 条</span>
+      </div>
+      ${logsHtml}
+    </div>`;
+}
 async function loadRecordPrices() {
   setStatus("status-record-prices", "加载中...");
   const box = $("records-prices-list");
@@ -1448,20 +1651,22 @@ const SORT_LABELS = {
   nick_pinyin: "昵称首拼", nick_stroke: "昵称首字笔画", last_active: "最后活跃",
   pet_level: "宠物等级", farm_level: "农场等级", fav_level: "好感度等级",
 };
-const SORT_ORDERS = ["last_active", "nick_pinyin", "nick_stroke", "pet_level", "farm_level", "fav_level"];
 
-function recordUserCard(u) {
-  const pet = u.pet || null;
-  const farm = u.farm || null;
-  const bank = u.bank || null;
-  const auto = u.auto || {};
+// 2.2.0：用户完整详情按需拉取（展开卡片时才请求 records/users/detail，缓存避免重复请求）
+let recordUsersDetailCache = {};  // uid → 完整详情
+
+// 详情独立附属卡片（2.1.0：每个模块一个卡片）——由按需拉取的详情数据渲染
+function recordUserDetailGrid(d) {
+  const pet = d.pet || null;
+  const farm = d.farm || null;
+  const bank = d.bank || null;
+  const auto = d.auto || {};
   const weak = !!(pet && pet.weak);
-  const bagRows = (u.bag || []).slice(0, 12).map((b) =>
+  const bagRows = (d.bag || []).slice(0, 12).map((b) =>
     `<span class="bag-chip">${esc(b.name)} ×${b.qty}</span>`).join("");
-  const bagMore = (u.bag || []).length > 12 ? `<span class="bag-chip muted">…共 ${(u.bag || []).length} 种</span>` : "";
-  // 各模块独立附属卡片（2.1.0：每个模块一个卡片）
+  const bagMore = (d.bag || []).length > 12 ? `<span class="bag-chip muted">…共 ${(d.bag || []).length} 种</span>` : "";
   const bagCard = `<div class="detail-card">
-    <div class="detail-card-title">📦 仓库（${(u.bag || []).length} 种）</div>
+    <div class="detail-card-title">📦 仓库（${(d.bag || []).length} 种）</div>
     <div class="rec-row bag-row">${bagRows || '<span class="rec-line muted">仓库为空</span>'}${bagMore}</div>
   </div>`;
   const farmCard = `<div class="detail-card">
@@ -1478,7 +1683,7 @@ function recordUserCard(u) {
     ${pet
       ? `<div class="rec-line">${esc(pet.name)} Lv.${fmtNum(pet.level)}${weak ? " · 😷虚弱（停用）" : ""}（经验 ${fmtNum(pet.exp)}）</div>`
         + `<div class="rec-line">活动：${pet.busy_activity ? `${esc(pet.busy_activity)}「${esc(pet.busy_item)}」` : "空闲"}</div>`
-        + `<div class="rec-line muted">好感度：${fmtNum(u.fav)}（等级 ${u.fav_level}）｜金币：${fmtNum(u.coins)}</div>`
+        + `<div class="rec-line muted">好感度：${fmtNum(d.fav)}（等级 ${d.fav_level}）｜金币：${fmtNum(d.coins)}</div>`
       : '<div class="rec-line muted">未领养宠物</div>'}
   </div>`;
   const bankCard = `<div class="detail-card">
@@ -1487,8 +1692,8 @@ function recordUserCard(u) {
       ? `<div class="rec-line">锁定 ${bank.locked_count} 笔 ${fmtNum(bank.locked_sum)} 金币｜可取（已成熟）${bank.matured_count} 笔 ${fmtNum(bank.matured_sum)} 金币</div>`
         + `<div class="rec-line">预计利息合计：${fmtNum(bank.interest_sum)} 金币</div>`
         + (bank.deposits && bank.deposits.length
-            ? bank.deposits.map((d) =>
-                `<div class="rec-line">${esc(d.deposit_time || "")} ${d.amount} 金币（${fmtNum(d.base_rate + d.bonus_rate)}%/时 × ${d.hours}h）${d.status === "matured" ? "· 已解锁" : "· 锁定中"}</div>`).join("")
+            ? bank.deposits.map((dep) =>
+                `<div class="rec-line">${esc(dep.deposit_time || "")} ${dep.amount} 金币（${fmtNum(dep.base_rate + dep.bonus_rate)}%/时 × ${dep.hours}h）${dep.status === "matured" ? "· 已解锁" : "· 锁定中"}</div>`).join("")
             : "")
       : '<div class="rec-line muted">银行无存款</div>'}
   </div>`;
@@ -1496,7 +1701,50 @@ function recordUserCard(u) {
     <div class="detail-card-title">⚙️ 自动化</div>
     <div class="rec-line">自动购买：${auto.purchase_on ? "✅ 开" : "关"}｜自动打工：${auto.work_on ? "✅ 开" : "关"}</div>
     <div class="rec-line">打工基准金币：${fmtNum(auto.work_base)}</div>
+    ${auto.auto_loan_owed > 0 ? `<div class="rec-line" style="color:var(--danger)">自动化贷款：欠 ${fmtNum(auto.auto_loan_owed)} 金币（获得金币自动优先还款）</div>` : ""}
   </div>`;
+  return `<div class="detail-grid">${bagCard}${farmCard}${petCard}${bankCard}${autoCard}</div>`;
+}
+
+async function ensureUserDetail(card, uid) {
+  const box = card.querySelector(".user-detail");
+  if (!box) return;
+  if (box.dataset.state === "loaded") return;
+  if (recordUsersDetailCache[uid]) {
+    box.innerHTML = recordUserDetailGrid(recordUsersDetailCache[uid]);
+    box.dataset.state = "loaded";
+    return;
+  }
+  if (box.dataset.state === "loading") return;
+  box.dataset.state = "loading";
+  box.innerHTML = '<p class="hint">详情加载中...</p>';
+  try {
+    const r = await bridge.apiPost("records/users/detail", { uid });
+    const d = (r && r.user) || null;
+    recordUsersDetailCache[uid] = d;
+    if (d) {
+      box.innerHTML = recordUserDetailGrid(d);
+      box.dataset.state = "loaded";
+    } else if (r && r.error) {
+      box.innerHTML = '<p class="hint">详情读取失败：' + esc(r.error) + "</p>";
+      box.dataset.state = "error";
+    } else {
+      box.innerHTML = '<p class="hint">该用户暂无更多数据。</p>';
+      box.dataset.state = "loaded";
+    }
+  } catch (e) {
+    box.innerHTML = '<p class="hint">详情加载失败：' + esc(e.message) + "</p>";
+    box.dataset.state = "error";
+  }
+}
+
+function recordUserCard(u) {
+  const pet = u.pet || null;
+  const farm = u.farm || null;
+  const bank = u.bank || null;
+  const weak = !!(pet && pet.weak);
+  // 2.2.0：卡片只使用列表接口返回的基础字段；完整详情（仓库/地块/存单等）展开时按需拉取
+  const bankTotal = bank ? fmtNum((bank.locked_sum || 0) + (bank.matured_sum || 0)) : null;
   return `<div class="rec-card user-card" data-uid="${esc(u.uid)}">
     <div class="rec-card-head">
       <span class="rec-card-name">${esc(u.nick || u.uid)}</span>
@@ -1508,12 +1756,10 @@ function recordUserCard(u) {
       <span class="rec-chip gold">💰 ${fmtNum(u.coins)}</span>
       <span class="rec-chip">宠物 ${pet ? `Lv.${fmtNum(pet.level)}` : "未领养"}</span>
       <span class="rec-chip">农场 ${farm ? `Lv.${fmtNum(farm.level)}` : "未开通"}</span>
-      <span class="rec-chip">银行 ${bank ? `${fmtNum(bank.locked_sum + bank.matured_sum)}金` : "未使用"}</span>
+      <span class="rec-chip">银行 ${bankTotal != null ? `${bankTotal}金` : "未使用"}</span>
     </div>
     <div class="rec-row muted">最后活跃：${esc(u.last_active_text || "-")} <span class="rec-chip toggle-expand">点击展开详情 ▾</span></div>
-    <div class="user-detail">
-      <div class="detail-grid">${bagCard}${farmCard}${petCard}${bankCard}${autoCard}</div>
-    </div>
+    <div class="user-detail"><p class="hint">展开后加载详情</p></div>
   </div>`;
 }
 
@@ -1577,7 +1823,11 @@ function renderRecordUsers() {
   box.innerHTML = `<div class="rec-grid cols-2 user-grid">${list.map(recordUserCard).join("")}</div>`;
   box.querySelectorAll(".user-card").forEach((card) => {
     const uid = card.dataset.uid;
-    if (expandedSet.has(uid)) card.classList.add("expanded");
+    if (expandedSet.has(uid)) {
+      card.classList.add("expanded");
+      // 2.2.0：重新渲染后为保持展开的卡片恢复详情（缓存命中则不重新请求）
+      ensureUserDetail(card, uid);
+    }
   });
   if (!box._userDetailHandler) {
     box._userDetailHandler = (e) => {
@@ -1586,6 +1836,10 @@ function renderRecordUsers() {
       // 阻止点开关芯片时触发详情展开
       if (e.target.closest(".rec-chip.toggle")) return;
       card.classList.toggle("expanded");
+      // 2.2.0：展开时按需拉取该用户完整详情（缓存复用，不重复请求）
+      if (card.classList.contains("expanded")) {
+        ensureUserDetail(card, card.dataset.uid);
+      }
     };
     box.addEventListener("click", box._userDetailHandler);
   }
@@ -1810,6 +2064,7 @@ function loadCurrent() {
   } else if (cur.id === "activities") loadActivities();
   else if (cur.id === "aliases") loadAliases();
   else if (cur.id === "records-pets") loadRecordPets();
+  else if (cur.id === "record-pet-detail") loadRecordPetDetail(cur.params?.uid);
   else if (cur.id === "records-users") loadRecordUsers();
   else if (cur.id === "records-prices") loadRecordPrices();
   // data 面板为导出/导入操作，无需自动加载
@@ -1842,7 +2097,7 @@ function goHome() {
 }
 
 function openFeature(name) {
-  // 兼容旧调用：把它当作从首页直接进入某个管理页
+  // 从首页进入某个管理页（兼容旧调用）
   const map = {
     shop: () => openSubpage("shop"),
     settings: () => openSubpage("settings"),
@@ -1856,10 +2111,6 @@ function openFeature(name) {
     records: () => openSubpage("records"),
   };
   (map[name] || (() => openSubpage(name)))();
-}
-
-function switchTab(name) {
-  openFeature(name);
 }
 
 // 首页卡片事件
@@ -1954,9 +2205,15 @@ $("btn-save-params").addEventListener("click", saveParams);
 $("btn-load-aliases").addEventListener("click", loadAliases);
 $("btn-save-aliases").addEventListener("click", saveAliases);
 $("btn-load-record-pets").addEventListener("click", loadRecordPets);
+// 2.2.1：宠物详情页刷新（重新加载当前宠物 uid 的详情）
+$("btn-load-record-pet-detail").addEventListener("click", () => loadRecordPetDetail(currentView().params?.uid));
 $("btn-load-record-users").addEventListener("click", loadRecordUsers);
 $("btn-load-record-prices").addEventListener("click", loadRecordPrices);
 $("record-pets-search").addEventListener("input", renderRecordPets);
+// 2.2.2：宠物记录 状态 / 档位 筛选 + 排序（前端本地过滤，无需重新请求）
+$("record-pets-status").addEventListener("change", renderRecordPets);
+$("record-pets-tier").addEventListener("change", renderRecordPets);
+$("record-pets-sort").addEventListener("change", renderRecordPets);
 $("record-users-search").addEventListener("input", renderRecordUsers);
 // 2.1.0：排序自定义（切换排序方式 / 升降序，前端本地排序，无需重新请求）
 $("record-users-sort").addEventListener("change", (e) => {
@@ -1976,7 +2233,6 @@ $("btn-sync-group-names").addEventListener("click", syncGroupNames);
 
 await bridge.ready();
 syncLockUI();
-loadDebugStatus();
 
 // ================= 局域网开放（1.7.9） =================
 let lanState = null;
@@ -2059,7 +2315,7 @@ async function lanUnlock() {
     const r = await bridge.apiPost("lan/unlock", { password: pw });
     if (r && r.unlocked) {
       hideLanLock();
-      lanState = { ...(lanState || {}), unlocked: true };
+      // 2.2.0：解锁后直接刷新页面重新读取状态（无需在此手动置 lanState）
       location.reload();
     }
   } catch (e) {
@@ -2183,6 +2439,7 @@ $("lan-blacklist-modal").addEventListener("click", (e) => {
   if (e.target === e.currentTarget) closeLanBlacklist();
 });
 
-// 启动时检查局域网状态 & 加载设置
+// 启动时检查局域网状态（lanWrap 已安装，403 会触发锁屏；调试条在解锁后加载）
 lanRefresh();
-lanLoadSettings();
+loadDebugStatus();
+// 2.2.0：局域网设置表单不再在启动时重复请求，打开「系统设置」面板时由 loadCurrent 加载
