@@ -2,6 +2,7 @@
 # WebUI 后台 API。从原 main.py 的 SignInPlugin 拆出的 Mixin，由入口类组合继承。
 from .base import *  # noqa: F401,F403  常量与共享工具
 from .base import _register_runtime_module, _sync_runtime_global  # noqa: F401
+import string as _string
 import sys as _sys
 
 _register_runtime_module(_sys.modules[__name__])
@@ -141,6 +142,7 @@ class WebUIMixin:
             if not isinstance(incoming, dict):
                 return error_response("params 必须是对象", status_code=400)
             data = self._load()
+            self._history_backup(data, "保存前自动备份")
             saved = dict(data.get("params") or {})
             applied, errors = self._apply_runtime_params(incoming)
             for k, v in applied.items():
@@ -185,6 +187,7 @@ class WebUIMixin:
             if errors:
                 return error_response(f"保存失败：{errors}", status_code=400)
             data = self._load()
+            self._history_backup(data, "保存前自动备份")
             data["alias_cmds"] = cleaned
             self._save(data)
             return json_response({"saved": True, "aliases": cleaned})
@@ -808,6 +811,7 @@ class WebUIMixin:
             if errors:
                 return json_response({"saved": False, "errors": errors})
             flat = self._read_items_json() or {"jobs": [], "plays": [], "shop": [], "crops": [], "ferts": [], "loans": []}
+            self._history_backup(self._load(), "保存前自动备份")
             flat["jobs"] = jobs
             flat["plays"] = plays
             ok, msg = self._write_items_json(flat)
@@ -834,6 +838,7 @@ class WebUIMixin:
             if errors:
                 return json_response({"saved": False, "errors": errors})
             flat = self._read_items_json() or {"jobs": [], "plays": [], "shop": [], "crops": [], "ferts": [], "loans": []}
+            self._history_backup(self._load(), "保存前自动备份")
             flat["shop"] = shop
             ok, msg = self._write_items_json(flat)
             if not ok:
@@ -897,6 +902,7 @@ class WebUIMixin:
             if not isinstance(switches, dict):
                 return error_response("switches 必须是对象", status_code=400)
             data = self._load()
+            self._history_backup(data, "保存前自动备份")
             cur = dict(data.get("feature_switches", {}))
             for m in self.FEATURE_MODULES:
                 if m["key"] in switches:
@@ -1111,6 +1117,7 @@ class WebUIMixin:
             if errors:
                 return json_response({"saved": False, "errors": errors})
             flat = self._read_items_json() or {"jobs": [], "plays": [], "shop": [], "crops": [], "ferts": [], "loans": []}
+            self._history_backup(self._load(), "保存前自动备份")
             flat["crops"] = [self._norm_crop_entry(c) for c in crops]
             ok, msg = self._write_items_json(flat)
             if not ok:
@@ -1138,6 +1145,7 @@ class WebUIMixin:
             if errors:
                 return json_response({"saved": False, "errors": errors})
             flat = self._read_items_json() or {"jobs": [], "plays": [], "shop": [], "crops": [], "ferts": [], "loans": []}
+            self._history_backup(self._load(), "保存前自动备份")
             flat["ferts"] = [self._norm_fert_entry(f_) for f_ in ferts]
             ok, msg = self._write_items_json(flat)
             if not ok:
@@ -1157,6 +1165,7 @@ class WebUIMixin:
             crops = [c for c in (self._norm_crop_entry(d) for d in bench["crops"]) if c]
             ferts = [f_ for f_ in (self._norm_fert_entry(d) for d in bench["ferts"]) if f_]
             flat = self._read_items_json() or {"jobs": [], "plays": [], "shop": [], "crops": [], "ferts": [], "loans": []}
+            self._history_backup(self._load(), "保存前自动备份")
             flat["shop"] = shop
             flat["crops"] = crops
             flat["ferts"] = ferts
@@ -1208,6 +1217,7 @@ class WebUIMixin:
             if not isinstance(enabled, dict):
                 return error_response("enabled 必须是对象", status_code=400)
             data = self._load()
+            self._history_backup(data, "保存前自动备份")
             cur = dict(data.get("activities", {}))
             for aid, flag in enabled.items():
                 cur[aid] = bool(flag)
@@ -1252,11 +1262,261 @@ class WebUIMixin:
             if errors:
                 return json_response({"saved": False, "errors": errors})
             flat = self._read_items_json() or {"jobs": [], "plays": [], "shop": [], "crops": [], "ferts": [], "loans": []}
+            self._history_backup(self._load(), "保存前自动备份")
             flat["loans"] = loans
             ok, msg = self._write_items_json(flat)
             if not ok:
                 return error_response(msg, status_code=400)
             return json_response({"saved": True, "items": len(loans)})
+
+    # ================= 后台数据「待保存」容灾草稿（2.2.2） =================
+    # 管理员在待保存状态下离开 WebUI 时，前端把未保存修改暂存到 DRAFT_FILE；
+    # 下次访问时前端读取草稿并弹窗询问是否保存。
+    _DRAFT_ENDPOINTS = ("backend/config", "petshop", "farm/crops", "farm/ferts", "loan/packages",
+                        "feature/status", "params", "activities", "alias/save")
+
+    def _read_draft(self):
+        try:
+            if not os.path.exists(DRAFT_FILE):
+                return None
+            with open(DRAFT_FILE, "r", encoding="utf-8") as f:
+                d = json.load(f)
+            return d if isinstance(d, dict) and d.get("payloads") else None
+        except Exception:
+            return None
+
+    def _write_draft(self, obj) -> None:
+        try:
+            if obj is None:
+                if os.path.exists(DRAFT_FILE):
+                    os.remove(DRAFT_FILE)
+                return
+            tmp = DRAFT_FILE + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump(obj, f, ensure_ascii=False, indent=2)
+            os.replace(tmp, DRAFT_FILE)
+        except Exception as e:
+            logger.error(f"[插件] 写入容灾草稿失败: {e}")
+
+    async def web_get_config_draft(self):
+        """读取容灾草稿（上次未保存的修改，无则 null）"""
+        async with self._lock:
+            return json_response({"draft": self._read_draft()})
+
+    async def web_save_config_draft(self):
+        """暂存/清除容灾草稿：POST {payloads: {面板: {endpoint, payload}}} 或 {clear: true}。
+        只接受已知配置端点，避免任意内容写入临时文档。"""
+        async with self._lock:
+            payload = await request.json(default={})
+            if payload.get("clear"):
+                self._write_draft(None)
+                return json_response({"cleared": True})
+            payloads = payload.get("payloads")
+            if not isinstance(payloads, dict) or not payloads:
+                return error_response("payloads 必须是非空对象", status_code=400)
+            cleaned = {}
+            for pid, item in payloads.items():
+                if not isinstance(item, dict):
+                    continue
+                ep = str(item.get("endpoint", ""))
+                if ep in self._DRAFT_ENDPOINTS:
+                    cleaned[str(pid)[:40]] = {"endpoint": ep, "payload": item.get("payload")}
+            if not cleaned:
+                return error_response("没有可暂存的数据", status_code=400)
+            self._write_draft({"time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "payloads": cleaned})
+            return json_response({"saved": True})
+
+    # ================= 历史配置数据（2.2.2：historydata/setting） =================
+    # 配置数据 = data.json 的设置类键 + game_items.json（商店/打工/玩耍/作物/肥料/贷款套餐）；
+    # 用户/游戏存档数据（users/pets/bank/farms/loans/roulette/ledger 等）不进历史、不被回溯覆盖。
+    _HISTORY_CONFIG_KEYS = ("params", "alias_cmds", "activities", "activity_config", "feature_switches")
+    # ponytail: 固定保留最近 30 个版本，超出丢弃最旧；需要可配置再加设置项
+    _HISTORY_KEEP = 30
+
+    def _history_capture(self, data: dict) -> dict:
+        """抓取当前配置数据快照（敏感参数脱敏，不进历史）"""
+        cfg = {}
+        for k in self._HISTORY_CONFIG_KEYS:
+            if k in data:
+                cfg[k] = data[k]
+        if isinstance(cfg.get("params"), dict):
+            cfg["params"] = {k: v for k, v in cfg["params"].items() if k not in self._SENSITIVE_PARAMS}
+        items = None
+        try:
+            if os.path.exists(ITEMS_JSON_FILE):
+                with open(ITEMS_JSON_FILE, "r", encoding="utf-8") as f:
+                    items = json.load(f)
+        except Exception:
+            items = None
+        return {"time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "items": items, "config": cfg}
+
+    def _history_backup(self, data: dict, reason: str) -> None:
+        """把当前配置数据存为一个历史版本（开关 data.history_keep 开启时记录；
+        回溯前的自动备份不受开关限制，始终记录）"""
+        try:
+            if not data.get("history_keep") and reason != "回溯前自动备份":
+                return
+            os.makedirs(HISTORY_DIR, exist_ok=True)
+            snap = self._history_capture(data)
+            snap["reason"] = reason
+            ts = datetime.now().strftime("%Y%m%d_%H%M%S_") + secrets.token_hex(3)
+            tmp = os.path.join(HISTORY_DIR, ts + ".json.tmp")
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump(snap, f, ensure_ascii=False, indent=2)
+            os.replace(tmp, os.path.join(HISTORY_DIR, ts + ".json"))
+            files = sorted(f for f in os.listdir(HISTORY_DIR) if f.endswith(".json"))
+            for old in files[: max(0, len(files) - self._HISTORY_KEEP)]:
+                try:
+                    os.remove(os.path.join(HISTORY_DIR, old))
+                except OSError:
+                    pass
+        except Exception as e:
+            logger.error(f"[插件] 保存历史配置失败: {e}")
+
+    def _history_verify_captcha(self, file: str, code) -> tuple:
+        """校验回溯验证码（与发起时生成的版本一一对应，5 分钟有效）"""
+        st = getattr(self, "_history_captcha", None)
+        if not isinstance(st, dict) or st.get("code") != str(code or ""):
+            return False, "验证码不正确，请重新获取"
+        if st.get("file") != file:
+            return False, "验证码与所选版本不匹配"
+        if datetime.now().timestamp() > float(st.get("exp", 0) or 0):
+            return False, "验证码已过期，请重新获取"
+        return True, ""
+
+    def _history_restore(self, file: str) -> tuple:
+        """回溯到指定版本：先把当前配置自动备份为独立版本，再用快照覆盖配置数据（用户存档保留）"""
+        path = os.path.join(HISTORY_DIR, os.path.basename(file))
+        if not os.path.isfile(path):
+            return False, "历史版本不存在"
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                snap = json.load(f)
+        except Exception as e:
+            return False, f"读取历史版本失败: {e}"
+        if not isinstance(snap, dict):
+            return False, "历史版本数据损坏"
+        # 回溯正式开始前：当前配置自动备份为单独版本（无论开关是否开启）
+        self._history_backup(self._load(), "回溯前自动备份")
+        items = snap.get("items")
+        if isinstance(items, dict):
+            ok, msg = self._write_items_json(items)
+            if not ok:
+                return False, msg
+        data = self._load()
+        cur_params = dict(data.get("params") or {})
+        cfg = snap.get("config") if isinstance(snap.get("config"), dict) else {}
+        for k in self._HISTORY_CONFIG_KEYS:
+            if k in cfg:
+                data[k] = cfg[k]
+        # 快照里被脱敏的敏感参数（调试口令等）保留当前值，不被清空
+        if isinstance(data.get("params"), dict):
+            for k in self._SENSITIVE_PARAMS:
+                if k in cur_params and k not in data["params"]:
+                    data["params"][k] = cur_params[k]
+        self._save(data)
+        try:
+            self._apply_runtime_params(data.get("params") or {})
+        except Exception:
+            pass
+        return True, "已回溯到 " + str(snap.get("time") or os.path.basename(file))
+
+    async def web_history_list(self):
+        """读取历史配置版本列表 + 保留开关状态"""
+        async with self._lock:
+            data = self._load()
+            versions = []
+            try:
+                if os.path.isdir(HISTORY_DIR):
+                    for f in sorted((x for x in os.listdir(HISTORY_DIR) if x.endswith(".json")), reverse=True):
+                        info = {"file": f, "time": "", "reason": ""}
+                        try:
+                            with open(os.path.join(HISTORY_DIR, f), "r", encoding="utf-8") as fh:
+                                d = json.load(fh)
+                            if isinstance(d, dict):
+                                info["time"] = str(d.get("time") or "")
+                                info["reason"] = str(d.get("reason") or "")
+                        except Exception:
+                            pass
+                        versions.append(info)
+            except Exception as e:
+                logger.error(f"[插件] 读取历史配置列表失败: {e}")
+            return json_response({"enabled": bool(data.get("history_keep")), "versions": versions})
+
+    async def web_history_toggle(self):
+        """开关历史数据保留功能：POST {enabled: bool}（设置 → 数据导入导出）"""
+        async with self._lock:
+            payload = await request.json(default={})
+            data = self._load()
+            data["history_keep"] = bool(payload.get("enabled"))
+            self._save(data)
+            return json_response({"saved": True, "enabled": bool(data["history_keep"])})
+
+    async def web_history_captcha(self):
+        """生成回溯验证码（6 位数字 + 大小写字母），5 分钟内有效，仅对指定版本可用"""
+        async with self._lock:
+            payload = await request.json(default={})
+            file = str(payload.get("file") or "")
+            if not file.endswith(".json") or "/" in file or "\\" in file \
+                    or not os.path.isfile(os.path.join(HISTORY_DIR, file)):
+                return error_response("历史版本不存在", status_code=400)
+            code = "".join(secrets.choice(_string.ascii_letters + _string.digits) for _ in range(6))
+            self._history_captcha = {"file": file, "code": code, "exp": datetime.now().timestamp() + 300}
+            return json_response({"captcha": code})
+
+    async def web_history_verify(self):
+        """回溯第一步校验：只校验验证码与管理员密码，不执行回溯（第二步再发 rollback）"""
+        async with self._lock:
+            payload = await request.json(default={})
+            file = str(payload.get("file") or "")
+            if not file.endswith(".json") or "/" in file or "\\" in file:
+                return error_response("参数不合法", status_code=400)
+            ok, msg = self._history_verify_captcha(file, payload.get("captcha"))
+            if not ok:
+                return error_response(msg, status_code=400)
+            data = self._load()
+            lan = self._lan_conf(data)
+            if lan.get("password_hash") and not _lan_verify_password(lan["password_hash"], str(payload.get("password") or "")):
+                return error_response("管理员密码不正确", status_code=400)
+            return json_response({"verified": True})
+
+    async def web_history_rollback(self):
+        """回溯：POST {file, password, captcha}。前端需先点第一个确认按钮（校验），
+        再点第二个确认按钮发起本请求；校验验证码 + 管理员密码
+        （未设置局域网访问密码时仅校验验证码）。"""
+        async with self._lock:
+            payload = await request.json(default={})
+            file = str(payload.get("file") or "")
+            if not file.endswith(".json") or "/" in file or "\\" in file:
+                return error_response("参数不合法", status_code=400)
+            ok, msg = self._history_verify_captcha(file, payload.get("captcha"))
+            if not ok:
+                return error_response(msg, status_code=400)
+            data = self._load()
+            lan = self._lan_conf(data)
+            if lan.get("password_hash") and not _lan_verify_password(lan["password_hash"], str(payload.get("password") or "")):
+                return error_response("管理员密码不正确", status_code=400)
+            ok, msg = self._history_restore(file)
+            if not ok:
+                return error_response(msg, status_code=400)
+            self._history_captcha = None
+            return json_response({"restored": True, "msg": msg})
+
+    async def web_history_delete(self):
+        """删除某个历史版本：POST {file}"""
+        async with self._lock:
+            payload = await request.json(default={})
+            file = os.path.basename(str(payload.get("file") or ""))
+            if not file.endswith(".json"):
+                return error_response("参数不合法", status_code=400)
+            path = os.path.join(HISTORY_DIR, file)
+            if not os.path.isfile(path):
+                return error_response("历史版本不存在", status_code=400)
+            try:
+                os.remove(path)
+            except OSError as e:
+                return error_response(f"删除失败: {e}", status_code=400)
+            return json_response({"deleted": True})
 
     # ================= 宠物：指令 =================
     async def web_sync_group_names(self):

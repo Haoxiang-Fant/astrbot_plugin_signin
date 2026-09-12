@@ -289,6 +289,129 @@ async function saveItemTables(statusId, endpoint, payload) {
   }
 }
 
+// ================= 2.2.2 后台数据「待保存」状态 =================
+// 商店编辑 / 打工玩耍 / 银行贷款 / 功能开关 / 运行参数 / 活动 / 同义口令 编辑页：
+// 修改后进入待保存状态，手动保存退出；未保存离开弹窗询问；离开时暂存容灾草稿（config/draft），
+// 下次访问弹窗询问是否保存。
+const DIRTY_PANELS = {
+  "shoptype": () => buildShopPayload(),
+  "farm-crops": () => buildCropsPayload(),
+  "farm-ferts": () => buildFertsPayload(),
+  "config-jobs": () => buildConfigPayload("jobs"),
+  "config-plays": () => buildConfigPayload("plays"),
+  "loanpkgs": () => buildLoanPkgsPayload(),
+  "features": () => buildFeaturesPayload(),
+  "params": () => buildParamsPayload(),
+  "activities": () => buildActivitiesPayload(),
+  "aliases": () => buildAliasesPayload(),
+};
+const dirtyPanels = new Set();
+let _draftTimer = null;
+let _bootDraft = null;
+
+function markDirty(panelId) {
+  if (!DIRTY_PANELS[panelId] || dirtyPanels.has(panelId)) return;
+  dirtyPanels.add(panelId);
+  scheduleDraftSave();
+}
+
+function buildDirtyPayloads() {
+  const out = [];
+  dirtyPanels.forEach((panel) => {
+    const build = DIRTY_PANELS[panel];
+    if (!build) { dirtyPanels.delete(panel); return; }
+    const b = build();
+    if (b) out.push({ panel, endpoint: b.endpoint, payload: b.payload });
+  });
+  return out;
+}
+
+// 容灾：待保存状态下把当前编辑内容暂存到服务端临时文档（防页面直接关闭丢失）
+function scheduleDraftSave() {
+  if (!dirtyPanels.size) return;
+  clearTimeout(_draftTimer);
+  _draftTimer = setTimeout(async () => {
+    if (!dirtyPanels.size) return;
+    const payloads = {};
+    buildDirtyPayloads().forEach((it) => { payloads[it.panel] = { endpoint: it.endpoint, payload: it.payload }; });
+    if (!Object.keys(payloads).length) return;
+    try { await bridge.apiPost("config/draft", { payloads }); } catch (e) { /* 容灾暂存失败不影响编辑 */ }
+  }, 1000);
+}
+
+function clearDirtyAll() {
+  dirtyPanels.clear();
+  bridge.apiPost("config/draft", { clear: true }).catch(() => {});
+}
+
+async function saveDirtyAll() {
+  const errs = [];
+  for (const it of buildDirtyPayloads()) {
+    try {
+      await bridge.apiPost(it.endpoint, it.payload);
+      dirtyPanels.delete(it.panel);
+    } catch (e) {
+      errs.push(it.panel + "：" + e.message);
+    }
+  }
+  if (!dirtyPanels.size) {
+    try { await bridge.apiPost("config/draft", { clear: true }); } catch (e) { /* 忽略 */ }
+  }
+  return errs;
+}
+
+// 未保存修改弹窗（页面内弹窗，非浏览器 confirm）：保存 / 不保存 / 取消（✕）
+let _unsavedConfirm = null;
+let _unsavedDiscard = null;
+function showUnsavedModal(title, text, onConfirm, onDiscard) {
+  $("unsaved-title").textContent = title;
+  $("unsaved-text").textContent = text;
+  _unsavedConfirm = onConfirm || null;
+  _unsavedDiscard = onDiscard || null;
+  $("unsaved-modal").classList.remove("hidden");
+}
+function closeUnsavedModal() {
+  $("unsaved-modal").classList.add("hidden");
+  _unsavedConfirm = null;
+  _unsavedDiscard = null;
+}
+
+// 离开当前面板前的守卫：有未保存修改 → 弹窗询问
+function guardNavAway(action) {
+  if (!dirtyPanels.size) { action(); return; }
+  showUnsavedModal("⚠️ 有未保存的修改", "当前页面有未保存的修改，离开前是否保存？",
+    async () => {
+      const errs = await saveDirtyAll();
+      closeUnsavedModal();
+      if (errs.length) alert("部分修改保存失败：" + errs.join("；"));
+      action();
+    },
+    () => { clearDirtyAll(); closeUnsavedModal(); action(); });
+}
+
+// 启动时检查容灾草稿（上次待保存状态下离开时暂存的修改）
+async function checkDraftOnBoot() {
+  try {
+    const r = await bridge.apiGet("config/draft");
+    const d = r && r.draft;
+    if (!d || !d.payloads || !Object.keys(d.payloads).length) return;
+    _bootDraft = d.payloads;
+    showUnsavedModal("💾 发现上次未保存的修改",
+      "上次编辑于 " + (d.time || "未知时间") + "，离开时未保存已自动暂存。是否保存这些修改？",
+      async () => {
+        const errs = [];
+        for (const it of Object.values(_bootDraft || {})) {
+          try { await bridge.apiPost(it.endpoint, it.payload); } catch (e) { errs.push(it.endpoint + "：" + e.message); }
+        }
+        _bootDraft = null;
+        try { await bridge.apiPost("config/draft", { clear: true }); } catch (e) { /* 忽略 */ }
+        closeUnsavedModal();
+        if (errs.length) alert("部分修改保存失败：" + errs.join("；"));
+      },
+      () => { _bootDraft = null; try { bridge.apiPost("config/draft", { clear: true }).catch(() => {}); } catch (e) {} closeUnsavedModal(); });
+  } catch (e) { /* 局域网未解锁等场景忽略 */ }
+}
+
 // ---------- 打工 / 玩耍（2.0.2：拆分为独立编辑页，保存时合并回全量配置） ----------
 let configStore = { jobs: [], plays: [] };   // 全量打工/玩耍配置（两类编辑器共用）
 
@@ -309,24 +432,30 @@ async function loadConfig(kind) {
   }
 }
 
-async function saveConfig(kind) {
-  const statusId = kind === "jobs" ? "status-jobs" : "status-plays";
-  if (!guardLoaded(kind)) return;
+// 2.2.2：构建待保存数据（校验失败返回 null 并已提示）；保存 = 构建 + 发送
+function buildConfigPayload(kind) {
+  if (!guardLoaded(kind)) return null;
   if (kind === "jobs") {
     const jobs = collectItemTable("jobs-table", JOB_FIELDS);
     if (jobs.errors.length) {
-      setStatus(statusId, "❌ " + jobs.errors.map((m) => "打工·" + m).join("；"));
-      return;
+      setStatus("status-jobs", "❌ " + jobs.errors.map((m) => "打工·" + m).join("；"));
+      return null;
     }
-    await saveItemTables(statusId, "backend/config", { jobs: jobs.items, plays: configStore.plays });
-  } else {
-    const plays = collectItemTable("plays-table", PLAY_FIELDS);
-    if (plays.errors.length) {
-      setStatus(statusId, "❌ " + plays.errors.map((m) => "玩耍·" + m).join("；"));
-      return;
-    }
-    await saveItemTables(statusId, "backend/config", { jobs: configStore.jobs, plays: plays.items });
+    return { endpoint: "backend/config", payload: { jobs: jobs.items, plays: configStore.plays } };
   }
+  const plays = collectItemTable("plays-table", PLAY_FIELDS);
+  if (plays.errors.length) {
+    setStatus("status-plays", "❌ " + plays.errors.map((m) => "玩耍·" + m).join("；"));
+    return null;
+  }
+  return { endpoint: "backend/config", payload: { jobs: configStore.jobs, plays: plays.items } };
+}
+
+async function saveConfig(kind) {
+  const statusId = kind === "jobs" ? "status-jobs" : "status-plays";
+  const b = buildConfigPayload(kind);
+  if (!b) return;
+  await saveItemTables(statusId, b.endpoint, b.payload);
 }
 
 // ---------- 宠物商店（2.0.2：按类型分编辑器，保存时合并回全量列表） ----------
@@ -351,17 +480,23 @@ async function loadPetShop(shopType) {
   }
 }
 
-async function savePetShopAll() {
-  if (!guardLoaded("petshop")) return;
+// 2.2.2：构建待保存数据（校验失败返回 null 并已提示）
+function buildShopPayload() {
+  if (!guardLoaded("petshop")) return null;
   const shop = collectItemTable("petshop-table", SHOP_EFFECT_FIELDS, { forceType: currentShopType });
   if (shop.errors.length) {
     setStatus("status-petshop", "❌ " + shop.errors.join("；"));
-    return;
+    return null;
   }
   // 用编辑后的该类型条目替换全量列表中的同类型条目
   const others = petShopStore.filter((it) => (it.type || "食物") !== currentShopType);
-  const merged = [...others, ...shop.items];
-  await saveItemTables("status-petshop", "petshop", { items: merged });
+  return { endpoint: "petshop", payload: { items: [...others, ...shop.items] } };
+}
+
+async function savePetShopAll() {
+  const b = buildShopPayload();
+  if (!b) return;
+  await saveItemTables("status-petshop", b.endpoint, b.payload);
 }
 
 // ---------- 农场商店：种子 / 化肥 ----------
@@ -378,14 +513,20 @@ async function loadCrops() {
   }
 }
 
-async function saveCrops() {
-  if (!guardLoaded("crops")) return;
+function buildCropsPayload() {
+  if (!guardLoaded("crops")) return null;
   const crops = collectItemTable("crops-table", CROP_FIELDS);
   if (crops.errors.length) {
     setStatus("status-crops", "❌ " + crops.errors.join("；"));
-    return;
+    return null;
   }
-  await saveItemTables("status-crops", "farm/crops", { items: crops.items });
+  return { endpoint: "farm/crops", payload: { items: crops.items } };
+}
+
+async function saveCrops() {
+  const b = buildCropsPayload();
+  if (!b) return;
+  await saveItemTables("status-crops", b.endpoint, b.payload);
 }
 
 async function loadFerts() {
@@ -401,14 +542,20 @@ async function loadFerts() {
   }
 }
 
-async function saveFerts() {
-  if (!guardLoaded("ferts")) return;
+function buildFertsPayload() {
+  if (!guardLoaded("ferts")) return null;
   const ferts = collectItemTable("ferts-table", FERT_FIELDS);
   if (ferts.errors.length) {
     setStatus("status-ferts", "❌ " + ferts.errors.join("；"));
-    return;
+    return null;
   }
-  await saveItemTables("status-ferts", "farm/ferts", { items: ferts.items });
+  return { endpoint: "farm/ferts", payload: { items: ferts.items } };
+}
+
+async function saveFerts() {
+  const b = buildFertsPayload();
+  if (!b) return;
+  await saveItemTables("status-ferts", b.endpoint, b.payload);
 }
 
 // ---------- 恢复默认道具数据（需验证码确认） ----------
@@ -472,14 +619,20 @@ async function loadLoanPkgs() {
   }
 }
 
-async function saveLoanPkgs() {
-  if (!guardLoaded("loanpkgs")) return;
+function buildLoanPkgsPayload() {
+  if (!guardLoaded("loanpkgs")) return null;
   const loans = collectItemTable("loans-table", LOAN_FIELDS, { codeMode: true });
   if (loans.errors.length) {
     setStatus("status-loanpkgs", "❌ " + loans.errors.join("；"));
-    return;
+    return null;
   }
-  await saveItemTables("status-loanpkgs", "loan/packages", { items: loans.items });
+  return { endpoint: "loan/packages", payload: { items: loans.items } };
+}
+
+async function saveLoanPkgs() {
+  const b = buildLoanPkgsPayload();
+  if (!b) return;
+  await saveItemTables("status-loanpkgs", b.endpoint, b.payload);
 }
 
 // ---------- 数据导入导出 ----------
@@ -552,14 +705,23 @@ async function loadFeatures() {
   }
 }
 
-async function saveFeatures() {
+function buildFeaturesPayload() {
+  const cbs = document.querySelectorAll("#features-list [data-feature]");
+  if (!cbs.length) {
+    setStatus("status-features", "❌ 请先点击「加载」读取功能开关");
+    return null;
+  }
   const switches = {};
-  document.querySelectorAll("#features-list [data-feature]").forEach((cb) => {
-    switches[cb.dataset.feature] = cb.checked;
-  });
+  cbs.forEach((cb) => { switches[cb.dataset.feature] = cb.checked; });
+  return { endpoint: "feature/status", payload: { switches } };
+}
+
+async function saveFeatures() {
+  const b = buildFeaturesPayload();
+  if (!b) return;
   setStatus("status-features", "保存中...");
   try {
-    await bridge.apiPost("feature/status", { switches });
+    await bridge.apiPost(b.endpoint, b.payload);
     setStatus("status-features", "✅ 已保存并立即生效");
   } catch (e) {
     setStatus("status-features", "❌ 保存失败：" + e.message);
@@ -614,7 +776,7 @@ async function loadActivities() {
   }
 }
 
-async function saveActivities() {
+function buildActivitiesPayload() {
   const enabled = {};
   const configs = {};
   const clientErrors = [];
@@ -664,11 +826,21 @@ async function saveActivities() {
   });
   if (clientErrors.length) {
     setStatus("status-activities", "❌ " + clientErrors.join("；"));
-    return;
+    return null;
   }
+  if (!Object.keys(enabled).length) {
+    setStatus("status-activities", "❌ 请先点击「加载」读取活动配置");
+    return null;
+  }
+  return { endpoint: "activities", payload: { enabled, configs } };
+}
+
+async function saveActivities() {
+  const b = buildActivitiesPayload();
+  if (!b) return;
   setStatus("status-activities", "保存中...");
   try {
-    const resp = await bridge.apiPost("activities", { enabled, configs });
+    const resp = await bridge.apiPost(b.endpoint, b.payload);
     const errs = (resp && resp.errors) || {};
     const aidKeys = Object.keys(errs);
     if (aidKeys.length) {
@@ -1002,7 +1174,8 @@ function renderParamItem(p) {
   </label>`;
 }
 
-async function saveParams() {
+// 2.2.2：构建待保存的运行参数（校验失败返回 null 并已提示）
+function buildParamsPayload() {
   const params = {};
   const clientErrors = [];
   document.querySelectorAll("#params-list [data-key]").forEach((el) => {
@@ -1148,11 +1321,17 @@ async function saveParams() {
   }
   if (clientErrors.length) {
     setStatus("status-params", "❌ " + clientErrors.join("；"));
-    return;
+    return null;
   }
+  return { endpoint: "params", payload: { params } };
+}
+
+async function saveParams() {
+  const b = buildParamsPayload();
+  if (!b) return;
   setStatus("status-params", "保存中...");
   try {
-    const resp = await bridge.apiPost("params", { params });
+    const resp = await bridge.apiPost(b.endpoint, b.payload);
     const errs = (resp && resp.errors) || {};
     const keys = Object.keys(errs);
     if (keys.length) {
@@ -1232,11 +1411,11 @@ async function loadAliases() {
   }
 }
 
-async function saveAliases() {
+function buildAliasesPayload() {
   const rows = Array.from(document.querySelectorAll("#aliases-list .alias-row"));
   if (!rows.length || !document.querySelector("#aliases-list .alias-head")) {
     setStatus("status-aliases", "❌ 请先点击「加载」读取同义口令（若一直加载失败请重载插件）");
-    return;
+    return null;
   }
   const aliases = {};
   for (const row of rows) {
@@ -1247,9 +1426,15 @@ async function saveAliases() {
     if (!key) continue;
     aliases[key] = val;
   }
+  return { endpoint: "alias/save", payload: { aliases } };
+}
+
+async function saveAliases() {
+  const b = buildAliasesPayload();
+  if (!b) return;
   setStatus("status-aliases", "保存中...");
   try {
-    await bridge.apiPost("alias/save", { aliases });
+    await bridge.apiPost(b.endpoint, b.payload);
     setStatus("status-aliases", "✅ 已保存并立即生效");
     loadAliases();
   } catch (e) {
@@ -1760,6 +1945,9 @@ function recordUserCard(u) {
     </div>
     <div class="rec-row muted">最后活跃：${esc(u.last_active_text || "-")} <span class="rec-chip toggle-expand">点击展开详情 ▾</span></div>
     <div class="user-detail"><p class="hint">展开后加载详情</p></div>
+    <div class="user-card-actions">
+      <button class="btn-user-detail primary" data-uid-detail="${esc(u.uid)}">查看详情</button>
+    </div>
   </div>`;
 }
 
@@ -1796,15 +1984,33 @@ function getSortKey(u) {
   }
 }
 
+// 2.2.2 排序修复：两类「无数据」键不随升降序翻转位置——
+// ① 未领养宠物 / 未开通农场（键 [-1]）不是最低等级，升序降序都排在最后；
+// ② 中文昵称的拼音/笔画未收录（服务端子键 ""/0）按文档应排在已收录字之后（组内偏后），升降序一致。
+function userCardMissingKey(k) {
+  return Array.isArray(k) && k.length === 1 && Number(k[0]) === -1;
+}
+
+function userCardUnknownHanKey(k) {
+  return Array.isArray(k) && k.length >= 2 && k[0] === 0 && (k[1] === "" || Number(k[1]) === 0);
+}
+
+function cmpUserCards(x, y) {
+  const ka = getSortKey(x), kb = getSortKey(y);
+  const ma = userCardMissingKey(ka), mb = userCardMissingKey(kb);
+  if (ma !== mb) return ma ? 1 : -1; // 无数据键：升降序都排最后（不参与方向翻转）
+  const ua = userCardUnknownHanKey(ka), ub = userCardUnknownHanKey(kb);
+  if (ua !== ub) return ua ? 1 : -1; // 未收录中文：组内偏后（不参与方向翻转）
+  const c = cmpSortKeys(ka, kb);
+  return recordUsersAsc ? c : -c; // 正常键才随升降序翻转
+}
+
 function renderRecordUsers() {
   const box = $("records-users-list");
   const kw = ($("record-users-search")?.value || "").trim().toLowerCase();
   let list = recordUsersCache.slice();
-  // 本地排序（2.1.0：六种方式 + 升降序，无需重新请求）
-  list.sort((x, y) => {
-    const c = cmpSortKeys(getSortKey(x), getSortKey(y));
-    return recordUsersAsc ? c : -c;
-  });
+  // 本地排序（2.1.0：六种方式 + 升降序，无需重新请求；2.2.2 修复无数据键的位置）
+  list.sort(cmpUserCards);
   if (kw) {
     list = list.filter((u) =>
       String(u.nick || "").toLowerCase().includes(kw) ||
@@ -1831,6 +2037,12 @@ function renderRecordUsers() {
   });
   if (!box._userDetailHandler) {
     box._userDetailHandler = (e) => {
+      // 2.2.2：展开卡片里的「查看详情」→ 进入用户详情子页（仅运行记录·用户信息页提供）
+      const detailBtn = e.target.closest(".btn-user-detail");
+      if (detailBtn) {
+        openPanel({ id: "record-user-detail", title: "运行记录 · 用户详情", params: { uid: detailBtn.getAttribute("data-uid-detail") } });
+        return;
+      }
       const card = e.target.closest(".user-card");
       if (!card) return;
       // 阻止点开关芯片时触发详情展开
@@ -1857,6 +2069,33 @@ async function loadRecordUsers() {
   } catch (e) {
     $("records-users-list").innerHTML = '<p class="hint">加载失败：' + esc(e.message) + "</p>";
     setStatus("status-record-users", "❌ 加载失败");
+  }
+}
+
+// 2.2.2：用户详情子页（运行记录·用户信息卡片展开后点「查看详情」进入；仅该页提供入口）
+async function loadRecordUserDetail(uid) {
+  setStatus("status-record-user-detail", "加载中...");
+  const box = $("record-user-detail-box");
+  try {
+    const r = await bridge.apiPost("records/users/detail", { uid });
+    const d = (r && r.user) || null;
+    if (!d) {
+      box.innerHTML = '<p class="hint">该用户暂无数据。</p>';
+      setStatus("status-record-user-detail", r && r.error ? "❌ " + r.error : "无数据");
+      return;
+    }
+    const headCard = `<div class="detail-grid" style="margin-bottom:12px">
+      <div class="detail-card"><div class="detail-card-title">👤 基本信息</div>
+        <div class="rec-line"><b>${esc(d.nick || uid)}</b>（${esc(d.uid || uid)}）</div>
+        <div class="rec-line">💰 金币 ${fmtNum(d.coins)} · 好感 Lv.${fmtNum(d.fav_level)}（${fmtNum(d.fav)}）</div>
+        <div class="rec-line">🐾 宠物 ${d.pet ? `Lv.${fmtNum(d.pet.level)}` : "未领养"} · 🌾 农场 ${d.farm ? `Lv.${fmtNum(d.farm.level)}` : "未开通"}</div>
+      </div></div>`;
+    box.innerHTML = headCard + recordUserDetailGrid(d);
+    $("record-user-detail-title").textContent = (d.nick || uid) + " 的详情";
+    setStatus("status-record-user-detail", "✅ 已加载");
+  } catch (e) {
+    box.innerHTML = '<p class="hint">加载失败：' + esc(e.message) + "</p>";
+    setStatus("status-record-user-detail", "❌ 加载失败");
   }
 }
 
@@ -2066,8 +2305,10 @@ function loadCurrent() {
   else if (cur.id === "records-pets") loadRecordPets();
   else if (cur.id === "record-pet-detail") loadRecordPetDetail(cur.params?.uid);
   else if (cur.id === "records-users") loadRecordUsers();
+  else if (cur.id === "record-user-detail") loadRecordUserDetail(cur.params?.uid);
   else if (cur.id === "records-prices") loadRecordPrices();
-  // data 面板为导出/导入操作，无需自动加载
+  else if (cur.id === "data") loadHistoryPanel(); // 2.2.2：历史数据保留/回溯列表
+  // data 面板其余为导出/导入操作，无需自动加载
 }
 
 function openSubpage(id) {
@@ -2082,18 +2323,23 @@ function openPanel(entry) {
 }
 
 function goBack() {
-  if (navStack.length > 1) {
-    navStack.pop();
-    renderView();
-    loadCurrent();
-  } else {
-    goHome();
-  }
+  // 2.2.2：有待保存修改时先弹窗询问
+  guardNavAway(() => {
+    if (navStack.length > 1) {
+      navStack.pop();
+      renderView();
+      loadCurrent();
+    } else {
+      goHome();
+    }
+  });
 }
 
 function goHome() {
-  navStack.length = 0;
-  renderView();
+  guardNavAway(() => {
+    navStack.length = 0;
+    renderView();
+  });
 }
 
 function openFeature(name) {
@@ -2320,7 +2566,8 @@ async function lanUnlock() {
     }
   } catch (e) {
     $("lan-unlock-error").classList.remove("hidden");
-    $("lan-unlock-error").textContent = "密码错误，请重试";
+    // 2.2.2：展示服务端消息（含剩余机会 / 锁定提示）；密码错误不再触发 AstrBot 登出
+    $("lan-unlock-error").textContent = (e && e.message) ? String(e.message) : "密码错误，请重试";
   }
 }
 
@@ -2439,7 +2686,169 @@ $("lan-blacklist-modal").addEventListener("click", (e) => {
   if (e.target === e.currentTarget) closeLanBlacklist();
 });
 
+// 2.2.2：保存成功（resp.saved）时自动退出当前面板的待保存状态（config/draft 自身除外）
+function dirtyWrap(obj, name) {
+  const orig = obj[name];
+  obj[name] = async (...args) => {
+    const r = await orig.apply(obj, args);
+    try {
+      if (r && r.saved && args[0] !== "config/draft") {
+        const cur = currentView();
+        if (cur.kind === "panel" && dirtyPanels.has(cur.id)) {
+          dirtyPanels.delete(cur.id);
+          if (!dirtyPanels.size) bridge.apiPost("config/draft", { clear: true }).catch(() => {});
+        }
+      }
+    } catch (e) { /* 忽略 */ }
+    return r;
+  };
+  return obj[name];
+}
+if (bridge && typeof bridge.apiPost === "function") {
+  dirtyWrap(bridge, "apiPost");
+}
+
+// 2.2.2：待保存状态监听（输入/勾选/加行/删行 → 标记脏 + 暂存容灾草稿）
+function _dirtyFromEvent(e) {
+  const panel = e.target.closest && e.target.closest(".panel");
+  if (!panel) return;
+  // section.id 带 panel- 前缀，DIRTY_PANELS 用导航栈 id（无前缀）
+  const pid = String(panel.id || "").replace(/^panel-/, "");
+  if (!DIRTY_PANELS[pid]) return;
+  if (e.type === "click" && !e.target.closest(".add-row, [data-alias-add], [data-alias-del], .row-del")) return;
+  markDirty(pid);
+}
+document.addEventListener("input", _dirtyFromEvent, true);
+document.addEventListener("change", _dirtyFromEvent, true);
+document.addEventListener("click", _dirtyFromEvent, true);
+
+// 2.2.2：未保存修改弹窗按钮
+$("btn-unsaved-save").addEventListener("click", () => { if (_unsavedConfirm) _unsavedConfirm(); });
+$("btn-unsaved-discard").addEventListener("click", () => { if (_unsavedDiscard) _unsavedDiscard(); });
+$("btn-unsaved-cancel").addEventListener("click", closeUnsavedModal);
+$("unsaved-modal").addEventListener("click", (e) => { if (e.target === e.currentTarget) closeUnsavedModal(); });
+
+// ================= 2.2.2 历史配置数据（historydata） =================
+async function loadHistoryPanel() {
+  setStatus("status-history", "加载中...");
+  try {
+    const r = await bridge.apiGet("history/list");
+    $("history-enabled").checked = !!(r && r.enabled);
+    const versions = (r && r.versions) || [];
+    renderHistoryList(versions);
+    setStatus("status-history", `✅ ${r && r.enabled ? "已开启保留" : "未开启保留"} · 共 ${versions.length} 个版本`);
+  } catch (e) {
+    setStatus("status-history", "❌ 加载失败：" + e.message);
+  }
+}
+
+function renderHistoryList(versions) {
+  const box = $("history-list-body");
+  if (!versions.length) {
+    box.innerHTML = '<p class="hint">暂无历史版本（开启保留功能后，每次保存后台数据前会自动记录一份旧配置）。</p>';
+    return;
+  }
+  box.innerHTML = '<table class="lan-table"><thead><tr><th>备份时间</th><th>说明</th><th>操作</th></tr></thead><tbody>'
+    + versions.map((v) => `<tr><td>${esc(v.time || v.file)}</td><td>${esc(v.reason || "")}</td>
+        <td><button data-hb-back="${esc(v.file)}">回溯</button>
+        <button data-hb-del="${esc(v.file)}" class="danger">删除</button></td></tr>`).join("")
+    + "</tbody></table>";
+  box.querySelectorAll("button[data-hb-back]").forEach((b) =>
+    b.addEventListener("click", () => openHistoryRollback(b.getAttribute("data-hb-back"))));
+  box.querySelectorAll("button[data-hb-del]").forEach((b) =>
+    b.addEventListener("click", () => historyDelete(b.getAttribute("data-hb-del"))));
+}
+
+async function historyToggle() {
+  setStatus("status-history", "保存中...");
+  try {
+    const r = await bridge.apiPost("history/toggle", { enabled: $("history-enabled").checked });
+    setStatus("status-history", r && r.enabled ? "✅ 已开启历史数据保留" : "已关闭历史数据保留");
+    loadHistoryPanel();
+  } catch (e) {
+    setStatus("status-history", "❌ 保存失败：" + e.message);
+  }
+}
+
+async function historyDelete(file) {
+  if (!confirm("确定删除该历史版本？删除后不可恢复。")) return;
+  try {
+    await bridge.apiPost("history/delete", { file });
+    loadHistoryPanel();
+  } catch (e) {
+    setStatus("status-history", "❌ 删除失败：" + e.message);
+  }
+}
+
+// 回溯弹窗：第一步输入管理员密码 + 验证码点「确认校验」，第二步在另一位置点「确认执行回溯」
+let _historyFile = "";
+async function openHistoryRollback(file) {
+  _historyFile = file;
+  $("history-target").textContent = file;
+  $("history-captcha-input").value = "";
+  $("history-password-input").value = "";
+  $("history-error").classList.add("hidden");
+  $("history-step1").classList.remove("hidden");
+  $("history-step2").classList.add("hidden");
+  $("history-modal").classList.remove("hidden");
+  try {
+    const r = await bridge.apiPost("history/captcha", { file });
+    $("history-captcha-code").textContent = (r && r.captcha) || "获取失败";
+  } catch (e) {
+    $("history-captcha-code").textContent = "获取失败";
+  }
+}
+
+function historyShowError(msg) {
+  $("history-error").textContent = msg;
+  $("history-error").classList.remove("hidden");
+}
+
+async function historyVerifyStep() {
+  const code = ($("history-captcha-input").value || "").trim();
+  if (!code) { historyShowError("请输入验证码"); return; }
+  try {
+    await bridge.apiPost("history/verify", { file: _historyFile, captcha: code, password: $("history-password-input").value });
+    $("history-error").classList.add("hidden");
+    $("history-step1").classList.add("hidden");
+    $("history-step2").classList.remove("hidden");
+  } catch (e) {
+    // 验证码未消费仍有效，直接提示错误即可
+    historyShowError(e && e.message ? String(e.message) : "校验失败");
+  }
+}
+
+async function historyRollbackStep() {
+  try {
+    const r = await bridge.apiPost("history/rollback", {
+      file: _historyFile,
+      captcha: ($("history-captcha-input").value || "").trim(),
+      password: $("history-password-input").value,
+    });
+    $("history-modal").classList.add("hidden");
+    setStatus("status-history", "✅ " + ((r && r.msg) || "已回溯"));
+    loadHistoryPanel();
+  } catch (e) {
+    $("history-modal").classList.add("hidden");
+    historyShowError(e && e.message ? String(e.message) : "回溯失败");
+    setStatus("status-history", "❌ " + (e && e.message ? e.message : "回溯失败"));
+  }
+}
+
+function closeHistoryModal() { $("history-modal").classList.add("hidden"); }
+
+// 2.2.2 事件绑定
+$("history-enabled").addEventListener("change", historyToggle); // 勾选即保存，无需再点按钮
+$("btn-history-toggle").addEventListener("click", historyToggle);
+$("btn-history-refresh").addEventListener("click", loadHistoryPanel);
+$("btn-load-record-user-detail").addEventListener("click", () => loadRecordUserDetail(currentView().params?.uid));
+$("btn-history-verify").addEventListener("click", historyVerifyStep);
+$("btn-history-rollback").addEventListener("click", historyRollbackStep);
+$("btn-history-modal-close").addEventListener("click", closeHistoryModal);
+$("history-modal").addEventListener("click", (e) => { if (e.target === e.currentTarget) closeHistoryModal(); });
+
 // 启动时检查局域网状态（lanWrap 已安装，403 会触发锁屏；调试条在解锁后加载）
 lanRefresh();
 loadDebugStatus();
+checkDraftOnBoot(); // 2.2.2：启动时检查上次未保存修改的容灾草稿（未解锁时静默跳过）
 // 2.2.0：局域网设置表单不再在启动时重复请求，打开「系统设置」面板时由 loadCurrent 加载

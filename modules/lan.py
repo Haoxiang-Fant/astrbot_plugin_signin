@@ -30,6 +30,9 @@ class LanMixin:
         lan.setdefault("password_hash", None)
         lan.setdefault("records", [])
         lan.setdefault("blacklist", [])
+        # 2.2.2：连续密码错误计数与锁定标记（仅本地主机可解除）
+        lan.setdefault("fail_count", 0)
+        lan.setdefault("locked", False)
         return lan
 
     @staticmethod
@@ -145,7 +148,17 @@ class LanMixin:
         if not lan.get("enabled"):
             return True
         if client["is_local"]:
+            # 2.2.2：本地主机免密访问，同时解除可能存在的登录锁定（只有本地能解除）
+            if lan.get("locked") or lan.get("fail_count"):
+                lan["locked"] = False
+                lan["fail_count"] = 0
+                self._save(data)
             return True
+        # 2.2.2：锁定期间拒绝一切局域网访问（含已有会话）
+        if lan.get("locked"):
+            self._lan_record(data, ip=client["ip"], is_local=False, ok=False, ua=client["ua"])
+            self._save(data)
+            return False
         if _lan_ip_in_blacklist(client["ip"], lan.get("blacklist") or []):
             self._lan_record(data, ip=client["ip"], is_local=False, ok=False, ua=client["ua"])
             self._save(data)
@@ -178,7 +191,10 @@ class LanMixin:
 
     async def web_lan_unlock(self):
         """输入密码解锁局域网访问：POST {password}。
-        校验哈希；正确则下发签名会话 Cookie 并记录；错误/未设密码则记录并返回失败。"""
+        校验哈希；正确则下发签名会话 Cookie 并记录；错误/未设密码则记录并返回失败。
+        2.2.2：连续输错 5 次锁定局域网登录（只有本地主机访问能解除）；
+        第 3 次起提示剩余机会。密码错误改用 400——不再返回 401
+        （AstrBot 前端把 401 当作登录态失效，会强制退出管理员的 AstrBot 登录）。"""
         async with self._lock:
             payload = await request.json(default={})
             password = payload.get("password") if isinstance(payload, dict) else None
@@ -187,6 +203,11 @@ class LanMixin:
             client = self._lan_client()
             now_ts = int(datetime.now().timestamp())
             if client["is_local"]:
+                # 本地免密；顺手解除锁定（只有本地能解除）
+                if lan.get("locked") or lan.get("fail_count"):
+                    lan["locked"] = False
+                    lan["fail_count"] = 0
+                    self._save(data)
                 return json_response({"unlocked": True})
             if not lan.get("enabled"):
                 return error_response("局域网访问未开启", status_code=400)
@@ -194,11 +215,29 @@ class LanMixin:
                 self._lan_record(data, ip=client["ip"], is_local=False, ok=False, ua=client["ua"])
                 self._save(data)
                 return error_response("尚未设置局域网访问密码", status_code=400)
+            # 2.2.2：锁定期间不接受任何解锁尝试（即使密码正确）
+            if lan.get("locked"):
+                self._lan_record(data, ip=client["ip"], is_local=False, ok=False, ua=client["ua"])
+                self._save(data)
+                return error_response("密码连续错误次数过多，局域网登录已锁定，请在本地主机（127.0.0.1）打开后台解除锁定",
+                                      status_code=403)
             ok = isinstance(password, str) and _lan_verify_password(lan["password_hash"], password)
-            self._lan_record(data, ip=client["ip"], is_local=False, ok=ok, ua=client["ua"])
-            self._save(data)
             if not ok:
-                return error_response("密码错误", status_code=401)
+                fails = int(lan.get("fail_count", 0) or 0) + 1
+                lan["fail_count"] = fails
+                if fails >= 5:
+                    lan["locked"] = True
+                    msg = "密码连续错误 5 次，局域网登录已锁定，请在本地主机（127.0.0.1）打开后台解除锁定"
+                elif fails >= 3:
+                    msg = f"密码错误，还有 {5 - fails} 次机会（连续错 5 次将锁定局域网登录）"
+                else:
+                    msg = "密码错误，请重试"
+                self._lan_record(data, ip=client["ip"], is_local=False, ok=False, ua=client["ua"])
+                self._save(data)
+                return error_response(msg, status_code=400)
+            lan["fail_count"] = 0
+            self._lan_record(data, ip=client["ip"], is_local=False, ok=True, ua=client["ua"])
+            self._save(data)
             secret = self._lan_secret(data)
             exp_ts = now_ts + LAN_SESSION_HOURS * 3600
             token = self._lan_sign_token(secret, client["ip"], exp_ts)
