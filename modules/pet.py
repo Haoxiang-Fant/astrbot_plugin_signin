@@ -2225,6 +2225,8 @@ class PetMixin:
         - 每属性目标 = max(属性上限 × 目标百分比, 二档最低值)（WebUI 可编辑）；
           目标缺口 = 目标值 − 当前值，选择「效果最接近目标」的道具（饱食=食物类、口渴=饮料类、
           心情=玩具类、健康=药物类），每次用 1 个，判定是否达到目标，未到则重新计算继续选道具；
+        - 2.2.2：使用/购买的道具效果完整生效（原 bug：只生效目标属性一项）——如 食物A
+          饱食+20、口渴+10，自动购买使用后两项都生效（目标属性目标值封顶，其余属性全额，超出上限统一裁剪）；
         - 仓库优先规则：优先消耗仓库中「可用」的道具（免费）；若仓库道具对该属性生效率
           < AUTO_FEED_ITEM_EFF_MIN（90%）视为不可用，转用仓库其他可用道具；仓库无可用道具才购买
           （购买保留原商店逻辑：实时价 × 倍率）；
@@ -2261,6 +2263,22 @@ class PetMixin:
         def _fill(attr, target):
             """把属性补到目标值：仓库可用道具优先（免费）→ 商店购买（原逻辑）→ 资金不足自动贷款。"""
             nonlocal total_cost, total_loan
+
+            def _apply_item(it):
+                """2.2.2：道具效果完整生效（修复原只生效目标属性一项）——目标属性按效果补足
+                （目标值封顶），其余属性（含负面效果）同样全额生效；超出上限由 _clamp_attrs 统一裁剪。"""
+                for a in ("satiety", "thirst", "stamina", "mood", "health"):
+                    try:
+                        v = float((it.get("effects") or {}).get(a, 0) or 0)
+                    except (TypeError, ValueError):
+                        continue
+                    if abs(v) < 1e-9:
+                        continue
+                    if a == attr:
+                        pet[a] = round(min(target, float(pet.get(a, 0) or 0) + v), 2)
+                    else:
+                        pet[a] = round(float(pet.get(a, 0) or 0) + v, 2)
+
             cur = float(pet.get(attr, 0) or 0)
             guard = 0
             while cur < target - 0.5 and guard < 30:  # 防御：最多 30 轮，防止无解死循环
@@ -2286,13 +2304,13 @@ class PetMixin:
                     if best_wh is None or key2 < best_wh[0]:
                         best_wh = (key2, eff, it)
                 if best_wh is not None:
-                    _eff, _it = best_wh[1], best_wh[2]
+                    _it = best_wh[2]
                     have = int(inv.get(_it["name"], 0) or 0)
                     inv[_it["name"]] = have - 1
                     if inv[_it["name"]] <= 0:
                         inv.pop(_it["name"], None)
-                    pet[attr] = round(min(target, cur + _eff), 2)
-                    cur = pet[attr]
+                    _apply_item(_it)
+                    cur = float(pet.get(attr, 0) or 0)
                     spends.append((_it["name"], 1, 0, "使用"))
                     guard += 1
                     continue
@@ -2316,8 +2334,8 @@ class PetMixin:
                 inv[it["name"]] = int(inv.get(it["name"], 0) or 0) + 1
                 total_cost += cost
                 spends.append((it["name"], 1, cost, "购买"))
-                pet[attr] = round(min(target, cur + eff), 2)
-                cur = pet[attr]
+                _apply_item(it)
+                cur = float(pet.get(attr, 0) or 0)
                 guard += 1
 
         # 检查顺序：饱食 → 口渴 → 心情 → 健康（每属性仅在 3/4 档时补）

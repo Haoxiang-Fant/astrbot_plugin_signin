@@ -1780,7 +1780,7 @@ input[type="file"] {
   margin-bottom: var(--space-3);
 }
 
-/* 2.1.0：宠物记录 / 用户信息两列（2.2.2：改多列流式布局——两列相互独立，
+/* 2.1.0：宠物记录 / 用户信息两列（2.2.2：宠物记录保留多列流式布局——两列相互独立，
    任一列的卡片纵向排列与间距不受旁边队列高度影响；窄屏自动降为单列） */
 .rec-grid.cols-2 {
   display: block;
@@ -1791,9 +1791,22 @@ input[type="file"] {
   break-inside: avoid;
   margin-bottom: var(--space-3);
 }
+/* 2.2.2：用户信息卡片改 Z 形（行优先）排列——第1,2张一行、第3,4张一行，DOM 顺序即阅读顺序
+   （原多列布局为 N 形：先填满左列再填右列）。展开卡片时该卡原地增高、同行邻居顶部对齐、下方行整体下移 */
+.rec-grid.cols-2.user-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  align-items: start;
+}
+.rec-grid.cols-2.user-grid > .rec-card {
+  margin-bottom: 0; /* 行距由 grid gap 提供（覆盖多列版的 margin-bottom） */
+}
 @media (max-width: 900px) {
   .rec-grid.cols-2 {
     columns: 1;
+  }
+  .rec-grid.cols-2.user-grid {
+    grid-template-columns: 1fr;
   }
 }
 
@@ -1842,11 +1855,9 @@ input[type="file"] {
 .user-card .rec-card-head {
   flex-wrap: wrap;
 }
-/* 2.1.0：展开的卡片横跨整行（拉出详情空间），其它卡片顺延平移到被拉出的空白位置、
-   不遮挡且本身不展开；管理员可同时展开多张（各自占一整行）。
-   2.2.2：多列布局下用 column-span 横跨两列 */
+/* 2.2.2：展开的卡片原地向下展开——只增加高度，宽度/位置/与其他卡片的间距不变
+   （此前用 column-span:all 横跨整行，多列布局会重排导致卡片「随机换位置」） */
 .user-card.expanded {
-  column-span: all;
   border-color: var(--gold);
   box-shadow: var(--shadow-2);
 }
@@ -1861,6 +1872,15 @@ input[type="file"] {
 }
 .user-detail {
   display: none;
+}
+/* 2.2.2：展开后卡片右下角的「查看详情」按钮（放在 .user-detail 外，避免详情渲染时被覆盖） */
+.user-card-actions {
+  display: none;
+  justify-content: flex-end;
+  margin-top: var(--space-2);
+}
+.user-card.expanded .user-card-actions {
+  display: flex;
 }
 /* 2.1.0：展开详情 = 各模块独立附属卡片（仓库/农场/宠物/银行/自动化） */
 .detail-grid {

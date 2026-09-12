@@ -191,6 +191,16 @@ class SignInPlugin(Star, FarmMixin, PetMixin, BankMixin, RedpacketMixin, Activit
             ("records/users", "GET", self.web_get_record_users, "运行记录：全部用户信息卡片（基础信息）"),
             # 2.2.0：用户详情按需拉取（页面展开卡片时才请求，避免全量下发）
             ("records/users/detail", "POST", self.web_get_record_user_detail, "运行记录：单个用户完整信息（按需）"),
+            # 2.2.2：后台数据「待保存」容灾草稿（管理员离开时暂存未保存修改）
+            ("config/draft", "GET", self.web_get_config_draft, "读取未保存修改容灾草稿"),
+            ("config/draft", "POST", self.web_save_config_draft, "暂存/清除未保存修改容灾草稿"),
+            # 2.2.2：历史配置数据（保存数据目录下 historydata/setting，供回溯）
+            ("history/list", "GET", self.web_history_list, "历史配置：版本列表与开关状态"),
+            ("history/toggle", "POST", self.web_history_toggle, "历史配置：开关历史数据保留"),
+            ("history/captcha", "POST", self.web_history_captcha, "历史配置：生成回溯验证码"),
+            ("history/verify", "POST", self.web_history_verify, "历史配置：回溯第一步校验（密码+验证码）"),
+            ("history/rollback", "POST", self.web_history_rollback, "历史配置：回溯到指定版本"),
+            ("history/delete", "POST", self.web_history_delete, "历史配置：删除指定版本"),
         ]
         for path, method, handler, desc in _web_apis:
             if not path.startswith("lan/"):

@@ -1006,6 +1006,10 @@ FERT_FILE = os.path.join(_DATA_DIR, "肥料.txt")
 LOAN_FILE = os.path.join(_DATA_DIR, "贷款套餐.txt")
 # 1.7.7：商店/打工/玩耍数值的 JSON 存储（WebUI 表格编辑；首次启动从旧版 txt 自动迁移）
 ITEMS_JSON_FILE = os.path.join(_DATA_DIR, "game_items.json")
+# 2.2.2：WebUI 后台数据「待保存」容灾草稿（管理员离开时未保存的修改暂存于此）
+DRAFT_FILE = os.path.join(_DATA_DIR, "config_draft.json")
+# 2.2.2：历史配置数据目录（每次后台数据保存前把旧配置存一份，供回溯）
+HISTORY_DIR = os.path.join(_DATA_DIR, "historydata", "setting")
 FONT_FILE = os.path.join(_PLUGIN_DIR, "OPPOSans-M.ttf")
 # 2.1.1：标题衬线字体（思源宋体 Bold，对齐 WebUI --font-display 衬线标题层级）
 TITLE_FONT_FILE = os.path.join(_PLUGIN_DIR, "SourceHanSerifCN-Bold.otf")
@@ -2624,6 +2628,10 @@ __all__ = [
     "FERT_FILE",
     "LOAN_FILE",
     "ITEMS_JSON_FILE",
+    # 2.2.2：容灾草稿 / 历史配置目录（漏出 __all__ 会导致 webui 星号导入拿不到，
+    # _history_backup 等静默 NameError → 后台自动备份不落盘）
+    "DRAFT_FILE",
+    "HISTORY_DIR",
     "FONT_FILE",
     "PET_SHOP_TYPE_FILES",
     "PET_SHOP_TYPES",
