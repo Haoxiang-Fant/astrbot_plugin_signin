@@ -706,6 +706,39 @@ class FarmMixin:
 
         return _save_temp_image(img, "_farmshop_", "农场商店")
 
+    _FARM_LOG_MAX = 300
+
+    def _farm_log(self, data, key, act, detail="", coins=0, qty=0):
+        """2.2.3：农场操作记录（种植/施肥/收割/偷菜，随 records.json 存储）+ 累计统计
+        （farm_stats：各类次数 / 收获产量 / 偷菜收益 / 购种购肥支出；总盈利另见 farm.total_profit）。
+        记录上限 _FARM_LOG_MAX 条（超出丢弃最旧）；统计为累计值不受上限影响。"""
+        user = self._ensure_user(data, key)
+        logs = user.setdefault("farm_logs", [])
+        now_dt = datetime.now()
+        logs.append({
+            "ts": now_dt.timestamp(),
+            "time": now_dt.strftime("%Y-%m-%d %H:%M"),
+            "act": act,
+            "detail": str(detail or ""),
+            "coins": int(coins or 0),
+            "qty": int(qty or 0),
+        })
+        if len(logs) > self._FARM_LOG_MAX:
+            del logs[: len(logs) - self._FARM_LOG_MAX]
+        st = user.setdefault("farm_stats", {})
+        if act == "plant":
+            st["plant"] = int(st.get("plant", 0)) + 1
+            st["cost"] = int(st.get("cost", 0)) + int(coins or 0)
+        elif act == "fertilize":
+            st["fertilize"] = int(st.get("fertilize", 0)) + 1
+            st["cost"] = int(st.get("cost", 0)) + int(coins or 0)
+        elif act == "harvest":
+            st["harvest"] = int(st.get("harvest", 0)) + 1
+            st["harvest_yield"] = int(st.get("harvest_yield", 0)) + int(qty or 0)
+        elif act == "steal":
+            st["steal"] = int(st.get("steal", 0)) + 1
+            st["steal_gain"] = int(st.get("steal_gain", 0)) + int(coins or 0)
+
     def _render_warehouse(self, farm, crops, ferts):
         wh = farm.get("warehouse", {})
         rows = []
@@ -1343,6 +1376,9 @@ class FarmMixin:
         wh[crop_name] = have - len(targets)
         if wh[crop_name] <= 0:
             wh.pop(crop_name, None)
+        self._farm_log(data, key, "plant",
+                       f"种下 {crop_name} ×{len(targets)}（地块 {self._fmt_plot_nums([i + 1 for i in targets])}）",
+                       coins=0, qty=len(targets))
         self._save(data)
         # 2.0.0：纯图片回复——新种地块黄色高亮 + 底部大卡片（不再附带文本提示）
         ferts = self._load_fertilizers()
@@ -1480,6 +1516,8 @@ class FarmMixin:
             actions.append("📦 使用仓库种子：" + "、".join(f"{n}×{c}" for n, c in used_desc.items()))
 
         # 3) 仓库不足 → 自动购买当前用户能购买的种子并种植
+        bought = 0
+        spent = 0
         if free_left:
             buyable = [c for c in crops if int(farm.get("level", 0)) >= c["min_level"]]
             if not buyable:
@@ -1515,6 +1553,12 @@ class FarmMixin:
                     actions.append(f"🛒 自动购买并种下 {bought} 颗种子（花费 {spent} 金币）")
                 if free_left:
                     actions.append(f"🍂 金币不足，剩余 {len(free_left)} 块空地未能种植。")
+        n_planted = sum(used_desc.values()) + bought
+        self._farm_log(data, key, "plant",
+                       "快捷种植：仓库种子 " + ("、".join(f"{n}×{c}" for n, c in used_desc.items()) or "无")
+                       + (f"，自动购买 {bought} 颗（花费 {spent} 金币）" if bought else "")
+                       + f"，共种 {n_planted} 块",
+                       coins=spent, qty=n_planted)
         self._save(data)
         # 4) 纯图片回复：收割红高亮 + 种植黄高亮 + 底部大卡片（自动化行为 + 金币变化）
         return self._safe_render_plot_status(
@@ -1707,6 +1751,9 @@ class FarmMixin:
         wh[fert["name"]] = have - total_need_h
         if wh[fert["name"]] <= 1e-9:
             wh.pop(fert["name"], None)
+        self._farm_log(data, key, "fertilize",
+                       f"{fert['name']} {self._fmt_hours(total_need_h)} → {n_plots} 块地（加速 {total_accel} 次）",
+                       coins=0, qty=n_plots)
         self._save(data)
         used_min = sum(use_plan.values())
         actions = [f"🧪 使用 {fert['name']} {self._fmt_hours(used_min / 60.0)} 小时"
@@ -1827,6 +1874,11 @@ class FarmMixin:
             if wh[fname] <= 1e-9:
                 wh.pop(fname, None)
             used_plots.append(i + 1)
+        if used_plots:
+            self._farm_log(data, key, "fertilize",
+                           f"快捷施肥：{total_min:.0f} 分钟 → {len(used_plots)} 块地（加速 {total_accel} 次）"
+                           + (f"，自动购买化肥花费 {coins_spent} 金币" if coins_spent else ""),
+                           coins=coins_spent, qty=len(used_plots))
         self._save(data)
         if not used_plots:
             return "化肥库存不足且金币不足，无法自动购买施肥。"
@@ -1869,6 +1921,11 @@ class FarmMixin:
                 return "所选土地没有可收割的成熟作物。"
             return "没有可收割的成熟作物。"
         lvl_msg = self._farm_gain_exp(farm, total_exp)
+        self._farm_log(data, key, "harvest",
+                       f"收割 {len(harvested)} 块（{self._fmt_plot_nums(harvested)}）："
+                       + ("、".join(f"{k}×{v}" for k, v in amounts.items()) or "无收成")
+                       + f"，经验 +{total_exp}",
+                       coins=0, qty=sum(amounts.values()))
         self._save(data)
         # 2.2.0：仅收割入库，不再自动售出；盈利不变化、金币不变化
         actions = [f"🌾 收割 {len(harvested)} 块地（{self._fmt_plot_nums(harvested)}），"
@@ -1957,6 +2014,11 @@ class FarmMixin:
         r = self._do_steal(data, key, name, tkey, now_ts, crops)
         if r is None:
             return "对方农场没有可偷的成熟作物。"
+        self._farm_log(data, key, "steal",
+                       f"偷菜 {r.get('tname', '对方')}："
+                       + ("被宠物抓到" if r.get("status") == "catch" else f"+{int(r.get('gain', 0) or 0)} 金币")
+                       + (f"，罚款 {int(r['fine'])} 金币" if r.get("fine") else ""),
+                       coins=int(r.get("gain", 0) or 0), qty=1)
         self._save(data)
         return self._steal_summary(name, key, r)
 
@@ -2259,6 +2321,7 @@ class FarmMixin:
         if total_gain > 0:
             u["auto_steal_date"] = today
             u["auto_steal_used"] = used + 1
+            self._farm_log(data, key, "steal", f"自动偷菜 ×{len(results)} 人", coins=total_gain, qty=1)
             self._save(data)
             lines = [f"🥬 {name} 自动偷菜成功！偷了 {len(results)} 位用户，共获得 {total_gain} 金币。"]
             for r in results:

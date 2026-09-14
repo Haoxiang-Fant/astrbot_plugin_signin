@@ -98,6 +98,28 @@ class BankMixin:
         v = d.get("amount") if isinstance(d, dict) else None
         return int(v) if isinstance(v, (int, float)) else 0
 
+    def _bank_summary_of(self, data, key):
+        """银行累计统计（2.2.3，与「银行统计」指令同口径：只读已结算结果，到期结算由固定结算循环统一执行）：
+        生效存单数 / 锁定·可取笔数与本金 / 银行内本金合计 / 预计利息合计（各存单利息之和）。
+        WebUI 详情与用户卡片直接取用本统计，不再自行汇总；无银行数据返回 None。"""
+        bank = data.get("bank", {}).get(key)
+        if not isinstance(bank, dict):
+            return None
+        deposits = [d for d in (bank.get("deposits") or []) if isinstance(d, dict)]
+        locked = [d for d in deposits if d.get("status") == "locked"]
+        matured = [d for d in deposits if d.get("status") == "matured"]
+        locked_sum = sum(self._dep_amount(d) for d in locked)
+        matured_sum = sum(self._dep_amount(d) for d in matured)
+        return {
+            "total_count": len(deposits),
+            "locked_count": len(locked),
+            "matured_count": len(matured),
+            "locked_sum": locked_sum,
+            "matured_sum": matured_sum,
+            "total": locked_sum + matured_sum,
+            "interest_sum": sum(int(d.get("interest", 0) or 0) for d in deposits),
+        }
+
     def _handle_bank_deposit(self, event: AstrMessageEvent) -> str:
         name = event.get_sender_name()
         key = self._user_key(event)

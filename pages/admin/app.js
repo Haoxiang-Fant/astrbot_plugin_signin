@@ -1929,7 +1929,8 @@ function recordUserCard(u) {
   const bank = u.bank || null;
   const weak = !!(pet && pet.weak);
   // 2.2.0：卡片只使用列表接口返回的基础字段；完整详情（仓库/地块/存单等）展开时按需拉取
-  const bankTotal = bank ? fmtNum((bank.locked_sum || 0) + (bank.matured_sum || 0)) : null;
+  // 2.2.3：统计数值一律由插件数据提供（银行内本金合计为后端统计字段 bank.total），前端不再自行计算
+  const bankTotal = bank ? fmtNum(bank.total || 0) : null;
   return `<div class="rec-card user-card" data-uid="${esc(u.uid)}">
     <div class="rec-card-head">
       <span class="rec-card-name">${esc(u.nick || u.uid)}</span>
@@ -2026,7 +2027,11 @@ function renderRecordUsers() {
   const expandedSet = new Set(
     Array.from(box.querySelectorAll(".user-card.expanded")).map((c) => c.dataset.uid),
   );
-  box.innerHTML = `<div class="rec-grid cols-2 user-grid">${list.map(recordUserCard).join("")}</div>`;
+  // 2.2.3：双列瀑布流（基础卡片高度相近，按序轮流分到两列）——展开卡片在原位增高，仅推挤本列下方卡片，
+  // 另一列不动：无整行空位，两列顶部无需对齐
+  const cols = [[], []];
+  list.forEach((u, i) => cols[i % 2].push(recordUserCard(u)));
+  box.innerHTML = `<div class="user-masonry">${cols.map((c) => `<div class="user-masonry-col">${c.join("")}</div>`).join("")}</div>`;
   box.querySelectorAll(".user-card").forEach((card) => {
     const uid = card.dataset.uid;
     if (expandedSet.has(uid)) {
@@ -2072,6 +2077,188 @@ async function loadRecordUsers() {
   }
 }
 
+// 2.2.3：用户详情子页改哔哩哔哩个人主页布局——封面横幅 + 圆形头像 + 昵称徽章 + 统计行 + 导航栏切换分区
+// 四个分区：宠物（属性/最近变动/自动化）/ 农场（土地状态·变化记录·偷菜 + 统计侧边栏）/ 仓库（农场仓库 + 宠物道具）/ 银行（打卡日历·存款·流水 + 统计侧边栏）
+const BILI_ATTR_LABELS = { satiety: "饱食度", thirst: "口渴值", stamina: "体力", mood: "心情值", health: "健康度" };
+
+function biliChangeHtml(changes) {
+  const parts = Object.entries(changes || {}).map(([k, v]) =>
+    `${BILI_ATTR_LABELS[k] || k} ${Number(v) > 0 ? "+" : ""}${fmtNum(v)}`);
+  return parts.length ? parts.join("，") : "无属性变化";
+}
+
+function biliCalendarHtml(signMap) {
+  const now = new Date();
+  const y = now.getFullYear(), m = now.getMonth();
+  const pad = (n) => String(n).padStart(2, "0");
+  const todayStr = `${y}-${pad(m + 1)}-${pad(now.getDate())}`;
+  const days = new Date(y, m + 1, 0).getDate();
+  let cells = ["日", "一", "二", "三", "四", "五", "六"].map((w) => `<span class="bili-cal-w">${w}</span>`).join("");
+  for (let i = 0; i < new Date(y, m, 1).getDay(); i++) cells += '<span class="bili-cal-cell bili-cal-empty"></span>';
+  for (let dd = 1; dd <= days; dd++) {
+    const ds = `${y}-${pad(m + 1)}-${pad(dd)}`;
+    cells += `<button type="button" class="bili-cal-cell${signMap[ds] ? " signed" : ""}${ds === todayStr ? " today" : ""}" data-bili-day="${ds}">${dd}</button>`;
+  }
+  return `<div class="bili-cal">${cells}</div>`;
+}
+
+function renderBiliUserDetail(d) {
+  const uid = d.uid || "";
+  const nick = d.nick || uid;
+  const pet = d.pet || null;
+  const farm = d.farm || null;
+  const bank = d.bank || null;
+  const auto = d.auto || {};
+  const weak = !!(pet && pet.weak);
+  const avatar = [...String(nick)][0] || [...String(uid)][0] || "U";
+  // 2.2.3：分区带 key（data-bili-sec），配合导航栏按 tab 显隐（默认显示「宠物」）；导航栏即分区标题
+  const sec = (key, body) =>
+    `<section class="bili-sec" data-bili-sec="${key}"${key === "pet" ? "" : " hidden"}>${body}</section>`;
+  // 2.2.3：每个小标题一块独立卡片（描边 + 金色右缘），卡片间保持间距
+  const blk = (title, body) => `<div class="bili-block"><div class="bili-sub-title">${title}</div>${body}</div>`;
+
+  // ── 宠物：属性信息 + 最近一次属性变动（查看更多 → 宠物详情页） + 自动化信息 ──
+  let petBody;
+  if (pet) {
+    const pa = pet.attrs || {};
+    const attrRows = [
+      attrCell("饱食", pa.satiety, pa.satiety_max, pa.satiety_red),
+      attrCell("口渴", pa.thirst, pa.thirst_max, pa.thirst_red),
+      attrCell("体力", pa.stamina, pa.stamina_max, false),
+      attrCell("心情", pa.mood, pa.mood_max, pa.mood_red),
+      attrCell("健康", pa.health, pa.health_max, pa.health_red),
+    ].join("");
+    const lc = pet.last_change || null;
+    petBody = blk("属性信息",
+        `<div class="rec-attrs">${attrRows}</div>`
+      + `<div class="rec-line"><b>${esc(pet.name)}</b> Lv.${fmtNum(pet.level)}${weak ? " · 虚弱（停用）" : ""}｜活动：${pet.busy_activity ? `${esc(pet.busy_activity)}「${esc(pet.busy_item)}」` : "空闲"}｜经验 ${fmtNum(pet.exp)}</div>`)
+      + blk("最近变动",
+        (lc
+          ? `<div class="rec-line"><span class="muted">${esc(lc.time || "")}</span> ${esc(lc.behavior || "")}：${biliChangeHtml(lc.changes)}${lc.extra ? `（${esc(lc.extra)}）` : ""}</div>`
+          : '<div class="rec-line muted">暂无属性变动记录</div>')
+        + `<button type="button" class="bili-more" data-bili-pet="${esc(uid)}">查看全部属性变化记录 ›</button>`)
+      + blk("自动化",
+        `<div class="rec-line">自动购买：${auto.purchase_on ? "开" : "关"}｜自动打工：${auto.work_on ? "开" : "关"}｜打工基准金币：${fmtNum(auto.work_base)}</div>`
+        + (auto.auto_loan_owed > 0 ? `<div class="rec-line" style="color:var(--danger)">自动化贷款：欠 ${fmtNum(auto.auto_loan_owed)} 金币（获得金币自动优先还款）</div>` : ""));
+  } else {
+    petBody = blk("属性信息", '<div class="rec-line muted">未领养宠物</div>');
+  }
+  const petSec = sec("pet", petBody);
+
+  // ── 农场：土地状态（复刻指令响应版式） + 变化记录 + 偷菜详情，右侧统计侧边栏 ──
+  let farmSec;
+  if (farm) {
+    const plots = farm.plots || [];
+    const plotCards = plots.length
+      ? plots.map((p) => !p.crop
+          ? `<div class="farm-plot idle"><b>#${p.no} ${esc(p.grade_name || "")}</b><span class="muted">空闲中</span></div>`
+          : `<div class="farm-plot${p.mature ? " mature" : ""}"><b>#${p.no} ${esc(p.grade_name || "")} ${p.mature ? "已成熟" : "占用中"}</b>`
+            + `<span>${esc(p.crop)} ×${fmtNum(p.yield)}</span>`
+            + `<span class="muted">${p.mature ? "可收割" : `剩余 ${fmtNum(p.remain_min)} 分钟`}${p.advance_min > 0 ? ` · 加速${fmtNum(p.advance_min)}分` : ""} · 预计 ${fmtNum(p.income)}金</span></div>`).join("")
+      : '<div class="rec-line muted">农场无土地</div>';
+    const actName = { plant: "种植", fertilize: "施肥", harvest: "收割", steal: "偷菜" };
+    const farmLogList = (d.farm_logs || []).length
+      ? (d.farm_logs || []).map((lg) => `<div class="rec-line"><span class="muted">${esc(lg.time || "")}</span> ${actName[lg.act] || esc(lg.act || "")}：${esc(lg.detail || "")}${lg.coins ? `（${lg.coins > 0 ? "+" : ""}${fmtNum(lg.coins)} 金币）` : ""}</div>`).join("")
+      : '<div class="rec-line muted">暂无农场操作记录（2.2.3 起记录种植 / 施肥 / 收割 / 偷菜）</div>';
+    const stTxt = { success: "被偷走", pet_stop: "宠物拦下一半", pet_catch: "宠物抓到，未得手" };
+    const stealList = (farm.steal_infos || []).length
+      ? (farm.steal_infos || []).map((s) => `<div class="rec-line"><span class="muted">${esc(s.time || "")}</span> <b>${esc(s.thief_name || "??")}</b>：`
+          + (s.items || []).map((it) => `${esc(it.crop || "")} ×${fmtNum(it.qty)}（${stTxt[it.status] || esc(it.status || "")}，损失 ${fmtNum(it.loss)}金）`).join("；")
+          + `${s.harvested ? " · 已收割" : ""}</div>`).join("")
+      : '<div class="rec-line muted">暂无被偷记录（被偷批次收割后 24 小时内显示）</div>';
+    const fs = d.farm_stat || {};
+    const farmSide = `<div class="bili-side-card"><div class="bili-side-title">农场统计</div>
+      <div class="bili-side-row"><span>累计盈利</span><b>${fmtNum(farm.total_profit || 0)}</b></div>
+      <div class="bili-side-row"><span>偷菜收益</span><b>+${fmtNum(fs.steal_gain || 0)}</b></div>
+      <div class="bili-side-row"><span>种子 / 化肥支出</span><b>-${fmtNum(fs.cost || 0)}</b></div>
+      <div class="bili-side-row"><span>收获产量</span><b>${fmtNum(fs.harvest_yield || 0)}</b></div>
+      <div class="bili-side-row"><span>种植 / 施肥次数</span><b>${fmtNum(fs.plant || 0)} / ${fmtNum(fs.fertilize || 0)}</b></div>
+      <div class="bili-side-row"><span>收割 / 偷菜次数</span><b>${fmtNum(fs.harvest || 0)} / ${fmtNum(fs.steal || 0)}</b></div>
+    </div>`;
+    farmSec = sec("farm", `<div class="bili-split"><div class="bili-main">`
+      + blk("土地状态", `<div class="rec-line">等级 Lv.${fmtNum(farm.level)} · 经验 ${fmtNum(farm.exp)}</div><div class="farm-plots">${plotCards}</div>`)
+      + blk("偷菜详情（被偷）", stealList)
+      + blk("农场变化记录", farmLogList)
+      + `</div>${farmSide}</div>`);
+  } else {
+    farmSec = sec("farm", blk("土地状态", '<div class="rec-line muted">未开通农场</div>'));
+  }
+
+  // ── 仓库：农场仓库（作物/种子/肥料，复刻指令响应「农场仓库」版式） + 宠物道具 ──
+  const wh = (farm && farm.warehouse) || {};
+  const whGroup = (label, items) => blk(label,
+    (items && items.length
+        ? items.map((it) => it.hours
+            ? `<div class="rec-line">${esc(it.name)} ×${it.qty} 小时（不可售）</div>`
+            : `<div class="rec-line">${esc(it.name)} ×${fmtNum(it.qty)} 可售 ${fmtNum(it.price)} 金币</div>`).join("")
+        : '<div class="rec-line muted">（空）</div>'));
+  const bagChips = (d.bag || []).map((b) => `<span class="bag-chip">${esc(b.name)} ×${b.qty}</span>`).join("");
+  const bagSec = sec("bag",
+    (farm
+      ? whGroup("作物", wh["作物"]) + whGroup("种子", wh["种子"]) + whGroup("肥料", wh["肥料"])
+      : blk("农场仓库", '<div class="rec-line muted">未开通农场（无作物 / 种子 / 肥料仓库）</div>'))
+    + blk("宠物道具", `<div class="rec-row bag-row">${bagChips || '<span class="rec-line muted">（空）</span>'}</div>`));
+
+  // ── 银行：打卡日历（点击日期看当天变动） + 存款明细 + 金币流水，右侧统计侧边栏 ──
+  const signMap = {};
+  (d.sign_logs || []).forEach((s) => { if (s && s.date) signMap[s.date] = s; });
+  const depHtml = bank
+    ? `<div class="rec-line">锁定 ${fmtNum(bank.locked_count)} 笔 ${fmtNum(bank.locked_sum)} 金币｜可取（已成熟）${fmtNum(bank.matured_count)} 笔 ${fmtNum(bank.matured_sum)} 金币｜预计利息合计 ${fmtNum(bank.interest_sum)} 金币</div>`
+      + (bank.deposits && bank.deposits.length
+          ? bank.deposits.map((dep) =>
+              `<div class="rec-line"><span class="muted">${esc(dep.deposit_time || "")}</span> ${fmtNum(dep.amount)} 金币（${fmtNum((dep.base_rate || 0) + (dep.bonus_rate || 0))}%/时 × ${fmtNum(dep.hours)}h）${dep.status === "matured" ? "· 已解锁" : "· 锁定中"}</div>`).join("")
+          : "")
+    : '<div class="rec-line muted">银行无存款</div>';
+  const ledgerHtml = (d.ledger || []).length
+    ? (d.ledger || []).map((lg) => `<div class="rec-line"><span class="muted">${esc(lg.ts || "")}</span> ${esc(lg.reason || "")} <b class="${Number(lg.delta) > 0 ? "led-plus" : "led-minus"}">${Number(lg.delta) > 0 ? "+" : ""}${fmtNum(lg.delta)}</b>（余额 ${fmtNum(lg.balance)}）</div>`).join("")
+    : '<div class="rec-line muted">暂无金币流水</div>';
+  const debt = d.debt || {};
+  const bankSide = `<div class="bili-side-card"><div class="bili-side-title">签到与账单</div>
+    <div class="bili-side-row"><span>最后操作</span><b>${esc(d.last_active_text || "-")}</b></div>
+    <div class="bili-side-row"><span>累计签到</span><b>${fmtNum(d.sign_total || 0)} 天</b></div>
+    <div class="bili-side-row"><span>签到获得金币</span><b>${fmtNum(d.sign_coins_all || 0)}</b></div>
+    <div class="bili-side-row"><span>生效欠款账单</span><b>${fmtNum(debt.count || 0)} 张</b></div>
+    <div class="bili-side-row"><span>欠款总额（含息）</span><b>${fmtNum(debt.total || 0)} 金币</b></div>
+  </div>`;
+  const bankSec = sec("bank", `<div class="bili-split"><div class="bili-main">`
+    + blk("打卡日历（当月，点击日期查看当天签到变动）",
+        `${biliCalendarHtml(signMap)}<div id="bili-day-detail" class="bili-day-detail"><span class="rec-line muted">点击日历中的日期查看当天签到变动</span></div>`)
+    + blk("存款明细", depHtml)
+    + blk("金币流水（最近 60 条）", ledgerHtml)
+    + `</div>${bankSide}</div>`);
+
+  return `<div class="bili-profile">
+    <div class="bili-head-card">
+      <div class="bili-cover"></div>
+      <div class="bili-head">
+        <div class="bili-avatar">${esc(avatar)}</div>
+        <div class="bili-head-info">
+          <div class="bili-name-row">
+            <span class="bili-name">${esc(nick)}</span>
+            <span class="bili-lv">好感 Lv.${fmtNum(d.fav_level)}</span>
+            ${weak ? '<span class="bili-lv danger">虚弱停用</span>' : ""}
+          </div>
+          <div class="bili-uid">UID：${esc(uid)}</div>
+          <div class="bili-stats">
+            <div class="bili-stat"><b>${fmtNum(d.coins)}</b><span>金币</span></div>
+            <div class="bili-stat"><b>Lv.${fmtNum(d.fav_level)}</b><span>好感度 ${fmtNum(d.fav)}</span></div>
+            <div class="bili-stat"><b>${pet ? `Lv.${fmtNum(pet.level)}` : "—"}</b><span>宠物</span></div>
+            <div class="bili-stat"><b>${farm ? `Lv.${fmtNum(farm.level)}` : "—"}</b><span>农场</span></div>
+            <div class="bili-stat"><b>${bank ? fmtNum(bank.total_count) : "—"}</b><span>银行存单</span></div>
+          </div>
+        </div>
+      </div>
+      <nav class="bili-tabs">
+        <button type="button" class="bili-tab active" data-bili-tab="pet">宠物</button>
+        <button type="button" class="bili-tab" data-bili-tab="farm">农场</button>
+        <button type="button" class="bili-tab" data-bili-tab="bag">仓库</button>
+        <button type="button" class="bili-tab" data-bili-tab="bank">银行</button>
+      </nav>
+    </div>
+    <div class="bili-body">${petSec}${farmSec}${bagSec}${bankSec}</div>
+  </div>`;
+}
+
 // 2.2.2：用户详情子页（运行记录·用户信息卡片展开后点「查看详情」进入；仅该页提供入口）
 async function loadRecordUserDetail(uid) {
   setStatus("status-record-user-detail", "加载中...");
@@ -2084,13 +2271,42 @@ async function loadRecordUserDetail(uid) {
       setStatus("status-record-user-detail", r && r.error ? "❌ " + r.error : "无数据");
       return;
     }
-    const headCard = `<div class="detail-grid" style="margin-bottom:12px">
-      <div class="detail-card"><div class="detail-card-title">👤 基本信息</div>
-        <div class="rec-line"><b>${esc(d.nick || uid)}</b>（${esc(d.uid || uid)}）</div>
-        <div class="rec-line">💰 金币 ${fmtNum(d.coins)} · 好感 Lv.${fmtNum(d.fav_level)}（${fmtNum(d.fav)}）</div>
-        <div class="rec-line">🐾 宠物 ${d.pet ? `Lv.${fmtNum(d.pet.level)}` : "未领养"} · 🌾 农场 ${d.farm ? `Lv.${fmtNum(d.farm.level)}` : "未开通"}</div>
-      </div></div>`;
-    box.innerHTML = headCard + recordUserDetailGrid(d);
+    box.innerHTML = renderBiliUserDetail(d); // 2.2.3：哔哩哔哩个人主页布局（仅此子页弃用卡片网格）
+    // 2.2.3：打卡日历数据（点击日期时查当天签到变动；随渲染刷新）
+    box._biliSignMap = {};
+    (d.sign_logs || []).forEach((s) => { if (s && s.date) box._biliSignMap[s.date] = s; });
+    if (!box._biliTabHandler) {
+      // 2.2.3：详情页交互（box 元素常驻，委托监听只挂一次）：
+      // 导航栏切换分区 / 点击日历日期显示当天签到变动 / 宠物「查看更多」跳转宠物详情页
+      box._biliTabHandler = (e) => {
+        const tab = e.target.closest("[data-bili-tab]");
+        if (tab) {
+          box.querySelectorAll("[data-bili-tab]").forEach((b) => b.classList.toggle("active", b === tab));
+          box.querySelectorAll("[data-bili-sec]").forEach((s) => { s.hidden = s.dataset.biliSec !== tab.dataset.biliTab; });
+          return;
+        }
+        const dayBtn = e.target.closest("[data-bili-day]");
+        if (dayBtn) {
+          const ds = dayBtn.dataset.biliDay;
+          const s = (box._biliSignMap || {})[ds];
+          const det = $("bili-day-detail");
+          if (det) {
+            det.innerHTML = s
+              ? `<b>${esc(ds)} 签到变动：</b>`
+                + `<div class="rec-line">金币 +${fmtNum(s.coins)}｜好感 +${fmtNum(s.fav)}${Number(s.exp) > 0 ? `｜宠物经验 +${fmtNum(s.exp)}` : ""}</div>`
+                + (s.extra || []).map((ln) => `<div class="rec-line">${esc(ln)}</div>`).join("")
+              : `<b>${esc(ds)}</b><div class="rec-line muted">当天没有签到记录</div>`;
+          }
+          box.querySelectorAll("[data-bili-day]").forEach((c) => c.classList.toggle("picked", c === dayBtn));
+          return;
+        }
+        const more = e.target.closest("[data-bili-pet]");
+        if (more) {
+          openPanel({ id: "record-pet-detail", title: "运行记录 · 宠物详情", params: { uid: more.getAttribute("data-bili-pet") } });
+        }
+      };
+      box.addEventListener("click", box._biliTabHandler);
+    }
     $("record-user-detail-title").textContent = (d.nick || uid) + " 的详情";
     setStatus("status-record-user-detail", "✅ 已加载");
   } catch (e) {

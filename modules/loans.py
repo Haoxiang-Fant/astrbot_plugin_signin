@@ -196,6 +196,10 @@ class LoanMixin:
         """标记逾期 + 逾期处置（特别贷款重锁、逾期记录、年度计数、30 天农场回退、禁用）"""
         now_ts = now_ts or datetime.now().timestamp()
         rec = self._ensure_loans(data, key)
+        # 2.2.3：欠款总额（含利息）在 0~1 之间的尾数欠款永远还不清，直接免除全部账单
+        owed_all = sum(self._loan_owed(l, now_ts) for l in rec.get("loans", []) if l.get("remaining", 0) > 0)
+        if 0 < owed_all < 1:
+            rec["loans"] = []
         changed = False
         year = str(date.today().year)
         if rec.get("overdue_year_key") != year:
@@ -238,6 +242,16 @@ class LoanMixin:
         return round(sum(self._loan_owed(l, now_ts)
                          for l in rec.get("loans", [])
                          if l.get("auto") and l.get("remaining", 0) > 0), 2)
+
+    def _debt_summary_of(self, data: dict, key: str) -> dict:
+        """生效欠款统计（2.2.3）：账单数 + 含息总额（与 `_loan_sync` 的 owed_all 同口径，无账单 → 0 张 / 0）。
+        WebUI 详情页直接取用本统计，不再自行汇总。"""
+        rec = data.get("loans", {}).get(key) or {}
+        now_ts = datetime.now().timestamp()
+        bills = [l for l in (rec.get("loans") or [])
+                 if isinstance(l, dict) and l.get("remaining", 0) > 0]
+        return {"count": len(bills),
+                "total": round(sum(self._loan_owed(l, now_ts) for l in bills), 2)}
 
     def _auto_loan_borrow(self, data: dict, key: str, need: int) -> int:
         """宠物自动化资金不足时自动申请「自动化专属贷款套餐」（2.2.1）：

@@ -1909,24 +1909,68 @@ class WebUIMixin:
         farm_info = None
         if isinstance(farm, dict):
             now_ts = datetime.now().timestamp()
+            crops_all = self._load_crops()
             plots = []
             for i, p in enumerate((farm.get("plots") or []), start=1):
                 if not isinstance(p, dict):
                     continue
                 crop = p.get("crop")
+                grade_name = self._plot_grade(int(p.get("grade", 0) or 0))[0]
                 if crop is None:
-                    plots.append({"no": i, "grade": int(p.get("grade", 0) or 0),
-                                  "crop": None, "mature": False, "remain_min": 0})
+                    plots.append({"no": i, "grade": int(p.get("grade", 0) or 0), "grade_name": grade_name,
+                                  "crop": None, "mature": False, "remain_min": 0,
+                                  "yield": 0, "income": 0, "advance_min": 0})
                 else:
+                    c = self._find_item(crops_all, crop)
+                    g = self._plot_growth(p, c, now_ts) if c else None
                     mature = now_ts >= float(p.get("mature_ts", 0) or 0)
                     remain = max(0, float(p.get("mature_ts", 0) or 0) - now_ts)
-                    plots.append({"no": i, "grade": int(p.get("grade", 0) or 0),
+                    yield_n = int(p.get("yield", 0) or 0)
+                    plots.append({"no": i, "grade": int(p.get("grade", 0) or 0), "grade_name": grade_name,
                                   "crop": str(crop), "mature": mature,
-                                  "remain_min": int(remain // 60)})
+                                  "remain_min": int(remain // 60),
+                                  "yield": yield_n,
+                                  "income": int(round(yield_n * float(c["crop_price"]))) if c else 0,
+                                  "advance_min": (int(g["advance_sec"] // 60) if g and g["advance_sec"] > 60 else 0)})
+            # 2.2.3：农场仓库（作物/种子/肥料，按指令响应「农场仓库」的版式：名称 ×N 可售 X金币 / 小时不可售）
+            wh = farm.get("warehouse", {}) if isinstance(farm.get("warehouse"), dict) else {}
+            warehouse = {}
+            for gkey, label in [("crops", "作物"), ("seeds", "种子"), ("fertilizers", "肥料")]:
+                items = []
+                for nm, cnt in ((wh.get(gkey) or {}).items()):
+                    if gkey == "fertilizers":
+                        items.append({"name": str(nm), "qty": round(float(cnt or 0), 2),
+                                      "hours": True, "price": None})
+                        continue
+                    c = self._find_item(crops_all, nm)
+                    if c:
+                        price = float(c["crop_price"] if gkey == "crops" else c["seed_sell_price"])
+                    else:
+                        price = 0.0
+                    items.append({"name": str(nm), "qty": int(cnt or 0), "hours": False, "price": price})
+                warehouse[label] = items
+            # 2.2.3：被偷记录（未收割 或 被偷批次收割后 24h 内有效，最新在前）
+            steals = []
+            for it in (farm.get("steal_infos") or []):
+                if not isinstance(it, dict):
+                    continue
+                ht = it.get("harvest_ts")
+                if ht is not None and now_ts - float(ht or 0) > 86400:
+                    continue
+                steals.append({
+                    "time": datetime.fromtimestamp(float(it.get("ts", 0) or 0)).strftime("%Y-%m-%d %H:%M"),
+                    "thief_name": str(it.get("thief_name", "") or ""),
+                    "items": it.get("items", []) or [],
+                    "harvested": ht is not None,
+                })
+            steals.reverse()
             farm_info = {
                 "level": int(farm.get("level", 0) or 0),
                 "exp": round(float(farm.get("exp", 0) or 0), 1),
                 "plots": plots,
+                "total_profit": int(farm.get("total_profit", 0) or 0),
+                "warehouse": warehouse,
+                "steal_infos": steals[:30],
             }
         # ---- 仓库（宠物背包，详情独立附属卡片用） ----
         bag = []
@@ -1938,7 +1982,7 @@ class WebUIMixin:
                     if n > 0:
                         bag.append({"name": str(nm), "qty": n})
                 bag.sort(key=lambda x: (-x["qty"], x["name"]))
-        # ---- 银行（详情独立附属卡片用：存单列表 + 汇总） ----
+        # ---- 银行（详情独立附属卡片用：存单列表；统计数值取自银行模块 _bank_summary_of，WebUI 不另行统计） ----
         bank_info = None
         if isinstance(bank, dict) and bank.get("deposits"):
             deposits = []
@@ -1954,17 +1998,58 @@ class WebUIMixin:
                     "base_rate": float(d.get("base_rate", 0) or 0),
                     "bonus_rate": float(d.get("bonus_rate", 0) or 0),
                 })
-            locked_sum = sum(x["amount"] for x in deposits if x["status"] == "locked")
-            matured_sum = sum(x["amount"] for x in deposits if x["status"] == "matured")
-            interest_sum = sum(x["interest"] for x in deposits)
-            bank_info = {
-                "total_count": len(deposits),
-                "locked_count": sum(1 for x in deposits if x["status"] == "locked"),
-                "matured_count": sum(1 for x in deposits if x["status"] == "matured"),
-                "locked_sum": locked_sum, "matured_sum": matured_sum,
-                "interest_sum": interest_sum,
-                "deposits": deposits[:8],  # 最近 8 笔，前端折叠展示
+            bank_info = self._bank_summary_of(data, uid)
+            bank_info["deposits"] = deposits[:8]  # 最近 8 笔，前端折叠展示
+        # ---- 2.2.3：详情页扩展（宠物属性/最近变动、农场记录与统计、签到日历、金币流水、欠款、最后活跃） ----
+        la = float(u.get("last_active", 0) or 0)
+        la_text = "-"
+        if la > 0:
+            diff = datetime.now().timestamp() - la
+            if diff < 60:
+                la_text = "刚刚"
+            elif diff < 3600:
+                la_text = f"{int(diff // 60)} 分钟前"
+            elif diff < 86400:
+                la_text = f"{int(diff // 3600)} 小时前"
+            else:
+                la_text = f"{int(diff // 86400)} 天前"
+        # 宠物属性 + 最近一次属性变动（attr_log 最新一条）
+        if pet_info is not None:
+            sat_max, thr_max, sta_max, mood_max = self._attr_max(pet["health"])
+            pet_info["attrs"] = {
+                "satiety": round(float(pet.get("satiety", 0) or 0), 1),
+                "thirst": round(float(pet.get("thirst", 0) or 0), 1),
+                "stamina": round(float(pet.get("stamina", 0) or 0), 1),
+                "mood": round(float(pet.get("mood", 0) or 0), 1),
+                "health": round(float(pet.get("health", 0) or 0), 1),
+                "satiety_max": sat_max, "thirst_max": thr_max,
+                "stamina_max": sta_max, "mood_max": mood_max, "health_max": PET_MAX_HEALTH,
+                "satiety_red": self._attr_is_red("饱食", pet.get("satiety", 0)),
+                "thirst_red": self._attr_is_red("口渴", pet.get("thirst", 0)),
+                "mood_red": self._attr_is_red("心情", pet.get("mood", 0)),
+                "health_red": self._attr_is_red("健康", pet.get("health", 0)),
             }
+            pet_info["last_change"] = None
+            for it in reversed(pet.get("attr_log") or []):
+                if isinstance(it, dict):
+                    pet_info["last_change"] = {
+                        "time": str(it.get("time", "") or ""),
+                        "cat": str(it.get("cat", "") or ""),
+                        "behavior": str(it.get("behavior", "") or ""),
+                        "changes": it.get("changes", {}) or {},
+                        "extra": str(it.get("extra", "") or ""),
+                    }
+                    break
+        # 农场变化记录（farm_logs，最新在前，最近 60 条）+ 累计统计（farm_stats）
+        farm_log_list = [x for x in (u.get("farm_logs") or []) if isinstance(x, dict)][-60:]
+        farm_log_list.reverse()
+        farm_stat = u.get("farm_stats") if isinstance(u.get("farm_stats"), dict) else {}
+        # 签到日历（signin_logs，每天一条）+ 累计签到天数 / 累计签到金币
+        sign_logs = [x for x in (u.get("signin_logs") or []) if isinstance(x, dict)][-120:]
+        # 金币流水（ledger，最新在前，最近 60 条）
+        ledger = [x for x in reversed(data.get("ledger", {}).get(uid) or []) if isinstance(x, dict)][:60]
+        # 欠款账单统计取自贷款模块 _debt_summary_of（生效账单数 + 含息总额），WebUI 不另行统计
+        debt = self._debt_summary_of(data, uid)
         return {
             "uid": uid,
             "nick": self._record_user_nick(data, uid),
@@ -1982,6 +2067,23 @@ class WebUIMixin:
                 # 2.2.1：自动化贷款当前未还清欠款总额（0 = 无欠款）
                 "auto_loan_owed": self._auto_loan_owed_of(data, uid),
             },
+            # 2.2.3 扩展字段
+            "last_active_text": la_text,
+            "farm_logs": farm_log_list,
+            "farm_stat": {
+                "plant": int(farm_stat.get("plant", 0) or 0),
+                "fertilize": int(farm_stat.get("fertilize", 0) or 0),
+                "harvest": int(farm_stat.get("harvest", 0) or 0),
+                "harvest_yield": int(farm_stat.get("harvest_yield", 0) or 0),
+                "steal": int(farm_stat.get("steal", 0) or 0),
+                "steal_gain": int(farm_stat.get("steal_gain", 0) or 0),
+                "cost": int(farm_stat.get("cost", 0) or 0),
+            },
+            "sign_logs": sign_logs,
+            "sign_total": int(u.get("signin_total", 0) or 0),
+            "sign_coins_all": int(u.get("signin_coins_all", 0) or 0),
+            "ledger": ledger,
+            "debt": debt,
         }
 
     def _record_user_nick(self, data: dict, uid: str) -> str:
@@ -2031,9 +2133,8 @@ class WebUIMixin:
                 farm_summary = {"level": int(farm.get("level", 0) or 0)}
             bank_summary = None
             if isinstance(bank, dict):
-                locked_sum = sum(self._dep_amount(d) for d in (bank.get("deposits") or []) if d.get("status") == "locked")
-                matured_sum = sum(self._dep_amount(d) for d in (bank.get("deposits") or []) if d.get("status") == "matured")
-                bank_summary = {"locked_sum": locked_sum, "matured_sum": matured_sum}
+                # 2.2.3：银行汇总统计取自银行模块 _bank_summary_of（WebUI 不另行统计）
+                bank_summary = self._bank_summary_of(data, uid)
             users.append({
                 "uid": uid,
                 "nick": nick,
