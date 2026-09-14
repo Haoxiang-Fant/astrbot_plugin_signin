@@ -34,7 +34,7 @@ RECORDS_FILE = os.path.join(os.path.dirname(DATA_FILE), "records.json")
 # data 顶层记录字段 / 每只宠物内的记录字段 / 每个用户内的记录字段
 _DATA_RECORD_FIELDS = ("shop_price_records",)
 _PET_RECORD_FIELDS = ("attr_log",)
-_USER_RECORD_FIELDS = ("auto_feed_logs", "auto_work_logs")
+_USER_RECORD_FIELDS = ("auto_feed_logs", "auto_work_logs", "farm_logs", "signin_logs")
 
 
 def _read_json(path):

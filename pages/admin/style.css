@@ -1791,22 +1791,26 @@ input[type="file"] {
   break-inside: avoid;
   margin-bottom: var(--space-3);
 }
-/* 2.2.2：用户信息卡片改 Z 形（行优先）排列——第1,2张一行、第3,4张一行，DOM 顺序即阅读顺序
-   （原多列布局为 N 形：先填满左列再填右列）。展开卡片时该卡原地增高、同行邻居顶部对齐、下方行整体下移 */
-.rec-grid.cols-2.user-grid {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  align-items: start;
+/* 2.2.3：用户信息卡片双列瀑布流——两列独立纵向紧密堆叠（基础卡片高度相近，渲染时按序轮流分配）；
+   展开卡片在原位增高，仅推挤本列下方卡片、另一列不动：无整行空位，两列顶部无需对齐 */
+.user-masonry {
+  display: flex;
+  gap: var(--space-3);
+  align-items: flex-start;
 }
-.rec-grid.cols-2.user-grid > .rec-card {
-  margin-bottom: 0; /* 行距由 grid gap 提供（覆盖多列版的 margin-bottom） */
+.user-masonry-col {
+  flex: 1 1 0;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
 }
 @media (max-width: 900px) {
   .rec-grid.cols-2 {
     columns: 1;
   }
-  .rec-grid.cols-2.user-grid {
-    grid-template-columns: 1fr;
+  .user-masonry {
+    flex-direction: column;
   }
 }
 
@@ -2244,5 +2248,330 @@ input[type="file"] {
   color: var(--success);
 }
 .attr-bar-num.neg {
+  color: var(--danger);
+}
+
+/* ================= 2.2.3：运行记录 · 用户详情页（哔哩哔哩个人主页布局） =================
+   封面横幅 + 左侧圆形头像（压住横幅下缘）+ 昵称/徽章/UID + 统计行（卡片式单元格）+ 导航栏切换四分区
+   （宠物 / 农场 / 仓库 / 银行；分区主体 + 右侧统计侧边栏；农场土地卡片复刻指令响应版式）。
+   2.2.3：头部一张卡；分区内容按小标题拆成独立卡片（.bili-block），卡片间保持间距，不再共用一块大背景。
+   仅用于用户详情子页（#record-user-detail-box 内的 .bili-profile）；用户信息页展开详情仍用 .detail-grid */
+.bili-profile {
+  margin-bottom: var(--space-3);
+}
+.bili-head-card {
+  border: 1px solid var(--border);
+  background: var(--surface);
+}
+.bili-cover {
+  height: 92px;
+  background: linear-gradient(115deg, var(--accent-strong) 0%, var(--accent) 55%, var(--gold) 140%);
+}
+.bili-head {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-4);
+  padding: 0 var(--space-4) var(--space-3);
+}
+.bili-avatar {
+  width: 84px;
+  height: 84px;
+  flex: none;
+  margin-top: -42px;
+  border: 3px solid var(--surface);
+  border-radius: 50%;
+  background: var(--accent);
+  color: #fff;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-family: var(--font-display);
+  font-size: 38px;
+  font-weight: 700;
+  line-height: 1;
+  overflow: hidden;
+}
+.bili-head-info {
+  flex: 1;
+  min-width: 0;
+  padding-top: var(--space-2);
+}
+.bili-name-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+.bili-name {
+  font-family: var(--font-display);
+  font-size: 22px;
+  font-weight: 700;
+  overflow-wrap: anywhere;
+}
+/* B站式等级徽章（胶囊）；.danger = 虚弱停用红标 */
+.bili-lv {
+  flex: none;
+  font-size: 12px;
+  font-weight: 700;
+  color: #fff;
+  background: linear-gradient(90deg, var(--gold), var(--gold-2));
+  padding: 2px 9px;
+  border-radius: 999px;
+}
+.bili-lv.danger {
+  background: var(--danger);
+}
+.bili-uid {
+  margin-top: 2px;
+  font-size: 12px;
+  color: var(--muted);
+  font-family: var(--mono);
+}
+/* B站式统计行：数值上、标签下；每个单元格沿用原卡片式设计（描边 + 金色右缘，2.2.3） */
+.bili-stats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  margin-top: var(--space-3);
+}
+.bili-stat {
+  flex: 1 0 16%;
+  min-width: 0;
+  padding: 9px 6px;
+  text-align: center;
+  border: 1px solid var(--border);
+  border-right-width: 3px;
+  border-right-color: var(--gold);
+  background: var(--surface-2);
+}
+/* 2.2.3：banner 下方导航栏——点击切换对应分区，选中项金色下划线（头部卡片底部，只需上分隔线） */
+.bili-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  border-top: 1px solid var(--border);
+  padding: 0 var(--space-3);
+}
+.bili-tab {
+  appearance: none;
+  background: none;
+  border: none;
+  border-bottom: 2px solid transparent;
+  font: inherit;
+  font-size: 13px;
+  color: var(--text-2);
+  padding: 10px 14px;
+  cursor: pointer;
+}
+.bili-tab:hover {
+  color: var(--accent);
+}
+.bili-tab.active {
+  color: var(--accent);
+  font-weight: 700;
+  border-bottom-color: var(--gold);
+}
+.bili-stat b {
+  display: block;
+  font-size: 16px;
+  font-variant-numeric: tabular-nums;
+}
+.bili-stat span {
+  display: block;
+  margin-top: 2px;
+  font-size: 11px;
+  color: var(--muted);
+}
+/* 正文平铺分区：金色竖线小节标题 + 细线分隔，无卡片边框 */
+.bili-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  padding-top: var(--space-3);
+}
+/* 2.2.3：同一时间只显示一个分区（导航栏即分区标题），分区内是独立卡片列 */
+.bili-sec {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+/* hidden 属性必须显式压过上面的 display:flex ——
+   UA 样式表的 [hidden]{display:none} 会被任何 author display 规则覆盖，缺这条则四个分区全部可见、导航栏"失效" */
+.bili-sec[hidden] {
+  display: none;
+}
+/* 2.2.3：分区内每个小标题一块独立卡片（描边 + 金色右缘，同统计单元格/侧边栏风格） */
+.bili-block {
+  border: 1px solid var(--border);
+  border-right-width: 3px;
+  border-right-color: var(--gold);
+  background: var(--surface);
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+/* 独立卡片的标题（金色竖线，位于卡片内） */
+.bili-sub-title {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--accent);
+  padding-left: 8px;
+  border-left: 3px solid var(--gold);
+  margin: 0 0 4px;
+}
+/* 2.2.3：分区主体 + 右侧统计侧边栏 */
+.bili-split {
+  display: flex;
+  gap: var(--space-3);
+  align-items: flex-start;
+}
+.bili-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+.bili-side-card {
+  width: 230px;
+  flex: none;
+  border: 1px solid var(--border);
+  border-right-width: 3px;
+  border-right-color: var(--gold);
+  background: var(--surface-2);
+  padding: 10px 12px;
+}
+.bili-side-title {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--accent);
+  margin-bottom: 6px;
+  padding-bottom: 3px;
+  border-bottom: 1px solid var(--border);
+}
+.bili-side-row {
+  display: flex;
+  justify-content: space-between;
+  gap: var(--space-2);
+  font-size: 12px;
+  padding: 3px 0;
+  color: var(--text-2);
+}
+.bili-side-row b {
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+@media (max-width: 900px) {
+  .bili-split {
+    flex-direction: column;
+  }
+  .bili-side-card {
+    width: 100%;
+  }
+}
+/* 2.2.3：农场土地卡片（复刻指令响应的土地状态版式：黄=种植中 红=已成熟 蓝=空闲） */
+.farm-plots {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  gap: var(--space-2);
+  margin-bottom: var(--space-2);
+}
+.farm-plot {
+  border: 1px solid var(--border);
+  border-left-width: 3px;
+  border-left-color: var(--gold-2);  /* 种植中（黄） */
+  background: var(--surface-2);
+  padding: 6px 9px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: 12px;
+}
+.farm-plot b {
+  color: var(--text);
+}
+.farm-plot span {
+  color: var(--text-2);
+}
+.farm-plot span.muted {
+  color: var(--muted);
+  font-size: 11px;
+}
+.farm-plot.mature {
+  border-left-color: var(--danger);  /* 已成熟（红） */
+}
+.farm-plot.idle {
+  border-left-color: #7f9fc4;        /* 空闲（蓝） */
+}
+/* 2.2.3：打卡日历（当月签到，签到日高亮，点击查看当天变动） */
+.bili-cal {
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  gap: 4px;
+  max-width: 350px;
+  margin-bottom: var(--space-2);
+}
+.bili-cal-w {
+  text-align: center;
+  font-size: 11px;
+  color: var(--muted);
+  padding: 2px 0;
+}
+.bili-cal-cell {
+  appearance: none;
+  border: 1px solid var(--border);
+  background: var(--surface-2);
+  font: inherit;
+  font-size: 12px;
+  color: var(--text-2);
+  padding: 6px 0;
+  text-align: center;
+  cursor: pointer;
+}
+.bili-cal-cell.bili-cal-empty {
+  border: none;
+  background: none;
+  cursor: default;
+}
+.bili-cal-cell.signed {
+  background: var(--accent-soft-2);
+  color: var(--accent-strong);
+  font-weight: 700;
+}
+.bili-cal-cell.today {
+  border-color: var(--gold);
+}
+.bili-cal-cell.picked {
+  outline: 2px solid var(--gold);
+  outline-offset: -2px;
+}
+.bili-day-detail {
+  border: 1px dashed var(--border-2);
+  background: var(--surface-2);
+  padding: 8px 10px;
+  margin-bottom: var(--space-2);
+  max-width: 480px;
+}
+/* 2.2.3：宠物「查看全部属性变化记录」按钮 → 宠物详情页 */
+.bili-more {
+  appearance: none;
+  border: 1px solid var(--border-2);
+  background: var(--surface-2);
+  font: inherit;
+  font-size: 12px;
+  color: var(--accent);
+  padding: 6px 14px;
+  margin: 2px 0;
+  cursor: pointer;
+}
+.bili-more:hover {
+  border-color: var(--accent);
+  box-shadow: var(--ring-accent);
+}
+/* 2.2.3：金币流水的收支着色 */
+.rec-line b.led-plus {
+  color: var(--success);
+}
+.rec-line b.led-minus {
   color: var(--danger);
 }

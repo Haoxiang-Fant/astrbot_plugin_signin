@@ -46,7 +46,7 @@ class _NameOverrideEvent:
         return self._override_name
 
 
-@register("astrbot_plugin_signin", "sishijiu", "群签到 + 左轮手枪 + 宠物养成 + 金币银行 + 农场", "2.2.2")
+@register("astrbot_plugin_signin", "sishijiu", "群签到 + 左轮手枪 + 宠物养成 + 金币银行 + 农场", "2.2.3")
 class SignInPlugin(Star, FarmMixin, PetMixin, BankMixin, RedpacketMixin, ActivityMixin, LoanMixin, RouletteMixin, RankMixin, LanMixin, WebUIMixin, CoreMixin):
     def __init__(self, context: Context, config: dict = None):
         super().__init__(context)
@@ -757,6 +757,19 @@ class SignInPlugin(Star, FarmMixin, PetMixin, BankMixin, RedpacketMixin, Activit
 
         # ---- 活动钩子：已启用且时间有效的活动可在签到后追加内容（如双倍签到） ----
         self._sign_in_activity_hooks(event, data, key, lines)
+
+        # 2.2.3：签到日历记录（每天一条，随 records.json 存储；WebUI 用户详情·银行 tab 日历用）
+        logs = user.setdefault("signin_logs", [])
+        logs.append({
+            "date": today,
+            "coins": int(user.get("signin_coins_total", 0) or 0),
+            "fav": round(float(user.get("signin_fav_total", 0) or 0), 2),
+            "exp": round(float(user.get("signin_pet_exp_total", 0) or 0), 2),
+            "extra": list(user.get("signin_extra") or []),
+        })
+        if len(logs) > 120:
+            del logs[: len(logs) - 120]
+        user["signin_coins_all"] = int(user.get("signin_coins_all", 0) or 0) + int(user.get("signin_coins_total", 0) or 0)
 
         self._save(data)
         # 2.1.1：签到响应改为用户实时数据快照（瀑布平铺）
