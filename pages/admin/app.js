@@ -1497,13 +1497,13 @@ function recordPetCard(p) {
   const workLogs = (auto.work_logs || []).slice().reverse().map((lg) =>
     `<div class="rec-line">${esc(lg.ts || lg.date || "")}：自动打工「${esc(lg.job)}」+${lg.coins} 金币${(lg.exp && Number(lg.exp) > 0) ? ` +${lg.exp} 经验` : ""}，基准 ${lg.base_before} → ${lg.base_after}</div>`,
   ).join("") || '<div class="rec-line muted">暂无打工记录</div>';
-  // 可点击开关芯片（2.0.4：运行记录页直接控制每个用户的自动购买/自动打工）：
+  // 可点击开关芯片（2.0.4：运行记录页直接控制每个用户的自动照顾/自动打工）：
   // data-cur = 用户当前开关（0/1）；点击后向 records/pets/auto 切换（芯片 HTML 直接硬编码于下方）
   const purchaseOn = !!auto.purchase_on;
   const workOn = !!auto.work_on;
-  const purchaseHint = auto.purchase_global ? "自动购买（点击切换开/关）" : "自动购买 · ⚠️ 总开关未开启（设置 → 宠物 → 自动购买）";
+  const purchaseHint = auto.purchase_global ? "自动照顾（点击切换开/关）" : "自动照顾 · ⚠️ 总开关未开启（设置 → 宠物 → 自动照顾）";
   const workHint = !auto.purchase_on
-    ? "自动打工 · 需先开启自动购买（点击无效）"
+    ? "自动打工 · 需先开启自动照顾（点击无效）"
     : (auto.work_global ? "自动打工（点击切换开/关；只给金币不给经验）" : "自动打工 · 总开关未开启（设置 → 宠物 → 自动打工）");
   return `<div class="rec-card pet-card" data-uid="${esc(p.uid)}">
     <div class="rec-card-head">
@@ -1513,14 +1513,15 @@ function recordPetCard(p) {
       ${p.weak ? '<span class="rec-chip danger-chip">停用</span>' : ""}
     </div>
     <div class="rec-attrs">${attrRows}</div>
-    <div class="rec-row">活动：${busy ? `${esc(busy.activity)}「${esc(busy.item)}」剩 ${busy.remaining_min} 分钟` : (p.weak ? "虚弱 · 自动购买/自动打工已暂停" : "空闲")}</div>
+    <div class="rec-row">活动：${busy ? `${esc(busy.activity)}「${esc(busy.item)}」剩 ${busy.remaining_min} 分钟` : (p.weak ? "虚弱 · 自动照顾/自动打工已暂停" : "空闲")}</div>
     <div class="rec-row">
-      <span class="rec-row-label">自动购买</span>
+      <span class="rec-row-label">自动照顾</span>
       <button type="button" class="rec-chip${purchaseOn ? " on" : ""} toggle" data-auto="purchase" data-uid="${esc(p.uid)}" data-cur="${purchaseOn ? 1 : 0}" data-allow="1" title="${esc(purchaseHint)}">${purchaseOn ? "开" : "关"}</button>
       <span class="rec-row-label">自动打工</span>
       <button type="button" class="rec-chip${workOn ? " on" : ""} toggle" data-auto="work" data-uid="${esc(p.uid)}" data-cur="${workOn ? 1 : 0}" data-allow="${(workOn || purchaseOn) ? 1 : 0}" title="${esc(workHint)}">${workOn ? "开" : "关"}</button>
       <span class="rec-chip gold">基准 ${fmtNum(auto.work_base)}</span>
-      ${auto.auto_loan_owed > 0 ? `<span class="rec-chip danger-chip" title="自动化专属贷款（获得金币自动优先还款；未还清前宠物持续自动打工）">自动化贷款 欠 ${fmtNum(auto.auto_loan_owed)}</span>` : ""}
+      ${auto.auto_loan_owed > 0 ? `<span class="rec-chip danger-chip" title="自动化专属贷款（获得金币自动优先还款；未还清前宠物持续自动打工）">自动化贷款 欠 ${fmtNum(auto.auto_loan_owed)}</span>
+      <button type="button" class="rec-chip danger-chip" data-waive="1" data-uid="${esc(p.uid)}" data-owed="${esc(auto.auto_loan_owed)}" title="豁免该用户的全部自动化贷款（视为已还款，并从基准金币中扣除相应金额）">豁免贷款</button>` : ""}
     </div>
     <div class="rec-block"><div class="rec-block-title">购买 / 使用记录（×N 数量标记）</div>${feedLogs}</div>
     <div class="rec-block"><div class="rec-block-title">自动打工记录</div>${workLogs}</div>
@@ -1528,7 +1529,7 @@ function recordPetCard(p) {
   </div>`;
 }
 
-// 运行记录页：切换某用户的自动购买/自动打工（点击卡片上的「开/关」芯片）
+// 运行记录页：切换某用户的自动照顾/自动打工（点击卡片上的「开/关」芯片）
 async function toggleRecordAuto(uid, key, curOn) {
   setStatus("status-record-pets", "切换中...");
   try {
@@ -1541,6 +1542,23 @@ async function toggleRecordAuto(uid, key, curOn) {
     }
   } catch (e) {
     setStatus("status-record-pets", "❌ 切换失败：" + e.message);
+  }
+}
+
+// 2.2.5：豁免某用户的全部自动化贷款（视为已还款，并从基准金币中扣除相应金额）
+async function waiveAutoLoan(uid) {
+  if (!confirm("确认豁免该用户的全部自动化贷款？将视为已完成还款，并从基准金币中扣除相应欠款金额。")) return;
+  setStatus("status-record-pets", "豁免中...");
+  try {
+    const r = await bridge.apiPost("records/pets/loan_waive", { uid });
+    if (r && r.ok) {
+      setStatus("status-record-pets", `✅ ${r.msg}`);
+      loadRecordPets();
+    } else {
+      setStatus("status-record-pets", "❌ " + ((r && r.msg) || "豁免失败"));
+    }
+  } catch (e) {
+    setStatus("status-record-pets", "❌ 豁免失败：" + e.message);
   }
 }
 
@@ -1591,11 +1609,16 @@ function renderRecordPets() {
   box.innerHTML = `<div class="rec-grid cols-2">${list.map(recordPetCard).join("")}</div>`;
   if (!box._autoToggleHandler) {
     box._autoToggleHandler = (e) => {
+      const waiveBtn = e.target.closest(".rec-chip[data-waive]");
+      if (waiveBtn) {
+        waiveAutoLoan(waiveBtn.dataset.uid); // 2.2.5：豁免自动化贷款
+        return;
+      }
       const btn = e.target.closest(".rec-chip[data-auto]");
       if (!btn) return;
       const key = btn.dataset.auto;
       const curOn = Number(btn.dataset.cur) === 1;
-      // 未允许开启（如未开启自动购买、总开关关闭）：提示而不是发起将被后端拒绝的请求
+      // 未允许开启（如未开启自动照顾、总开关关闭）：提示而不是发起将被后端拒绝的请求
       if (!curOn && Number(btn.dataset.allow || 0) !== 1) {
         setStatus("status-record-pets", "⚠️ " + (btn.title || "当前不允许开启"));
         return;
@@ -1736,7 +1759,7 @@ function renderRecordPetDetail(d) {
   const statusCard = `<div class="detail-card">
     <div class="detail-card-title">🐾 当前状态</div>
     <div class="rec-attrs">${attrRows}</div>
-    <div class="rec-line">活动：${busy ? `正在${esc(busy.activity)}「${esc(busy.item)}」剩 ${busy.remaining_min} 分钟` : (d.weak ? "虚弱 · 自动购买/自动打工已暂停" : "空闲")}</div>
+    <div class="rec-line">活动：${busy ? `正在${esc(busy.activity)}「${esc(busy.item)}」剩 ${busy.remaining_min} 分钟` : (d.weak ? "虚弱 · 自动照顾/自动打工已暂停" : "空闲")}</div>
   </div>`;
 
   // ── 自动化信息（2.2.2：整行加宽，横跨上方三张卡片 + 两个间隙） ──
@@ -1750,7 +1773,7 @@ function renderRecordPetDetail(d) {
   ).join("") || '<div class="rec-line muted">暂无打工记录</div>';
   const autoCard = `<div class="detail-card span-all">
     <div class="detail-card-title">⚙️ 自动化</div>
-    <div class="rec-line">自动购买：${auto.purchase_on ? '<span style="color:var(--success)">✅ 开</span>' : "关"}｜自动打工：${auto.work_on ? '<span style="color:var(--success)">✅ 开</span>' : "关"}</div>
+    <div class="rec-line">自动照顾：${auto.purchase_on ? '<span style="color:var(--success)">✅ 开</span>' : "关"}｜自动打工：${auto.work_on ? '<span style="color:var(--success)">✅ 开</span>' : "关"}</div>
     <div class="rec-line">打工基准金币：${fmtNum(auto.work_base)}</div>
     ${auto.auto_loan_owed > 0 ? '<div class="rec-line" style="color:var(--danger)">自动化贷款：欠 ' + fmtNum(auto.auto_loan_owed) + " 金币</div>" : ""}
     <div class="rec-block"><div class="rec-block-title">购买 / 使用记录（×N）</div>${feedLogs}</div>
@@ -1884,7 +1907,7 @@ function recordUserDetailGrid(d) {
   </div>`;
   const autoCard = `<div class="detail-card">
     <div class="detail-card-title">⚙️ 自动化</div>
-    <div class="rec-line">自动购买：${auto.purchase_on ? "✅ 开" : "关"}｜自动打工：${auto.work_on ? "✅ 开" : "关"}</div>
+    <div class="rec-line">自动照顾：${auto.purchase_on ? "✅ 开" : "关"}｜自动打工：${auto.work_on ? "✅ 开" : "关"}</div>
     <div class="rec-line">打工基准金币：${fmtNum(auto.work_base)}</div>
     ${auto.auto_loan_owed > 0 ? `<div class="rec-line" style="color:var(--danger)">自动化贷款：欠 ${fmtNum(auto.auto_loan_owed)} 金币（获得金币自动优先还款）</div>` : ""}
   </div>`;
@@ -2138,7 +2161,7 @@ function renderBiliUserDetail(d) {
           : '<div class="rec-line muted">暂无属性变动记录</div>')
         + `<button type="button" class="bili-more" data-bili-pet="${esc(uid)}">查看全部属性变化记录 ›</button>`)
       + blk("自动化",
-        `<div class="rec-line">自动购买：${auto.purchase_on ? "开" : "关"}｜自动打工：${auto.work_on ? "开" : "关"}｜打工基准金币：${fmtNum(auto.work_base)}</div>`
+        `<div class="rec-line">自动照顾：${auto.purchase_on ? "开" : "关"}｜自动打工：${auto.work_on ? "开" : "关"}｜打工基准金币：${fmtNum(auto.work_base)}</div>`
         + (auto.auto_loan_owed > 0 ? `<div class="rec-line" style="color:var(--danger)">自动化贷款：欠 ${fmtNum(auto.auto_loan_owed)} 金币（获得金币自动优先还款）</div>` : ""));
   } else {
     petBody = blk("属性信息", '<div class="rec-line muted">未领养宠物</div>');

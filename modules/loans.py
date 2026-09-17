@@ -292,6 +292,24 @@ class LoanMixin:
         self._add_coins(data, key, amount, "自动化贷款", _skip_auto_repay=True)
         return amount
 
+    def _auto_loan_waive(self, data, key) -> float:
+        """2.2.5：管理员豁免该用户全部自动化贷款（视为该用户已完成还款）。
+        清空其全部自动化账单（remaining=0 后由既有清理逻辑移除），返回豁免的含息欠款总额；
+        调用方负责把该金额从基准金币中扣除（豁免 = 照顾缺口一并抹平）并保存。"""
+        rec = data.get("loans", {}).get(key)
+        if not rec:
+            return 0.0
+        now_ts = datetime.now().timestamp()
+        waived = round(sum(self._loan_owed(l, now_ts) for l in rec.get("loans", [])
+                           if l.get("auto") and l.get("remaining", 0) > 0), 2)
+        if waived <= 0:
+            return 0.0
+        for l in rec.get("loans", []):
+            if l.get("auto"):
+                l["remaining"] = 0
+        rec["loans"] = [l for l in rec.get("loans", []) if l.get("remaining", 0) > 0]
+        return waived
+
     def _repay_loans(self, data, key, amount, code=None):
         """还款，返回实际还款金额；优先还逾期最久 / 即将到期的账单"""
         rec = self._ensure_loans(data, key)

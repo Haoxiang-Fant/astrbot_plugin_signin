@@ -17,11 +17,7 @@ import copy
 import json
 import os
 
-try:
-    from astrbot.api import logger
-except Exception:  # 独立自检环境（_tmp/data_migrate_selftest.py）
-    import logging
-    logger = logging.getLogger("signin")
+from astrbot.api import logger
 
 try:
     from .base import DATA_FILE

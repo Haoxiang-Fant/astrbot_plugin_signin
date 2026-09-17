@@ -183,7 +183,8 @@ class SignInPlugin(Star, FarmMixin, PetMixin, BankMixin, RedpacketMixin, Activit
             ("lan/blacklist", "POST", self.web_lan_blacklist_set, "局域网开放：添加/移除黑名单（仅本地）"),
             # 2.0.4：WebUI 运行记录页
             ("records/pets", "GET", self.web_get_record_pets, "运行记录：全部宠物卡片（状态/活动/自动信息）"),
-            ("records/pets/auto", "POST", self.web_toggle_record_auto, "运行记录：切换用户自动购买/自动打工开关"),
+            ("records/pets/auto", "POST", self.web_toggle_record_auto, "运行记录：切换用户自动照顾/自动打工开关"),
+            ("records/pets/loan_waive", "POST", self.web_waive_auto_loan, "运行记录：豁免用户自动化贷款（视为已还款并扣除基准金币）"),
             # 2.2.1：宠物详情按需拉取（点击宠物记录卡片进入详情页，含每种行为的属性变化记录）
             ("records/pets/detail", "POST", self.web_get_record_pet_detail, "运行记录：单只宠物完整信息（属性变化记录，按需）"),
             ("records/prices", "GET", self.web_get_record_prices, "运行记录：商店价格变动"),
@@ -406,7 +407,8 @@ class SignInPlugin(Star, FarmMixin, PetMixin, BankMixin, RedpacketMixin, Activit
         "签到": "_handle_sign_in",
         "我的签到": "_handle_my_info",
         "修改昵称": "_handle_change_name",
-        "自动购买": "_handle_auto_feed_switch",
+        "自动照顾": "_handle_auto_feed_switch",
+        "自动购买": "_handle_auto_feed_switch",  # 2.2.5：旧指令名兼容
         "自动打工": "_handle_auto_work_switch",
         "自动化": "_handle_auto_overview",
         "结算日志": "_handle_auto_feed_log",
@@ -647,7 +649,7 @@ class SignInPlugin(Star, FarmMixin, PetMixin, BankMixin, RedpacketMixin, Activit
                 # 未照顾天数：连续两天结算健康为 0 进入虚弱
                 streak = int(pet.get("weak_streak", 0) or 0)
                 rows.append((f"未照顾天数：{max(1, streak)} 天", RED))
-                rows.append(("自动化提示：自动购买/自动打工已暂停，治疗恢复后自动继续", GRAY))
+                rows.append(("自动化提示：自动照顾/自动打工已暂停，治疗恢复后自动继续", GRAY))
             else:
                 rows.append((f"结算信息：{pet.get('last_settle', {}).get('date', '暂无')}", GRAY))
                 sat_max, thr_max, sta_max, mood_max = self._attr_max(pet["health"])
@@ -660,7 +662,7 @@ class SignInPlugin(Star, FarmMixin, PetMixin, BankMixin, RedpacketMixin, Activit
                 else:
                     rows.append(("当前空闲", GRAY))
                 u_auto = user
-                rows.append((f"自动化：自动购买{'开' if u_auto.get('auto_feed_enabled') else '关'}｜"
+                rows.append((f"自动化：自动照顾{'开' if u_auto.get('auto_feed_enabled') else '关'}｜"
                              f"自动打工{'开' if u_auto.get('auto_work_enabled') else '关'}｜"
                              f"基准金币 {int(u_auto.get('work_base', 0) or 0)}", TEXT))
                 fl = (u_auto.get("auto_feed_logs") or [])
@@ -668,7 +670,7 @@ class SignInPlugin(Star, FarmMixin, PetMixin, BankMixin, RedpacketMixin, Activit
                 if fl:
                     last = fl[-1]
                     items = "、".join(f"{it.get('name', '')}×{it.get('qty', 0)}" for it in last.get("items", []))
-                    rows.append((f"最近自动购买：{last.get('date', '')} {items}（花 {last.get('total', 0)} 金币）", GOLD))
+                    rows.append((f"最近自动照顾：{last.get('date', '')} {items}（花 {last.get('total', 0)} 金币）", GOLD))
                 if wl:
                     last = wl[-1]
                     rows.append((f"最近自动打工：{last.get('date', '')}「{last.get('job', '')}」+{last.get('coins', 0)} 金币", GREEN))
@@ -918,11 +920,11 @@ class SignInPlugin(Star, FarmMixin, PetMixin, BankMixin, RedpacketMixin, Activit
                 ("使用 <道具名> [数量]", "使用道具（不填数量 = 1 个，结果合入宠物总览图）"),
                 ("背包", "查看背包"),
                 ("治疗宠物", "治疗虚弱宠物（花 500 金币，所有数值恢复 40；仅虚弱状态可用）"),
-                ("自动购买 开/关", "开启/关闭自动购买（开启时立即判定一次；自动打工时/每日固定结算时判定；饱食/口渴/心情/健康 任一进入第 3/4 档按 饱食→口渴→心情→健康 补到目标值；金币不足自动申请自动化贷款；开启后自动同步开启自动打工）"),
+                ("自动照顾 开/关", "开启/关闭自动照顾（旧指令「自动购买 开/关」仍可用；开启时立即判定一次；五属性每次变化后/定期每分钟巡检/自动打工时/每日固定结算时判定；任一属性进入第 3/4 档或体力不足时按 健康>饱食>口渴>心情>体力 补到目标——饱食/口渴/心情补满、健康补到最大健康×目标百分比（默认80%）、体力用体力丸（50金币/个）补满；道具五条属性效果全部生效且与手动使用一致；优先免费使用仓库道具，仓库无可用道具才购买；照顾花费计入基准金币，由自动打工填补；金币不足自动申请自动化贷款；开启后自动同步开启自动打工）"),
                 ("自动打工 开/关", "自动打工开关（自动选择报酬最接近打工基准金币的项目，只给金币不给经验；基准 ≤ 100 自动暂停，有自动化贷款未还清时持续打工）"),
-                ("自动化", "查看自动购买/自动打工状态与指令调用方法"),
-                ("自动化帮助", "自动购买 + 自动打工 玩法说明（含固定刷新时间）"),
-                ("结算日志", "查看自动购买/自动打工记录（购买/使用带数量标记与触发来源）"),
+                ("自动化", "查看自动照顾/自动打工状态与指令调用方法"),
+                ("自动化帮助", "自动照顾 + 自动打工 玩法说明（含固定刷新时间）"),
+                ("结算日志", "查看自动照顾/自动打工记录（购买/使用带数量标记与触发来源）"),
             ]),
         ]
         return self._build_help("宠物帮助", sections)
@@ -986,10 +988,10 @@ class SignInPlugin(Star, FarmMixin, PetMixin, BankMixin, RedpacketMixin, Activit
                 ("购买 / 使用 <道具名> [数量]", "购买 / 使用道具（不填数量 = 1 个）"),
                 ("背包", "查看背包"),
                 ("治疗宠物", "治疗虚弱宠物（花 500 金币，所有数值恢复 40；仅虚弱状态可用）"),
-                ("自动购买 开/关", "开启/关闭自动购买（开启时立即判定一次；自动打工时/每日固定结算时判定；饱食/口渴/心情/健康 任一进入第 3/4 档按 饱食→口渴→心情→健康 补到目标值；金币不足自动申请自动化贷款；开启后自动同步开启自动打工）"),
+                ("自动照顾 开/关", "开启/关闭自动照顾（旧指令「自动购买 开/关」仍可用；开启时立即判定一次；五属性每次变化后/定期每分钟巡检/自动打工时/每日固定结算时判定；任一属性进入第 3/4 档或体力不足时按 健康>饱食>口渴>心情>体力 补到目标——饱食/口渴/心情补满、健康补到最大健康×目标百分比（默认80%）、体力用体力丸（50金币/个）补满；道具五条属性效果全部生效且与手动使用一致；优先免费使用仓库道具，仓库无可用道具才购买；照顾花费计入基准金币，由自动打工填补；金币不足自动申请自动化贷款；开启后自动同步开启自动打工）"),
                 ("自动打工 开/关", "自动打工开关（自动选择报酬最接近打工基准金币的项目，只给金币不给经验；基准 ≤ 100 自动暂停，有自动化贷款未还清时持续打工）"),
                 ("自动化 / 自动化帮助", "查看自动化状态与玩法 / 自动购买+自动打工说明（含固定刷新时间）"),
-                ("结算日志", "查看自动购买/自动打工记录（购买/使用带数量标记与触发来源）"),
+                ("结算日志", "查看自动照顾/自动打工记录（购买/使用带数量标记与触发来源）"),
             ]),
             ("金币银行", [
                 ("存款 <金额>", "存钱生息（不填=存最大可存金额）"),
