@@ -303,47 +303,48 @@ PET_ATTR_MAX_RANGES = "140=200,200,200,120|80=120,120,120,100|40=100,100,100,100
 # 超出部分按「PET_SETTLE_HEALTH_EXCHANGE 属性点 = 1 健康」用健康值抵扣（WebUI「设置 → 签到 → 宠物结算范围」可改）
 PET_SETTLE_HEALTH_EXCHANGE = 4
 
-# 宠物自动购买（2.0.4，默认关闭）：主人用「自动购买 开/关」开启。
-# 触发判定：饱食/口渴/心情/健康 任一属性进入第 3/4 档（饱食/口渴/心情 < 二档下限、健康 < 40）自动触发；
-# 按 饱食→口渴→心情→健康 顺序补满，且道具数量最少化（如缺口 120：优先 3 个 +40 而不是 12 个 +10）；
-# 优先消耗仓库已有道具（免费），不足再购买（实时价 × AUTO_FEED_PRICE_MULT，计入打工基准金币 work_base）；
-# 购买/使用记录带数量标记（🛒/📦 ×N）。AUTO_PURCHASE_COOLDOWN_MIN=触发后金币不足未能补满时的冷却分钟数（防刷屏）。
+# 宠物自动照顾（2.2.5 更名，原自动购买 2.0.4，默认关闭）：主人用「自动照顾 开/关」开启（旧指令「自动购买 开/关」兼容）。
+# 触发判定：五属性变化后（打工/玩耍/手动使用道具/治疗后）自动检查 + 每分钟定期巡检 +
+# 自动打工后 / 每日固定结算 / 开启时 检查；任一属性进入第 3/4 档（饱食/口渴/心情 < 二档下限、
+# 健康 < AUTO_FEED_HEALTH_TIER_MIN）或体力不足（< 标红线 20）即触发；
+# 按 健康>饱食>口渴>心情>体力 顺序补到目标（饱食/口渴/心情/体力补满，健康=最大健康×AUTO_FEED_TARGET_HEALTH_PCT）；
+# 优先消耗仓库已有道具（免费，生效率 ≥ AUTO_FEED_ITEM_EFF_MIN 才可用），不足再购买（实时价 × AUTO_FEED_PRICE_MULT）；
+# 照顾花费计入基准金币 work_base，由自动打工填补；购买/使用记录带数量标记（🛒/📦 ×N）。
+# AUTO_PURCHASE_COOLDOWN_MIN=触发后金币不足未能补满时的冷却分钟数（防刷屏）。
 AUTO_FEED_ENABLED = False
 AUTO_FEED_PRICE_MULT = 1.2
 AUTO_FEED_LOG_MAX = 30
 AUTO_PURCHASE_COOLDOWN_MIN = 10
 
-# 自动打工（2.0.4，默认总开关开启）：开启自动购买的用户自动开启自动打工（也可「自动打工 开/关」单独控制，
-# 未开启自动购买不允许开启自动打工）。自动购买消耗的金币 = 打工基准金币（work_base）；
-# 自动选择「报酬最接近打工基准金币」的可行打工项目，默认只给金币不给经验；完成后 新基准 = |基准 - 报酬|（溢出计入基准）；
-# 基准金币 ≤ AUTO_WORK_PAUSE_BASE（100）暂停，直到下次自动购买使基准 > 100 自动恢复；
+# 自动打工（2.0.4，默认总开关开启；2.2.5 目标改为填补自动照顾产生的金币缺口）：
+# 开启自动照顾的用户自动开启自动打工（也可「自动打工 开/关」单独控制，未开启自动照顾不允许开启自动打工）。
+# 发起条件（同时满足）：宠物使用道具后或处于空闲中 / 属性满足打工项目要求 / 已开启自动打工 / 基准金币 ≥ 0。
+# 自动选择「报酬与基准金币相差最小」的可行打工项目，默认只给金币不给经验；报酬为减基准（可为负）；
+# 基准金币 = 自动照顾产生的金币缺口：照顾买入/自动化贷款为加，打工报酬为减；为负（盈余）时暂停打工；
 # 独立计时器：冷却结束 + AUTO_WORK_DELAY_MIN 分钟后安排下一次自动打工，循环往复。
 # 2.1.0：AUTO_WORK_EXP_ENABLED=自动打工是否产生经验收益（默认关闭）；开启后经验 = 该打工项目经验 × AUTO_WORK_EXP_MULT
 #（倍率 0.1~1 倍，可在 WebUI「设置 → 宠物 → 自动打工」调整，默认 0.5 = 手动打工经验的一半）。
 AUTO_WORK_ENABLED = True
 AUTO_WORK_DELAY_MIN = 10
-AUTO_WORK_PAUSE_BASE = 100
 AUTO_WORK_LOG_MAX = 30
 AUTO_WORK_EXP_ENABLED = False
 AUTO_WORK_EXP_MULT = 0.5
 
-# 2.2.1：自动购买目标设定（WebUI「设置 → 宠物 → 自动购买」可编辑）——
-# 每属性目标 = max(属性上限 × 目标百分比, 该属性二档最低值)；健康无档位定义，
-# 「二档最低值」沿用健康低阈值 AUTO_FEED_HEALTH_TIER_MIN（默认 40，同状态条标红阈值）。
-AUTO_FEED_TARGET_SATIETY_PCT = 0.8
-AUTO_FEED_TARGET_THIRST_PCT = 0.8
-AUTO_FEED_TARGET_MOOD_PCT = 0.8
-AUTO_FEED_TARGET_HEALTH_PCT = 0.3
+# 2.2.5：自动照顾目标设定（WebUI「设置 → 宠物 → 自动照顾」可编辑）——
+# 饱食/口渴/心情/体力 → 补满（属性上限）；健康 → 最大健康值 × 目标百分比（默认 80%）；
+# 健康的触发阈值沿用健康低阈值 AUTO_FEED_HEALTH_TIER_MIN（默认 40，同状态条标红阈值）。
+AUTO_FEED_TARGET_HEALTH_PCT = 0.8
 AUTO_FEED_HEALTH_TIER_MIN = 40.0
 # 2.2.1：仓库道具可用性 —— 道具对目标属性的效果占其全部正面效果的比例低于该值（默认 90%）
-# 视为「不可用」，自动购买不消耗该仓库道具，转而使用其他可用道具；仓库无可用道具才在商店购买。
+# 视为「本次不可用」，自动照顾不消耗该仓库道具，转而使用其他可用道具；仓库无可用道具才在商店购买。
 AUTO_FEED_ITEM_EFF_MIN = 0.9
 
 # 2.2.1：自动化专属贷款套餐（只能由宠物自动化功能产生；用户无法通过任何指令直接借出本套餐）。
 # 单笔上限 AUTO_LOAN_MAX_AMOUNT（2000），单用户未还清总欠款上限 AUTO_LOAN_MAX_DEBT（2500）；
 # 逾期 AUTO_LOAN_DAYS（30 天）后，日息 AUTO_LOAN_RATE（0.01%）；可多次贷款。
-# 贷款发放后计入打工基准金币（work_base）；每次获得金币优先自动偿还本套餐欠款；
-# 贷款未还清时宠物持续自动打工还款（不受打工基准暂停线影响）。
+# 贷款发放后计入基准金币（work_base）；每次获得金币优先自动偿还本套餐欠款；
+# 欠款总额低于 1 金币视为还款完成（自动免除）；管理员可在 WebUI 豁免某用户的自动化贷款
+#（视为已还款，同时从基准金币中扣除相应金额）。
 AUTO_LOAN_CODE = 99
 AUTO_LOAN_MAX_AMOUNT = 2000
 AUTO_LOAN_MAX_DEBT = 2500
@@ -394,7 +395,7 @@ _PET_WEAK_LOCKED_HEADS = frozenset(("打工", "玩耍", "购买", "使用", "看
 # 全部标准指令口令（供 WebUI 下拉与保存校验；别名必须指向其中之一）
 CMD_HEADS = frozenset((
     "签到", "我的签到", "签到帮助", "游戏帮助", "帮助", "宠物帮助", "农场帮助", "左轮手枪帮助",
-    "修改昵称", "自动购买", "自动打工", "自动化", "自动化帮助", "结算日志", "装弹", "加入", "开始", "开枪", "我的战绩",
+    "修改昵称", "自动照顾", "自动购买", "自动打工", "自动化", "自动化帮助", "结算日志", "装弹", "加入", "开始", "开枪", "我的战绩",
     "解锁宠物", "宠物", "更改宠物名字", "治疗宠物", "打工", "玩耍",
     "商店", "购买", "使用", "背包", "看家",
     "农场", "解锁农场", "购买土地", "土地升级", "种子商店", "农场商店", "购买种子",
@@ -699,36 +700,28 @@ RUNTIME_PARAMS = [
      "desc": "每天被打折的种子最多数量", "default": 3, "min": 1, "max": 20},
     {"key": "SEED_DISCOUNT_PCT", "label": "种子折扣倍率", "type": "float", "group": "商店", "subgroup": "农场商店",
      "desc": "折扣后的价格倍率（0.8 = 打八折）", "default": 0.8, "min": 0.05, "max": 1},
-    # ---- 宠物（补充）2.0.3 自动喂养 → 2.0.4 改为自动购买 + 自动打工 ----
-    {"key": "AUTO_FEED_ENABLED", "label": "自动购买总开关", "type": "bool", "group": "宠物", "subgroup": "自动购买",
-     "desc": "总开关（默认关闭）：开启后，用「自动购买 开/关」启用了自动购买的用户，在宠物 饱食/口渴/心情/健康 任一属性进入第 3/4 档时自动补满；自动购买同时自动开启自动打工", "default": False},
-    {"key": "AUTO_FEED_PRICE_MULT", "label": "自动购买·购买价格倍率", "type": "float", "group": "宠物", "subgroup": "自动购买",
-     "desc": "自动购买（补满缺口）商品的价格倍率（1.2 = 比手动购买高 20%）；仓库已有道具免费使用", "default": 1.2, "min": 0.1, "max": 10},
-    {"key": "AUTO_PURCHASE_COOLDOWN_MIN", "label": "自动购买·失败冷却分钟", "type": "int", "group": "宠物", "subgroup": "自动购买",
-     "desc": "自动购买触发后因金币不足未能补满时，多少分钟后才允许再次触发（防止每消息反复尝试）", "default": 10, "min": 0, "max": 1440},
+    # ---- 宠物（补充）2.0.3 自动喂养 → 2.0.4 自动购买 → 2.2.5 自动照顾 ----
+    {"key": "AUTO_FEED_ENABLED", "label": "自动照顾总开关", "type": "bool", "group": "宠物", "subgroup": "自动照顾",
+     "desc": "总开关（默认关闭）：开启后，用「自动照顾 开/关」（旧指令「自动购买 开/关」兼容）启用了自动照顾的用户，五属性每次变化后与每分钟定期巡检检查宠物状态，任一属性进入第 3/4 档或体力不足时按 健康>饱食>口渴>心情>体力 补到目标（饱食/口渴/心情/体力补满、健康补到最大健康×目标百分比、体力用体力丸）；自动照顾同时自动开启自动打工", "default": False},
+    {"key": "AUTO_FEED_PRICE_MULT", "label": "自动照顾·购买价格倍率", "type": "float", "group": "宠物", "subgroup": "自动照顾",
+     "desc": "自动照顾购买道具的价格倍率（1.2 = 比手动购买高 20%）；仓库已有可用道具免费使用", "default": 1.2, "min": 0.1, "max": 10},
+    {"key": "AUTO_PURCHASE_COOLDOWN_MIN", "label": "自动照顾·失败冷却分钟", "type": "int", "group": "宠物", "subgroup": "自动照顾",
+     "desc": "自动照顾触发后因金币不足未能补满时，多少分钟后才允许再次触发（防止反复尝试）", "default": 10, "min": 0, "max": 1440},
     {"key": "AUTO_WORK_ENABLED", "label": "自动打工总开关", "type": "bool", "group": "宠物", "subgroup": "自动打工",
-     "desc": "总开关（默认开启）：开启后，开启了自动购买的用户自动开启自动打工（也可「自动打工 开/关」单独控制）", "default": True},
+     "desc": "总开关（默认开启）：开启后，开启了自动照顾的用户自动开启自动打工（也可「自动打工 开/关」单独控制）", "default": True},
     {"key": "AUTO_WORK_DELAY_MIN", "label": "自动打工·冷却后间隔分钟", "type": "int", "group": "宠物", "subgroup": "自动打工",
      "desc": "自动打工完成进入冷却后，冷却结束再过 N 分钟安排下一次自动打工（独立计时器循环）", "default": 10, "min": 0, "max": 600},
-    {"key": "AUTO_WORK_PAUSE_BASE", "label": "自动打工·暂停基准金币", "type": "int", "group": "宠物", "subgroup": "自动打工",
-     "desc": "打工基准金币 ≤ 该值（100）时暂停自动打工；下次自动购买使其超过该值后自动恢复", "default": 100, "min": 0, "max": 1000000},
     {"key": "AUTO_WORK_EXP_ENABLED", "label": "自动打工·是否产生经验", "type": "bool", "group": "宠物", "subgroup": "自动打工",
      "desc": "自动打工是否产生经验收益（默认关闭 = 只给金币不给经验）；开启后经验 = 打工项目经验 × 可调倍率", "default": False},
     {"key": "AUTO_WORK_EXP_MULT", "label": "自动打工·经验收益倍率", "type": "float", "group": "宠物", "subgroup": "自动打工",
      "desc": "自动打工经验 = 该打工项目经验 × 此倍率（0.1~1 倍，默认 0.5 = 手动打工经验的一半；仅在开启经验收益时生效）", "default": 0.5, "min": 0.1, "max": 1.0},
-    # ---- 宠物（补充）2.2.1：自动购买目标设定 + 自动化贷款 ----
-    {"key": "AUTO_FEED_TARGET_SATIETY_PCT", "label": "自动购买·饱食目标百分比", "type": "float", "group": "宠物", "subgroup": "自动购买",
-     "desc": "饱食补到目标 = max(当前健康档饱食上限 × 该百分比, 饱食二档最低值)（0.8 = 上限的 80%）", "default": 0.8, "min": 0.1, "max": 1.0},
-    {"key": "AUTO_FEED_TARGET_THIRST_PCT", "label": "自动购买·口渴目标百分比", "type": "float", "group": "宠物", "subgroup": "自动购买",
-     "desc": "口渴补到目标 = max(当前健康档口渴上限 × 该百分比, 口渴二档最低值)（0.8 = 上限的 80%）", "default": 0.8, "min": 0.1, "max": 1.0},
-    {"key": "AUTO_FEED_TARGET_MOOD_PCT", "label": "自动购买·心情目标百分比", "type": "float", "group": "宠物", "subgroup": "自动购买",
-     "desc": "心情补到目标 = max(当前健康档心情上限 × 该百分比, 心情二档最低值)（0.8 = 上限的 80%）", "default": 0.8, "min": 0.1, "max": 1.0},
-    {"key": "AUTO_FEED_TARGET_HEALTH_PCT", "label": "自动购买·健康目标百分比", "type": "float", "group": "宠物", "subgroup": "自动购买",
-     "desc": "健康补到目标 = max(健康最大值 × 该百分比, 健康低阈值)（0.3 = 上限的 30%）", "default": 0.3, "min": 0.1, "max": 1.0},
-    {"key": "AUTO_FEED_HEALTH_TIER_MIN", "label": "自动购买·健康二档最低值", "type": "float", "group": "宠物", "subgroup": "自动购买",
-     "desc": "健康无档位定义，「第二档最低值」沿用该低阈值（默认 40，同状态条标红阈值）；低于该值视为第 3/4 档并触发自动购买", "default": 40.0, "min": 1, "max": 200},
-    {"key": "AUTO_FEED_ITEM_EFF_MIN", "label": "自动购买·仓库道具生效率下限", "type": "float", "group": "宠物", "subgroup": "自动购买",
-     "desc": "仓库道具对目标属性的效果占其全部正面效果的比例低于该值（0.9 = 90%）视为不可用，自动购买不消耗它，改用其他可用道具；仓库无可用道具才在商店购买", "default": 0.9, "min": 0.1, "max": 1.0},
+    # ---- 宠物（补充）2.2.1 目标设定 → 2.2.5 自动照顾（饱食/口渴/心情/体力补满，仅健康可调） ----
+    {"key": "AUTO_FEED_TARGET_HEALTH_PCT", "label": "自动照顾·健康目标百分比", "type": "float", "group": "宠物", "subgroup": "自动照顾",
+     "desc": "健康补到目标 = 最大健康值 × 该百分比（0.8 = 最大健康的 80%）；饱食/口渴/心情补满（属性上限）、体力由体力丸直接补满", "default": 0.8, "min": 0.1, "max": 1.0},
+    {"key": "AUTO_FEED_HEALTH_TIER_MIN", "label": "自动照顾·健康触发阈值", "type": "float", "group": "宠物", "subgroup": "自动照顾",
+     "desc": "健康低于该值（默认 40，同状态条标红阈值）视为第 3/4 档并触发自动照顾", "default": 40.0, "min": 1, "max": 200},
+    {"key": "AUTO_FEED_ITEM_EFF_MIN", "label": "自动照顾·仓库道具生效率下限", "type": "float", "group": "宠物", "subgroup": "自动照顾",
+     "desc": "仓库道具对目标属性的效果占其全部正面效果的比例低于该值（0.9 = 90%）视为「本次不可用」，自动照顾不消耗它，改用其他可用道具；仓库无可用道具才在商店购买", "default": 0.9, "min": 0.1, "max": 1.0},
     # ---- 自动化贷款（2.2.1：宠物自动化专属套餐） ----
     {"key": "AUTO_LOAN_CODE", "label": "自动化贷款·套餐代码", "type": "int", "group": "贷款", "subgroup": "自动化贷款",
      "desc": "自动化专属贷款套餐代码（默认 99，不在 0~10 用户可选范围内，任何指令都无法直接借出本套餐）", "default": 99, "min": 11, "max": 999},
@@ -2518,13 +2511,9 @@ __all__ = [
     "AUTO_PURCHASE_COOLDOWN_MIN",
     "AUTO_WORK_ENABLED",
     "AUTO_WORK_DELAY_MIN",
-    "AUTO_WORK_PAUSE_BASE",
     "AUTO_WORK_LOG_MAX",
     "AUTO_WORK_EXP_ENABLED",
     "AUTO_WORK_EXP_MULT",
-    "AUTO_FEED_TARGET_SATIETY_PCT",
-    "AUTO_FEED_TARGET_THIRST_PCT",
-    "AUTO_FEED_TARGET_MOOD_PCT",
     "AUTO_FEED_TARGET_HEALTH_PCT",
     "AUTO_FEED_HEALTH_TIER_MIN",
     "AUTO_FEED_ITEM_EFF_MIN",

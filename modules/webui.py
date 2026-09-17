@@ -1609,7 +1609,7 @@ class WebUIMixin:
         return ""
 
     async def web_get_record_pets(self):
-        """运行记录·宠物记录：全部宠物卡片（当前状态 / 正在进行的活动 / 自动购买·自动打工信息）。
+        """运行记录·宠物记录：全部宠物卡片（当前状态 / 正在进行的活动 / 自动照顾·自动打工信息）。
         2.2.0：宠物每日结算由固定结算循环统一执行，此处只读取已结算结果。"""
         async with self._lock:
             data = self._load()
@@ -1669,10 +1669,10 @@ class WebUIMixin:
             return json_response({"pets": pets})
 
     async def web_toggle_record_auto(self):
-        """运行记录·宠物记录：管理员在 WebUI 直接切换某个用户的 自动购买/自动打工 开关。
+        """运行记录·宠物记录：管理员在 WebUI 直接切换某个用户的 自动照顾/自动打工 开关。
         入参 {uid, key: purchase|work, on: bool}；同一用户维度，跨群共享。
-        规则与群聊指令一致：开启自动购买 → 自动开启自动打工；不开启自动购买则不允许开启自动打工。
-        2.1.0：管理员开启自动购买时立即触发一次自动购买（清空失败冷却，宠物处于第 3/4 档则立即补满，
+        规则与群聊指令一致：开启自动照顾 → 自动开启自动打工；不开启自动照顾则不允许开启自动打工。
+        2.1.0：管理员开启自动照顾时立即触发一次自动照顾（清空失败冷却，宠物处于第 3/4 档则立即补满，
         触发来源 = 管理员开启）。"""
         try:
             payload = await request.json(default={})
@@ -1692,24 +1692,24 @@ class WebUIMixin:
             u = self._ensure_user(data, uid)
             if key == "work":
                 if on and not u.get("auto_feed_enabled"):
-                    return error_response("该用户未开启自动购买，无法开启自动打工（请先开启自动购买）", status_code=400)
+                    return error_response("该用户未开启自动照顾，无法开启自动打工（请先开启自动照顾）", status_code=400)
                 u["auto_work_enabled"] = on
                 if on:
                     u.setdefault("work_base", int(u.get("work_base", 0) or 0))
-                    u["auto_work_next"] = 0  # 立即可调度（基准金币 > 100 才真正执行）
+                    u["auto_work_next"] = 0  # 立即可调度（基准金币 ≥ 0 才真正执行）
                     self._ensure_auto_work_loop()
                     self._ensure_daily_settle_loop()
                 msg = "已开启自动打工" if on else "已关闭自动打工"
             else:  # purchase
                 u["auto_feed_enabled"] = on
                 if on:
-                    u["auto_work_enabled"] = True  # 用户开启自动购买 → 自动开启自动打工
+                    u["auto_work_enabled"] = True  # 用户开启自动照顾 → 自动开启自动打工
                     u.setdefault("work_base", int(u.get("work_base", 0) or 0))
                     u["auto_work_next"] = 0
                     self._ensure_auto_work_loop()
                     self._ensure_daily_settle_loop()
-                    msg = "已开启自动购买（自动打工同步开启）"
-                    # 2.1.0：管理员开启自动购买 → 立即触发一次自动购买
+                    msg = "已开启自动照顾（自动打工同步开启）"
+                    # 管理员开启自动照顾 → 立即触发一次自动照顾
                     u["auto_purchase_cool"] = 0
                     if self._auto_purchase_due(data, uid):
                         entry = self._auto_purchase_settle(data, uid, trigger="管理员开启")
@@ -1717,20 +1717,47 @@ class WebUIMixin:
                             items = "、".join(
                                 f"{'🛒' if it.get('src') == '购买' else '📦'}{it['name']}×{it['qty']}"
                                 for it in entry["items"])
-                            msg += f"；已立即触发自动购买：{items}（花费 {entry.get('total', 0)} 金币）"
+                            msg += f"；已立即触发自动照顾：{items}（花费 {entry.get('total', 0)} 金币）"
                         else:
-                            msg += "；已立即触发自动购买，但金币不足/无可用道具，未能补满（稍后自动重试）"
+                            msg += "；已立即触发自动照顾，但金币不足/无可用道具，未能补满（稍后自动重试）"
                     else:
-                        msg += "；已立即检查：宠物状态良好，无需购买"
+                        msg += "；已立即检查：宠物状态良好，无需照顾"
                 else:
                     u["auto_work_enabled"] = False
-                    msg = "已关闭自动购买（自动打工同步关闭）"
+                    msg = "已关闭自动照顾（自动打工同步关闭）"
             self._save(data)
             return json_response({
                 "ok": True, "msg": msg, "uid": uid, "key": key, "on": bool(u["auto_work_enabled"] if key == "work" else u["auto_feed_enabled"]),
                 "purchase_on": bool(u.get("auto_feed_enabled")),
                 "work_on": bool(u.get("auto_work_enabled")),
                 "work_base": int(u.get("work_base", 0) or 0),
+            })
+
+    async def web_waive_auto_loan(self):
+        """运行记录·宠物记录：管理员豁免某个用户的全部自动化贷款（2.2.5）。
+        入参 {uid}。豁免 = 视为该用户已完成还款：清空其全部自动化贷款账单（含息），
+        并从基准金币中扣除相应欠款金额（豁免的照顾缺口一并抹平，可为负）。"""
+        try:
+            payload = await request.json(default={})
+        except Exception:
+            payload = {}
+        uid = str(payload.get("uid") or "").strip()
+        if not uid:
+            return error_response("uid 不能为空", status_code=400)
+        async with self._lock:
+            data = self._load()
+            u = self._ensure_user(data, uid)
+            waived = self._auto_loan_waive(data, uid)
+            if waived <= 0:
+                return error_response("该用户没有未还清的自动化贷款", status_code=400)
+            # 扣除相应的基准金币值（豁免视为已还款，缺口随之消除）
+            u["work_base"] = int(u.get("work_base", 0) or 0) - int(round(waived))
+            self._save(data)
+            return json_response({
+                "ok": True, "msg": f"已豁免自动化贷款 {waived:.2f} 金币（视为已还款，基准金币已同步扣除）",
+                "uid": uid, "waived": round(waived, 2),
+                "work_base": int(u.get("work_base", 0) or 0),
+                "auto_loan_owed": self._auto_loan_owed_of(data, uid),
             })
 
     async def web_get_record_pet_detail(self):
@@ -1758,7 +1785,7 @@ class WebUIMixin:
     def _record_pet_detail_payload(self, data: dict, uid: str, pet: dict) -> dict:
         """（同步，锁内调用）单只宠物的完整详情数据（2.2.1）：
         分类展示宠物各项信息（基本档案/当前状态/每日结算/自动化/特殊记录/仓库道具），
-        以及每种行为（每日结算/打工/玩耍/使用道具/治疗/自动购买/自动打工）造成的属性变化记录。"""
+        以及每种行为（每日结算/打工/玩耍/使用道具/治疗/自动照顾/自动打工）造成的属性变化记录。"""
         u = data.get("users", {}).get(uid) or {}
         custom = self._custom_name_of(data, uid)
         now_ts = datetime.now().timestamp()

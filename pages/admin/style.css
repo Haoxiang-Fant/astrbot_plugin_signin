@@ -2097,7 +2097,7 @@ input[type="file"] {
   color: var(--muted);
 }
 
-/* 运行记录页·开关芯片（2.0.4：点击切换自动购买/自动打工） */
+/* 运行记录页·开关芯片（2.0.4：点击切换自动照顾/自动打工） */
 .rec-chip.toggle {
   cursor: pointer;
   font: inherit;
