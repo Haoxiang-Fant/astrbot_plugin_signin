@@ -211,7 +211,7 @@ class RankMixin:
             return str(int(round(v)))
         return f"{v:.2f}".rstrip("0").rstrip(".")
 
-    def _render_rank_image(self, title, rows, hl_color):
+    def _render_rank_image(self, title, rows, hl_color, force_width=None):
         """排行榜图片：每行「<名次> <用户名/宠物名> [进度条] <积分(右对齐)>」。
         rows: [(rank, name, score_str, is_me, ratio, masked), ...]（已按积分降序、取前 N 名）；
         ratio：进度条填充比例（第一名恒为 1.0，其它 = 积分/第一名积分，0~1）；
@@ -264,10 +264,15 @@ class RankMixin:
 
         # 宽度 = 内容宽度 × 倍数（默认 250%）；高度 = 标题 + 行 × 行高 + 行间分割线高度（间距恒定）
         base_w = pad * 2 + rank_col + 8 + name_w_max + gap_left + score_w_max
-        width = int(base_w * scale)
+        width = force_width or int(base_w * scale)
         sep_h = int(line_h * max(0.0, min(0.5, sep_pct)))
         n = len(prepared)
         height = int(pad * 2 + title_h + line_h * n + sep_h * max(0, n - 1))
+        # 2.2.6：过窄图片（低于比例下限，如展示名次较多时）按高度自动加宽重排，
+        # 进度条与分割线随之拉长（高度不随宽度变化，一轮收敛）
+        rmin = _img_ratio_min()
+        if force_width is None and rmin and height > width / rmin:
+            return self._render_rank_image(title, rows, hl_color, force_width=math.ceil(height * rmin))
 
         score_x = width - pad                  # 积分右对齐的右边缘
         name_x = pad + rank_col + 8            # 名字列起点（分割线也从这里开始）

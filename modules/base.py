@@ -15,6 +15,7 @@ import re
 import secrets
 import shutil
 import socket
+import sys
 from datetime import date, timedelta, datetime, time
 
 from astrbot.api.event import filter, AstrMessageEvent
@@ -917,6 +918,13 @@ RUNTIME_PARAMS = [
      "desc": "管理员在对话框输入此口令解锁 WebUI 调试按钮（重启后失效）", "default": "88224646"},
     {"key": "TEMP_IMAGE_TTL", "label": "临时图片保留秒数", "type": "int", "group": "调试", "subgroup": "图片",
      "desc": "生成的临时图片超过该秒数后清理（0 表示不清理）", "default": 600, "min": 0, "max": 86400},
+    # ---- 图片输出（2.2.6） ----
+    {"key": "MIN_IMG_RATIO", "label": "输出图片最小长宽比", "type": "float", "group": "图片输出", "subgroup": "比例范围",
+     "desc": "所有回复图片宽/高比的下限，过窄图片自动加宽或两侧补背景色（4:3 ≈ 1.333，0 = 不限制）",
+     "default": 4 / 3, "min": 0, "max": 3},
+    {"key": "MAX_IMG_RATIO", "label": "输出图片最大长宽比", "type": "float", "group": "图片输出", "subgroup": "比例范围",
+     "desc": "所有回复图片宽/高比的上限（应大于下限），过扁图片自动上下补背景色（16:9 ≈ 1.778，0 = 不限制）",
+     "default": 16 / 9, "min": 0, "max": 5},
     # ---- 排行榜 ----
     {"key": "RANK_DISPLAY", "label": "排行榜展示名次", "type": "int", "group": "排行榜", "subgroup": "通用",
      "desc": "每个排行榜最多展示的名次数（前 N 名）", "default": 20, "min": 5, "max": 100},
@@ -1405,6 +1413,11 @@ DS_BLUE = (52, 88, 132)             # 提示蓝（深调）
 # 标题字号档位（思源宋体 Bold）
 DS_TITLE_SIZES = {"list": 42, "rich": 40, "rank": 42, "snapshot": 36, "pet": 36,
                   "shop": 36, "bag": 36, "farm": 36, "activity": 36, "work": 36}
+# 2.2.6：输出图片长宽比（宽/高）范围。为方便群聊阅读，比例超出 [下限, 上限] 时自动补背景色，
+# 范围内保持原始比例（不锁死）；WebUI「设置 → 图片输出」可调（下限 4:3 ≈ 1.333，
+# 上限 16:9 ≈ 1.778，0 = 不限制）
+MIN_IMG_RATIO = 4 / 3
+MAX_IMG_RATIO = 16 / 9
 
 
 def _title_font(size=None, kind="list"):
@@ -1639,8 +1652,64 @@ def _make_wrapper(tw, default_width, mode="fill"):
     return wrap
 
 
+def _wrap_rich_rows(rows, wrap, sw, font, limit):
+    """2.2.6：富文本行流式换行。rows 每行为 (text, color, strike) 段列表；
+    段内文本先按 limit 宽换行（沿用 _make_wrapper 策略），再按段累积成行——
+    超出 limit 即断行。颜色与删除线标记随文本块保留。返回换行后的行列表。"""
+    out = []
+    for r in rows:
+        cur, cur_w = [], 0
+        for text, color, strike in r:
+            for piece in wrap(text, font, limit):
+                w = sw(piece, font)
+                if cur and cur_w + w > limit:
+                    out.append(cur)
+                    cur, cur_w = [], 0
+                cur.append((piece, color, strike))
+                cur_w += w
+        out.append(cur)
+    return out
+
+
+def _img_ratio_min():
+    """2.2.6：读取输出图片最小长宽比（宽/高）；≤0 / 非法时返回 None（不限制）"""
+    try:
+        r = float(MIN_IMG_RATIO)
+    except (TypeError, ValueError):
+        return None
+    return r if r > 0 else None
+
+
+def _apply_img_ratio(img):
+    """2.2.6：输出图片长宽比（宽/高）限制在 [MIN_IMG_RATIO, MAX_IMG_RATIO] 范围内：
+    过窄向两侧补、过扁向上下补背景色（取图片自身底色）；范围内保持原始比例不锁死。"""
+    try:
+        rmax = float(MAX_IMG_RATIO)
+    except (TypeError, ValueError):
+        rmax = 0
+    rmin = _img_ratio_min()
+    if (rmin is None and rmax <= 0) or img.width <= 0 or img.height <= 0:
+        return img
+    w, h = img.width, img.height
+    try:
+        if rmin is not None and w / h < rmin:      # 过窄 → 两侧补至下限
+            new_w = math.ceil(h * rmin)
+            canvas = Image.new("RGB", (new_w, h), img.getpixel((0, 0)))
+            canvas.paste(img, ((new_w - w) // 2, 0))
+            return canvas
+        if rmax > 0 and w / h > rmax:              # 过扁 → 上下补至上限
+            new_h = math.ceil(w / rmax)
+            canvas = Image.new("RGB", (w, new_h), img.getpixel((0, 0)))
+            canvas.paste(img, (0, (new_h - h) // 2))
+            return canvas
+    except Exception as e:
+        logger.warning(f"[插件] 输出图片长宽比调整失败（按原图发送）: {e}")
+    return img
+
+
 def _save_temp_image(img, prefix: str, kind: str):
     """保存渲染结果到数据目录并清理同前缀的过期图片。返回 ("image", path) 或 None"""
+    img = _apply_img_ratio(img)
     base = os.path.dirname(DATA_FILE)
     path = os.path.join(base, f"{prefix}{datetime.now().strftime('%Y%m%d%H%M%S%f')}.png")
     try:
@@ -2095,9 +2164,12 @@ class CoreMixin:
                 parts.append(f"{short}{v:.0f}")
         return " ".join(parts) if parts else "无效果"
 
-    def _render_text_image(self, title: str, lines):
+    def _render_text_image(self, title: str, lines, force_width=None):
         """把标题 + 正文行渲染为 PNG 图片。标题用思源宋体 Bold + 页头分隔线，
-        正文用 OPPOSans（温暖简约和风 · 米白暖底）。返回 ("image", path)；失败返回 None"""
+        正文用 OPPOSans（温暖简约和风 · 米白暖底）。
+        2.2.6：正文按最大内容宽自动换行（force_width 时按其内容宽换行）；
+        整体过窄（低于比例下限）时按高度自动加宽重排，内容真正铺满画布。
+        返回 ("image", path)；失败返回 None"""
         Image, ImageDraw = _ensure_pillow()
         if Image is None:
             return None
@@ -2114,26 +2186,36 @@ class CoreMixin:
 
         tw = _text_measurer()
         if tw is None:
-            width = 720
+            width = force_width or 720
+            disp = list(lines)
         else:
-            all_w = [tw(title, title_font)] + [tw(l, body_font) for l in lines]
-            width = max(480, int(max(all_w) + pad * 2))
+            limit = (force_width - pad * 2) if force_width else 840
+            wrap = _make_wrapper(tw, limit)
+            disp = []
+            for line in lines:
+                disp.extend(wrap(line, body_font))
+            all_w = [tw(title, title_font)] + [tw(l, body_font) for l in disp]
+            width = force_width or max(480, min(int(max(all_w) + pad * 2), 900))
 
-        height = pad * 2 + title_h + line_h * len(lines)
+        height = pad * 2 + title_h + line_h * len(disp)
+        # 2.2.6：过窄图片（低于比例下限）加宽后整体重排（换行变少，高度只降不升，一轮收敛）
+        rmin = _img_ratio_min()
+        if force_width is None and tw is not None and rmin and height > width / rmin:
+            return self._render_text_image(title, lines, force_width=math.ceil(height * rmin))
         img = Image.new("RGB", (width, height), DS_BG)
         draw = ImageDraw.Draw(img)
         y = pad
         _draw_underlined_title(draw, (pad, y), title, title_font, color=DS_ACCENT,
                                width=width - pad * 2, gap=10)
         y += title_h
-        for line in lines:
+        for line in disp:
             draw.text((pad, y), line, font=body_font, fill=DS_TEXT_2)
             y += line_h
 
         return _save_temp_image(img, "_list_", "")
 
     def _render_snapshot_image(self, title, modules, width=900, pad=20, title_h=64, line_h=30, mod_gap=14,
-                               col_gap=12, header_right=None):
+                               col_gap=12, header_right=None, _depth=0):
         """2.1.1 签到实时数据快照：信息流瀑布平铺渲染。
         modules: 每项为一张卡片 (模块标题, 内容行列表, 高亮?) 或一行并排的多张卡片
                  [卡片1, 卡片2, ...]（如 签到信息|好感度信息、银行与征信|排行榜信息）。
@@ -2149,6 +2231,7 @@ class CoreMixin:
         （inner*2），内容最后一行与卡片底部线条不重叠；高亮规范：高亮不变动卡片填充
         颜色，只改变 边框颜色 + 字体颜色。
         header_right: (文本, 颜色) 时显示在标题行右侧（右上角，如 金币数量）。
+        2.2.6：整体过窄（低于比例下限）时按高度自动加宽重排一轮，卡片变宽、内容铺满画布。
         返回 ("image", path)；失败返回 None。"""
         Image, ImageDraw = _ensure_pillow()
         if Image is None:
@@ -2325,10 +2408,18 @@ class CoreMixin:
                         _dtext(d, (x0 + inner, yy), text, font=font, fill=color)
                         yy += line_h
             y += line_h_max + mod_gap
+        # 2.2.6：过窄图片（低于比例下限）加宽后整体重排（卡片变宽、换行变少，一轮收敛）
+        rmin = _img_ratio_min()
+        if _depth == 0 and rmin and total_h > width / rmin:
+            return self._render_snapshot_image(title, modules, width=math.ceil(total_h * rmin), pad=pad,
+                                               title_h=title_h, line_h=line_h, mod_gap=mod_gap,
+                                               col_gap=col_gap, header_right=header_right, _depth=1)
         return _save_temp_image(img, "_snap_", "数据快照")
 
-    def _render_rich_image(self, title, rows):
-        """rows: 每行是 (text, color, strike) 元组列表。返回 ('image', path) 或 None"""
+    def _render_rich_image(self, title, rows, force_width=None):
+        """rows: 每行是 (text, color, strike) 元组列表。返回 ('image', path) 或 None
+        2.2.6：行内容按最大内容宽自动换行（彩色分段保持颜色与删除线，不随最长行撑宽画布）；
+        整体过窄（低于比例下限）时按高度自动加宽重排。"""
         Image, ImageDraw = _ensure_pillow()
         if Image is None:
             return None
@@ -2345,18 +2436,24 @@ class CoreMixin:
         if sw is None:
             return None
 
+        limit = (force_width - pad * 2) if force_width else 840
+        disp = _wrap_rich_rows(rows, _make_wrapper(sw, limit), sw, body_font, limit)
         max_w = sw(title, title_font)
-        for r in rows:
+        for r in disp:
             max_w = max(max_w, sum(sw(s[0], body_font) for s in r))
-        width = max(460, int(max_w + pad * 2))
-        height = pad * 2 + title_h + line_h * len(rows)
+        width = force_width or max(460, min(int(max_w + pad * 2), 920))
+        height = pad * 2 + title_h + line_h * len(disp)
+        # 2.2.6：过窄图片（低于比例下限）加宽后整体重排（换行变少，一轮收敛）
+        rmin = _img_ratio_min()
+        if force_width is None and rmin and height > width / rmin:
+            return self._render_rich_image(title, rows, force_width=math.ceil(height * rmin))
 
         img = Image.new("RGB", (width, height), DS_BG)
         d = ImageDraw.Draw(img)
         _draw_underlined_title(d, (pad, pad), title, title_font, color=DS_ACCENT,
                                width=width - pad * 2, gap=10)
         y = pad + title_h
-        for r in rows:
+        for r in disp:
             x = pad
             for seg in r:
                 text, color, strike = seg
@@ -2415,6 +2512,9 @@ def _sync_runtime_global(key, val):
             setattr(_m, key, val)
         except Exception:
             pass
+
+
+_register_runtime_module(sys.modules[__name__])  # base.py 自身参与同步（_save_temp_image 读 MIN_IMG_RATIO）
 
 
 __all__ = [
@@ -2631,6 +2731,9 @@ __all__ = [
     "ATTR_LABELS",
     "ATTR_SHORT",
     "TEMP_IMAGE_TTL",
+    "MIN_IMG_RATIO",
+    "MAX_IMG_RATIO",
+    "_img_ratio_min",
     "_farm_grades",
     "_parse_kv_sections",
     "_parse_kv_sections_text",

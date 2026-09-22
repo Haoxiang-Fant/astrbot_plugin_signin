@@ -78,6 +78,9 @@ const ICONS = {
   // 固定结算（2.1.0）：时钟（表盘 + 时针分针）
   clock:
     '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="square" stroke-linejoin="miter"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3.5 2.5"/><path d="M12 3v2M12 19v2M3 12h2M19 12h2"/></svg>',
+  // 图片输出（2.2.6）：相框（外框 + 山形 + 太阳）
+  image:
+    '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="square" stroke-linejoin="miter"><rect x="3.5" y="4.5" width="17" height="15"/><circle cx="9" cy="10" r="1.6"/><path d="M3.5 16.5 9 12l4 3.5 3.5-3 4 4"/></svg>',
   default:
     '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="square" stroke-linejoin="miter"><rect x="4" y="4" width="16" height="16" rx="1"/><path d="M4 9h16M9 4v16"/></svg>',
 };
@@ -2391,6 +2394,7 @@ const SETTINGS_CARDS = [
   { badge: "账单", icon: "ledger", title: "金币账单", tag: "流水", group: "金币账单" },
   { badge: "固定结算", icon: "clock", title: "固定结算", tag: "定时", group: "固定结算" },
   { badge: "撤回", icon: "undo", title: "撤回设置", tag: "消息", group: "撤回设置" },
+  { badge: "图片输出", icon: "image", title: "图片输出", tag: "比例", group: "图片输出" },
   { badge: "调试", icon: "debug", title: "调试", tag: "调试", group: "调试" },
   // 功能开关 / 数据导入导出 / 系统（局域网·群昵称）
   { badge: "开关", icon: "switch", title: "功能开关", tag: "开关", panel: "features" },
