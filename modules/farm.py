@@ -2097,7 +2097,7 @@ class FarmMixin:
         guard_effective = False
         if tpet is not None and not (now_ts < self._pet_busy_until(tpet)):
             try:
-                pet_tier = self._worst_tier(tpet["satiety"], tpet["thirst"], tpet["mood"])
+                pet_tier = self._worst_tier(tpet["satiety"], tpet["thirst"], tpet["mood"], tpet.get("health", 0))
             except Exception:
                 pet_tier = 1
             guard_effective = pet_tier < guard_tier_max

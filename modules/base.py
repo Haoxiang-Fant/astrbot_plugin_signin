@@ -304,53 +304,31 @@ PET_ATTR_MAX_RANGES = "140=200,200,200,120|80=120,120,120,100|40=100,100,100,100
 # 超出部分按「PET_SETTLE_HEALTH_EXCHANGE 属性点 = 1 健康」用健康值抵扣（WebUI「设置 → 签到 → 宠物结算范围」可改）
 PET_SETTLE_HEALTH_EXCHANGE = 4
 
-# 宠物自动照顾（2.2.5 更名，原自动购买 2.0.4，默认关闭）：主人用「自动照顾 开/关」开启（旧指令「自动购买 开/关」兼容）。
-# 触发判定：五属性变化后（打工/玩耍/手动使用道具/治疗后）自动检查 + 每分钟定期巡检 +
-# 自动打工后 / 每日固定结算 / 开启时 检查；任一属性进入第 3/4 档（饱食/口渴/心情 < 二档下限、
-# 健康 < AUTO_FEED_HEALTH_TIER_MIN）或体力不足（< 标红线 20）即触发；
-# 按 健康>饱食>口渴>心情>体力 顺序补到目标（饱食/口渴/心情/体力补满，健康=最大健康×AUTO_FEED_TARGET_HEALTH_PCT）；
-# 优先消耗仓库已有道具（免费，生效率 ≥ AUTO_FEED_ITEM_EFF_MIN 才可用），不足再购买（实时价 × AUTO_FEED_PRICE_MULT）；
-# 照顾花费计入基准金币 work_base，由自动打工填补；购买/使用记录带数量标记（🛒/📦 ×N）。
-# AUTO_PURCHASE_COOLDOWN_MIN=触发后金币不足未能补满时的冷却分钟数（防刷屏）。
+# 宠物自动照顾（2.2.7 重写）：主人用「自动照顾 开/关」开启（同步开启自动打工）。
+# 开启时执行初始照顾（所有属性提升到第 1 档，健康补到目标值），花费计入基准金币；
+# 此后五属性每次变化（打工/玩耍/手动使用道具/治疗后）与每日结算时自动检查，
+# 任一属性处于第 3/4 档即触发照顾：健康优先补到 最大健康 × AUTO_FEED_TARGET_HEALTH_PCT，
+# 随后 饱食(食物)→口渴(饮料)→心情(玩具)→体力(体力丸) 逐项检查——处于第 1/2 档忽略、
+# 第 3/4 档补满；优先消耗仓库道具（效果与手动使用一致），不足再购买并立即使用
+# （价格 = 手动购买价 × AUTO_BUY_PRICE_MULT，默认 1.1）；消耗金币计入基准金币 work_base。
 AUTO_FEED_ENABLED = False
-AUTO_FEED_PRICE_MULT = 1.2
+AUTO_BUY_PRICE_MULT = 1.1
 AUTO_FEED_LOG_MAX = 30
-AUTO_PURCHASE_COOLDOWN_MIN = 10
 
-# 自动打工（2.0.4，默认总开关开启；2.2.5 目标改为填补自动照顾产生的金币缺口）：
-# 开启自动照顾的用户自动开启自动打工（也可「自动打工 开/关」单独控制，未开启自动照顾不允许开启自动打工）。
-# 发起条件（同时满足）：宠物使用道具后或处于空闲中 / 属性满足打工项目要求 / 已开启自动打工 / 基准金币 ≥ 0。
-# 自动选择「报酬与基准金币相差最小」的可行打工项目，默认只给金币不给经验；报酬为减基准（可为负）；
-# 基准金币 = 自动照顾产生的金币缺口：照顾买入/自动化贷款为加，打工报酬为减；为负（盈余）时暂停打工；
-# 独立计时器：冷却结束 + AUTO_WORK_DELAY_MIN 分钟后安排下一次自动打工，循环往复。
-# 2.1.0：AUTO_WORK_EXP_ENABLED=自动打工是否产生经验收益（默认关闭）；开启后经验 = 该打工项目经验 × AUTO_WORK_EXP_MULT
-#（倍率 0.1~1 倍，可在 WebUI「设置 → 宠物 → 自动打工」调整，默认 0.5 = 手动打工经验的一半）。
+# 自动打工（2.2.7 重写）：自动照顾开启 且 基准金币 > 0 且 用户/管理员开启了自动打工时，
+# 自动选择「报酬最接近基准金币」的可进行打工项目；等待打工完成后进入下一轮。
+# 报酬优先偿还自动化贷款余额（无余额时进入金币账户），无论去向基准金币均扣除报酬；
+# 默认只给金币不给经验。
 AUTO_WORK_ENABLED = True
-AUTO_WORK_DELAY_MIN = 10
 AUTO_WORK_LOG_MAX = 30
-AUTO_WORK_EXP_ENABLED = False
-AUTO_WORK_EXP_MULT = 0.5
 
-# 2.2.5：自动照顾目标设定（WebUI「设置 → 宠物 → 自动照顾」可编辑）——
-# 饱食/口渴/心情/体力 → 补满（属性上限）；健康 → 最大健康值 × 目标百分比（默认 80%）；
-# 健康的触发阈值沿用健康低阈值 AUTO_FEED_HEALTH_TIER_MIN（默认 40，同状态条标红阈值）。
+# 2.2.7：自动照顾目标 —— 健康补到 最大健康 × 目标百分比（默认 80%）；
+# 档位统一由属性最大值数据推导（pet.py _TIER_PCTS），不再单独配置档位阈值。
 AUTO_FEED_TARGET_HEALTH_PCT = 0.8
-AUTO_FEED_HEALTH_TIER_MIN = 40.0
-# 2.2.1：仓库道具可用性 —— 道具对目标属性的效果占其全部正面效果的比例低于该值（默认 90%）
-# 视为「本次不可用」，自动照顾不消耗该仓库道具，转而使用其他可用道具；仓库无可用道具才在商店购买。
-AUTO_FEED_ITEM_EFF_MIN = 0.9
 
-# 2.2.1：自动化专属贷款套餐（只能由宠物自动化功能产生；用户无法通过任何指令直接借出本套餐）。
-# 单笔上限 AUTO_LOAN_MAX_AMOUNT（2000），单用户未还清总欠款上限 AUTO_LOAN_MAX_DEBT（2500）；
-# 逾期 AUTO_LOAN_DAYS（30 天）后，日息 AUTO_LOAN_RATE（0.01%）；可多次贷款。
-# 贷款发放后计入基准金币（work_base）；每次获得金币优先自动偿还本套餐欠款；
-# 欠款总额低于 1 金币视为还款完成（自动免除）；管理员可在 WebUI 豁免某用户的自动化贷款
-#（视为已还款，同时从基准金币中扣除相应金额）。
-AUTO_LOAN_CODE = 99
-AUTO_LOAN_MAX_AMOUNT = 2000
-AUTO_LOAN_MAX_DEBT = 2500
-AUTO_LOAN_DAYS = 30
-AUTO_LOAN_RATE = 0.01
+# 2.2.7：自动化贷款 —— 金额无上限、无逾期、无利息，仅自动照顾流程可贷（不能手动贷款）；
+# 余额存于用户 auto_loan 字段，通过 还款指令 或 自动打工报酬 偿还；
+# 管理员可在 WebUI 豁免（视为已还款，同时从基准金币中扣除相应金额）。
 
 # 2.2.1：管理员 UID 列表（逗号分隔）。用于数据管理类指令（查看/保存后台配置、导入/导出数据、管理网址）的鉴权；
 # 留空时回退到 OneBot 群角色（owner/admin）与 AstrBot 主人配置判定。
@@ -701,39 +679,16 @@ RUNTIME_PARAMS = [
      "desc": "每天被打折的种子最多数量", "default": 3, "min": 1, "max": 20},
     {"key": "SEED_DISCOUNT_PCT", "label": "种子折扣倍率", "type": "float", "group": "商店", "subgroup": "农场商店",
      "desc": "折扣后的价格倍率（0.8 = 打八折）", "default": 0.8, "min": 0.05, "max": 1},
-    # ---- 宠物（补充）2.0.3 自动喂养 → 2.0.4 自动购买 → 2.2.5 自动照顾 ----
+    # ---- 宠物（补充）2.2.7 自动照顾重写 ----
     {"key": "AUTO_FEED_ENABLED", "label": "自动照顾总开关", "type": "bool", "group": "宠物", "subgroup": "自动照顾",
-     "desc": "总开关（默认关闭）：开启后，用「自动照顾 开/关」（旧指令「自动购买 开/关」兼容）启用了自动照顾的用户，五属性每次变化后与每分钟定期巡检检查宠物状态，任一属性进入第 3/4 档或体力不足时按 健康>饱食>口渴>心情>体力 补到目标（饱食/口渴/心情/体力补满、健康补到最大健康×目标百分比、体力用体力丸）；自动照顾同时自动开启自动打工", "default": False},
-    {"key": "AUTO_FEED_PRICE_MULT", "label": "自动照顾·购买价格倍率", "type": "float", "group": "宠物", "subgroup": "自动照顾",
-     "desc": "自动照顾购买道具的价格倍率（1.2 = 比手动购买高 20%）；仓库已有可用道具免费使用", "default": 1.2, "min": 0.1, "max": 10},
-    {"key": "AUTO_PURCHASE_COOLDOWN_MIN", "label": "自动照顾·失败冷却分钟", "type": "int", "group": "宠物", "subgroup": "自动照顾",
-     "desc": "自动照顾触发后因金币不足未能补满时，多少分钟后才允许再次触发（防止反复尝试）", "default": 10, "min": 0, "max": 1440},
+     "desc": "总开关（默认关闭）：开启后，用「自动照顾 开/关」启用了自动照顾的用户，五属性每次变化（打工/玩耍/使用道具/治疗后）与每日结算时自动检查，任一属性处于第 3/4 档即触发照顾（健康补到最大健康×目标百分比，饱食/口渴/心情/体力按档位补满）；开启自动照顾会同步开启自动打工", "default": False},
+    {"key": "AUTO_BUY_PRICE_MULT", "label": "自动照顾·购买价格倍率", "type": "float", "group": "宠物", "subgroup": "自动照顾",
+     "desc": "自动化购买道具的价格 = 用户手动购买价格 × 该倍率（1.1 = 高 10%）；优先使用用户持有的道具，仓库没有才购买", "default": 1.1, "min": 0.1, "max": 10},
     {"key": "AUTO_WORK_ENABLED", "label": "自动打工总开关", "type": "bool", "group": "宠物", "subgroup": "自动打工",
-     "desc": "总开关（默认开启）：开启后，开启了自动照顾的用户自动开启自动打工（也可「自动打工 开/关」单独控制）", "default": True},
-    {"key": "AUTO_WORK_DELAY_MIN", "label": "自动打工·冷却后间隔分钟", "type": "int", "group": "宠物", "subgroup": "自动打工",
-     "desc": "自动打工完成进入冷却后，冷却结束再过 N 分钟安排下一次自动打工（独立计时器循环）", "default": 10, "min": 0, "max": 600},
-    {"key": "AUTO_WORK_EXP_ENABLED", "label": "自动打工·是否产生经验", "type": "bool", "group": "宠物", "subgroup": "自动打工",
-     "desc": "自动打工是否产生经验收益（默认关闭 = 只给金币不给经验）；开启后经验 = 打工项目经验 × 可调倍率", "default": False},
-    {"key": "AUTO_WORK_EXP_MULT", "label": "自动打工·经验收益倍率", "type": "float", "group": "宠物", "subgroup": "自动打工",
-     "desc": "自动打工经验 = 该打工项目经验 × 此倍率（0.1~1 倍，默认 0.5 = 手动打工经验的一半；仅在开启经验收益时生效）", "default": 0.5, "min": 0.1, "max": 1.0},
-    # ---- 宠物（补充）2.2.1 目标设定 → 2.2.5 自动照顾（饱食/口渴/心情/体力补满，仅健康可调） ----
+     "desc": "总开关（默认开启）：开启后，开启了自动照顾且基准金币 > 0 的用户自动打工（报酬最接近基准金币的项目；打工完成后自动进入下一轮；报酬优先偿还自动化贷款）", "default": True},
+    # ---- 宠物（补充）2.2.7 自动照顾目标 ----
     {"key": "AUTO_FEED_TARGET_HEALTH_PCT", "label": "自动照顾·健康目标百分比", "type": "float", "group": "宠物", "subgroup": "自动照顾",
-     "desc": "健康补到目标 = 最大健康值 × 该百分比（0.8 = 最大健康的 80%）；饱食/口渴/心情补满（属性上限）、体力由体力丸直接补满", "default": 0.8, "min": 0.1, "max": 1.0},
-    {"key": "AUTO_FEED_HEALTH_TIER_MIN", "label": "自动照顾·健康触发阈值", "type": "float", "group": "宠物", "subgroup": "自动照顾",
-     "desc": "健康低于该值（默认 40，同状态条标红阈值）视为第 3/4 档并触发自动照顾", "default": 40.0, "min": 1, "max": 200},
-    {"key": "AUTO_FEED_ITEM_EFF_MIN", "label": "自动照顾·仓库道具生效率下限", "type": "float", "group": "宠物", "subgroup": "自动照顾",
-     "desc": "仓库道具对目标属性的效果占其全部正面效果的比例低于该值（0.9 = 90%）视为「本次不可用」，自动照顾不消耗它，改用其他可用道具；仓库无可用道具才在商店购买", "default": 0.9, "min": 0.1, "max": 1.0},
-    # ---- 自动化贷款（2.2.1：宠物自动化专属套餐） ----
-    {"key": "AUTO_LOAN_CODE", "label": "自动化贷款·套餐代码", "type": "int", "group": "贷款", "subgroup": "自动化贷款",
-     "desc": "自动化专属贷款套餐代码（默认 99，不在 0~10 用户可选范围内，任何指令都无法直接借出本套餐）", "default": 99, "min": 11, "max": 999},
-    {"key": "AUTO_LOAN_MAX_AMOUNT", "label": "自动化贷款·单笔上限", "type": "int", "group": "贷款", "subgroup": "自动化贷款",
-     "desc": "自动化每次申请贷款的最大金额（默认 2000；可多次贷款）", "default": 2000, "min": 1, "max": 100000},
-    {"key": "AUTO_LOAN_MAX_DEBT", "label": "自动化贷款·单用户欠款总上限", "type": "int", "group": "贷款", "subgroup": "自动化贷款",
-     "desc": "自动化贷款套餐单个用户未还清欠款总额上限（默认 2500），达到后不再放款", "default": 2500, "min": 1, "max": 1000000},
-    {"key": "AUTO_LOAN_DAYS", "label": "自动化贷款·逾期天数", "type": "int", "group": "贷款", "subgroup": "自动化贷款",
-     "desc": "自动化贷款到期天数（默认 30 天），逾期后按普通贷款规则处理", "default": 30, "min": 1, "max": 365},
-    {"key": "AUTO_LOAN_RATE", "label": "自动化贷款·日利率", "type": "float", "group": "贷款", "subgroup": "自动化贷款",
-     "desc": "自动化贷款日利率（%/日，默认 0.01%），贷款发放后按日计息", "default": 0.01, "min": 0, "max": 100},
+     "desc": "健康补到目标 = 最大健康值 × 该百分比（0.8 = 最大健康的 80%）；其余属性按档位补满", "default": 0.8, "min": 0.1, "max": 1.0},
     # ---- 通用（2.2.1：管理员鉴权） ----
     {"key": "ADMIN_UIDS", "label": "管理员 UID（逗号分隔）", "type": "string", "group": "通用", "subgroup": "鉴权",
      "desc": "可调用数据管理类指令（查看/保存后台配置、导出/导入数据、管理网址）的管理员 UID，多个用逗号分隔；留空时回退到 OneBot 群角色（群主/管理员）与 AstrBot 主人配置判定", "default": ""},
@@ -839,10 +794,7 @@ RUNTIME_PARAMS = [
      "desc": "每日结算时宠物各属性按状态档位随机变化。2.0.1 固定四档 T1~T4（按饱食/口渴/心情最差档：1 最好 ~ 4 最差），每档定义全部五属性变化范围。格式：档位=属性最低~最高，逗号分隔；属性名：饱食/口渴/体力/心情/健康。示例：T1=饱食-15~-10,口渴-15~-10,体力100~120,心情3~7,健康5~10|T2=饱食-15~-10,口渴-15~-10,体力100~120,心情3~7,健康0.1~6|T3=饱食-20~-15,口渴-20~-15,体力80~120,心情1~2.5,健康-10~-4|T4=饱食-25~-20,口渴-25~-20,体力40~60,心情-5~-2,健康-15~-8",
      "default": "T1=饱食-15~-10,口渴-15~-10,体力100~120,心情3~7,健康5~10|T2=饱食-15~-10,口渴-15~-10,体力100~120,心情3~7,健康0.1~6|T3=饱食-20~-15,口渴-20~-15,体力80~120,心情1~2.5,健康-10~-4|T4=饱食-25~-20,口渴-25~-20,体力40~60,心情-5~-2,健康-15~-8",
      "attr": "pet_settle_ranges"},
-    {"key": "PET_SETTLE_TIERS", "label": "宠物结算·档位数值（各档判定阈值）", "type": "string", "group": "签到", "subgroup": "宠物结算范围",
-     "desc": "四档判定阈值（一档下限,二档下限,三档下限，从高到低）：属性值 ≥一档下限→1档；≥二档下限→2档；≥三档下限→3档；否则4档。格式：饱食=120,50,30|口渴=120,70,30|心情=80,50,30",
-     "default": "饱食=120,50,30|口渴=120,70,30|心情=80,50,30",
-     "attr": "pet_settle_tiers"},
+    # （2.2.7 统一数值管理：档位判定阈值不再单独配置，由属性最大值数据推导，见 pet.py _TIER_PCTS）
     {"key": "PET_SETTLE_HEALTH_EXCHANGE", "label": "宠物结算·超扣转健康抵扣比例", "type": "int", "group": "签到", "subgroup": "宠物结算范围",
      "desc": "每日结算扣减的属性若超出结算前属性值，超出部分按「N 属性点 = 1 健康」用健康值抵扣（默认 4：少 4 点属性点扣 1 点健康；超出部分向上取整）",
      "default": 4, "min": 1, "max": 100},
@@ -1829,6 +1781,8 @@ class CoreMixin:
                 logger.error(f"[插件] 回填记录数据失败: {e}")
             # 旧数据迁移：宠物等级按新经验体系重算（所需经验 = 当前等级 × 100）
             self._migrate_pet_levels(data)
+            # 2.2.7 兼容迁移：旧版自动化贷款账单并入用户 auto_loan 余额
+            self._migrate_auto_loans(data)
             return data
         except Exception as e:
             logger.error(f"[插件] 读取数据失败: {e}")
@@ -1843,6 +1797,25 @@ class CoreMixin:
                 pet["level"] = min(PET_MAX_LEVEL, self._pet_level_from_exp(float(pet.get("exp", 0.0))))
         except Exception as e:
             logger.error(f"[插件] 宠物等级迁移失败: {e}")
+
+    def _migrate_auto_loans(self, data: dict) -> None:
+        """2.2.7 兼容迁移：旧版自动化贷款账单（loans 中 auto=True 的账单）→ 用户 auto_loan 余额
+        （新体系无利息无逾期，按剩余本金并入；发现旧账单才执行，迁移后删除账单，天然幂等）。"""
+        try:
+            for key, rec in (data.get("loans") or {}).items():
+                if not isinstance(rec, dict):
+                    continue
+                bills = rec.get("loans") or []
+                auto_bills = [l for l in bills if isinstance(l, dict) and l.get("auto") and l.get("remaining", 0) > 0]
+                if not auto_bills:
+                    continue
+                total = int(round(sum(float(l.get("remaining", 0) or 0) for l in auto_bills)))
+                u = data.setdefault("users", {}).setdefault(key, {"coins": 0, "favorability": 0.0})
+                u["auto_loan"] = round(float(u.get("auto_loan", 0) or 0) + total, 2)
+                rec["loans"] = [l for l in bills if not (isinstance(l, dict) and l.get("auto"))]
+                logger.info(f"[插件] 2.2.7 迁移：用户 {key} 自动化贷款账单 {total} 金币并入 auto_loan 余额")
+        except Exception as e:
+            logger.error(f"[插件] 自动化贷款迁移失败: {e}")
 
     # ================= WebUI 运行参数 =================
     def _save(self, data: dict) -> None:
@@ -2035,24 +2008,11 @@ class CoreMixin:
 
     def _add_coins(self, data: dict, key: str, amount: int, reason: str = "", _skip_auto_repay: bool = False) -> int:
         """增加/扣除金币并记录流水（只有 reason 非空且金额变动才记）。amount 正为获得、负为消费。返回变动后的余额。
-        2.2.1：存在宠物自动化贷款（套餐 AUTO_LOAN_CODE）时，获得金币优先全额自动偿还本套餐欠款
-        （还清后剩余部分才入账）；随后仍有逾期贷款时，剩余金额再自动划扣 20% 还款
-        （划扣部分是还贷，不重复记流水）。自动化贷款发放自身使用 _skip_auto_repay=True，避免刚借出的
-        金币被立刻拿去还旧账。"""
+        （2.2.7：自动化贷款改为单一余额，不再从获得金币中自动扣还——还款只走 还款指令 与 自动打工报酬；
+        本参数保留兼容旧调用。仍有普通逾期贷款时，获得金额自动划扣 LOAN_COIN_DEDUCT 比例还款。）"""
         # 1.7.8：当日第一笔金币变动前先记录背包净收益零点基线（保证红包/利息等全部计入）
         self._ensure_bag_base(data, key)
         if amount > 0 and not _skip_auto_repay and data.get("loans", {}).get(key):
-            rec = data["loans"][key]
-            now_ts = datetime.now().timestamp()
-            auto_owed = sum(self._loan_owed(l, now_ts)
-                            for l in rec.get("loans", [])
-                            if l.get("auto") and l.get("remaining", 0) > 0)
-            if auto_owed > 0:
-                take = min(int(amount), int(auto_owed))
-                if take > 0:
-                    repaid = self._repay_loans(data, key, take, code=AUTO_LOAN_CODE)
-                    amount -= int(repaid)
-        if amount > 0 and data.get("loans", {}).get(key):
             rec = data["loans"][key]
             if self._has_overdue_now(rec, datetime.now().timestamp()):
                 take = int(amount * LOAN_COIN_DEDUCT)
@@ -2469,14 +2429,18 @@ class CoreMixin:
         return _save_temp_image(img, "_farm_", "农场")
 
     def _render_help(self, title, sections):
-        """把帮助菜单渲染成图片。sections: [(小标题, [(指令, 说明), ...]), ...]"""
-        rows = []
+        """把帮助菜单渲染成图片。sections: [(小标题, [(指令, 说明), ...]), ...]
+        2.2.7：每个模块的指令放进一张独立卡片（复用快照渲染器瀑布平铺：
+        自带比例下限加宽重排 + _save_temp_image 双向长宽比 clamp），行 = 「指令：说明」过长自动换行。"""
+        modules = []
         for header, items in sections:
-            if header:
-                rows.append([(header, DS_MUTED, False)])
-            for cmd, desc in items:
-                rows.append([(cmd, DS_TEXT, False), (f"  {desc}", DS_MUTED, False)])
-        return self._render_rich_image(title, rows)
+            if not header or not items:
+                continue
+            rows = [(f"{cmd}：{desc}", DS_TEXT_2) for cmd, desc in items]
+            modules.append((str(header), rows, False))
+        if not modules:
+            return None
+        return self._render_snapshot_image(title, modules)
 
     def _build_help(self, title, sections):
         """返回图片 ('image', path) 或文本 str（图片失败时回退）"""
@@ -2606,22 +2570,11 @@ __all__ = [
     "PET_ATTR_MAX_RANGES",
     "PET_SETTLE_HEALTH_EXCHANGE",
     "AUTO_FEED_ENABLED",
-    "AUTO_FEED_PRICE_MULT",
+    "AUTO_BUY_PRICE_MULT",
     "AUTO_FEED_LOG_MAX",
-    "AUTO_PURCHASE_COOLDOWN_MIN",
     "AUTO_WORK_ENABLED",
-    "AUTO_WORK_DELAY_MIN",
     "AUTO_WORK_LOG_MAX",
-    "AUTO_WORK_EXP_ENABLED",
-    "AUTO_WORK_EXP_MULT",
     "AUTO_FEED_TARGET_HEALTH_PCT",
-    "AUTO_FEED_HEALTH_TIER_MIN",
-    "AUTO_FEED_ITEM_EFF_MIN",
-    "AUTO_LOAN_CODE",
-    "AUTO_LOAN_MAX_AMOUNT",
-    "AUTO_LOAN_MAX_DEBT",
-    "AUTO_LOAN_DAYS",
-    "AUTO_LOAN_RATE",
     "ADMIN_UIDS",
     "DAILY_SETTLE_HOUR",
     "BANK_SETTLE_HOUR",

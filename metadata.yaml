@@ -2,4 +2,4 @@ name: astrbot_plugin_signin
 display_name: 签到娱乐系统
 desc: 功能丰富的高度可自定义游戏插件，基于金币经济系统衍生出签到 红包 手枪游戏 农场 宠物等玩法，操作简单自带WebUI，实现低代码管理。
 author: sishijiu
-version: 2.2.6
+version: 2.2.7
