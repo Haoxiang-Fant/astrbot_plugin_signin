@@ -1637,10 +1637,10 @@ class WebUIMixin:
                     "health": pet.get("health", 0),
                     "sat_max": sat_max, "thr_max": thr_max, "sta_max": sta_max,
                     "mood_max": mood_max, "health_max": PET_MAX_HEALTH,
-                    "sat_red": self._attr_is_red("饱食", pet.get("satiety", 0)),
-                    "thr_red": self._attr_is_red("口渴", pet.get("thirst", 0)),
-                    "mood_red": self._attr_is_red("心情", pet.get("mood", 0)),
-                    "health_red": self._attr_is_red("健康", pet.get("health", 0)),
+                    "sat_red": self._attr_is_red("饱食", pet.get("satiety", 0), pet.get("health", 0)),
+                    "thr_red": self._attr_is_red("口渴", pet.get("thirst", 0), pet.get("health", 0)),
+                    "mood_red": self._attr_is_red("心情", pet.get("mood", 0), pet.get("health", 0)),
+                    "health_red": self._attr_is_red("健康", pet.get("health", 0), pet.get("health", 0)),
                 }
                 pets.append({
                     "uid": uid,
@@ -1649,7 +1649,7 @@ class WebUIMixin:
                     "name": pet.get("name", "宠物"),
                     "level": pet.get("level", 0),
                     "exp": round(float(pet.get("exp", 0) or 0), 1),
-                    "tier": self._worst_tier(pet.get("satiety", 0), pet.get("thirst", 0), pet.get("mood", 0)),
+                    "tier": self._worst_tier(pet.get("satiety", 0), pet.get("thirst", 0), pet.get("mood", 0), pet.get("health", 0)),
                     "weak": bool(pet.get("weak")),
                     "attrs": tickets,
                     "busy": busy,
@@ -1659,9 +1659,8 @@ class WebUIMixin:
                         "work_on": bool(u.get("auto_work_enabled")),
                         "work_global": bool(globals().get("AUTO_WORK_ENABLED", True)),
                         "work_base": int(u.get("work_base", 0) or 0),
-                        "work_next": float(u.get("auto_work_next", 0) or 0),
-                        # 2.2.1：自动化贷款当前未还清欠款总额（0 = 无欠款）
-                        "auto_loan_owed": self._auto_loan_owed_of(data, uid),
+                        # 2.2.7：自动化贷款余额（无上限无逾期，仅自动照顾可贷）
+                        "auto_loan_owed": self._auto_loan_balance_of(data, uid),
                         "feed_logs": (u.get("auto_feed_logs") or [])[-5:],
                         "work_logs": (u.get("auto_work_logs") or [])[-5:],
                     },
@@ -1695,8 +1694,7 @@ class WebUIMixin:
                     return error_response("该用户未开启自动照顾，无法开启自动打工（请先开启自动照顾）", status_code=400)
                 u["auto_work_enabled"] = on
                 if on:
-                    u.setdefault("work_base", int(u.get("work_base", 0) or 0))
-                    u["auto_work_next"] = 0  # 立即可调度（基准金币 ≥ 0 才真正执行）
+                    u["auto_work_next"] = 0  # 兼容旧字段（2.2.7 起打工循环按忙碌状态直接判定）
                     self._ensure_auto_work_loop()
                     self._ensure_daily_settle_loop()
                 msg = "已开启自动打工" if on else "已关闭自动打工"
@@ -1704,15 +1702,12 @@ class WebUIMixin:
                 u["auto_feed_enabled"] = on
                 if on:
                     u["auto_work_enabled"] = True  # 用户开启自动照顾 → 自动开启自动打工
-                    u.setdefault("work_base", int(u.get("work_base", 0) or 0))
-                    u["auto_work_next"] = 0
                     self._ensure_auto_work_loop()
                     self._ensure_daily_settle_loop()
                     msg = "已开启自动照顾（自动打工同步开启）"
-                    # 管理员开启自动照顾 → 立即触发一次自动照顾
-                    u["auto_purchase_cool"] = 0
-                    if self._auto_purchase_due(data, uid):
-                        entry = self._auto_purchase_settle(data, uid, trigger="管理员开启")
+                    # 管理员开启自动照顾 → 立即触发一次照顾检查（触发来源 = 管理员开启）
+                    if self._auto_care_due(data, uid):
+                        entry = self._auto_care_run(data, uid, trigger="管理员开启")
                         if entry and entry.get("items"):
                             items = "、".join(
                                 f"{'🛒' if it.get('src') == '购买' else '📦'}{it['name']}×{it['qty']}"
@@ -1734,9 +1729,9 @@ class WebUIMixin:
             })
 
     async def web_waive_auto_loan(self):
-        """运行记录·宠物记录：管理员豁免某个用户的全部自动化贷款（2.2.5）。
-        入参 {uid}。豁免 = 视为该用户已完成还款：清空其全部自动化贷款账单（含息），
-        并从基准金币中扣除相应欠款金额（豁免的照顾缺口一并抹平，可为负）。"""
+        """运行记录·宠物记录：管理员豁免某个用户的自动化贷款（2.2.7）。
+        入参 {uid}。豁免 = 视为该用户已完成还款：自动化贷款余额清零，
+        并从基准金币中扣除相应金额（豁免的照顾缺口一并抹平，可为负）。"""
         try:
             payload = await request.json(default={})
         except Exception:
@@ -1747,17 +1742,18 @@ class WebUIMixin:
         async with self._lock:
             data = self._load()
             u = self._ensure_user(data, uid)
-            waived = self._auto_loan_waive(data, uid)
+            waived = self._auto_loan_balance_of(data, uid)
             if waived <= 0:
                 return error_response("该用户没有未还清的自动化贷款", status_code=400)
-            # 扣除相应的基准金币值（豁免视为已还款，缺口随之消除）
+            # 余额清零（视为已还款）并扣除相应的基准金币（豁免的照顾缺口随之消除）
+            u["auto_loan"] = 0
             u["work_base"] = int(u.get("work_base", 0) or 0) - int(round(waived))
             self._save(data)
             return json_response({
                 "ok": True, "msg": f"已豁免自动化贷款 {waived:.2f} 金币（视为已还款，基准金币已同步扣除）",
                 "uid": uid, "waived": round(waived, 2),
                 "work_base": int(u.get("work_base", 0) or 0),
-                "auto_loan_owed": self._auto_loan_owed_of(data, uid),
+                "auto_loan_owed": 0,
             })
 
     async def web_get_record_pet_detail(self):
@@ -1805,10 +1801,10 @@ class WebUIMixin:
             "health": pet.get("health", 0),
             "sat_max": sat_max, "thr_max": thr_max, "sta_max": sta_max,
             "mood_max": mood_max, "health_max": PET_MAX_HEALTH,
-            "sat_red": self._attr_is_red("饱食", pet.get("satiety", 0)),
-            "thr_red": self._attr_is_red("口渴", pet.get("thirst", 0)),
-            "mood_red": self._attr_is_red("心情", pet.get("mood", 0)),
-            "health_red": self._attr_is_red("健康", pet.get("health", 0)),
+            "sat_red": self._attr_is_red("饱食", pet.get("satiety", 0), pet.get("health", 0)),
+            "thr_red": self._attr_is_red("口渴", pet.get("thirst", 0), pet.get("health", 0)),
+            "mood_red": self._attr_is_red("心情", pet.get("mood", 0), pet.get("health", 0)),
+            "health_red": self._attr_is_red("健康", pet.get("health", 0), pet.get("health", 0)),
         }
         level, exp_got, exp_need = self._pet_exp_progress(float(pet.get("exp", 0) or 0))
         # 属性变化记录（attr_log，最新在前）
@@ -1827,6 +1823,8 @@ class WebUIMixin:
                 "after": it.get("after", {}) or {},
                 # 2.2.2：变动发生时的属性上限快照（旧记录可能没有）
                 "max": it.get("max", {}) or {},
+                # 2.2.7：本次使用的道具（名称/数量/效果快照；旧记录可能没有）
+                "items": it.get("items") or [],
             })
         logs.reverse()
         ls = pet.get("last_settle") or {}
@@ -1839,7 +1837,7 @@ class WebUIMixin:
             "exp": round(float(pet.get("exp", 0) or 0), 1),
             "exp_got": round(exp_got, 1),
             "exp_need": round(exp_need, 1),
-            "tier": self._worst_tier(pet.get("satiety", 0), pet.get("thirst", 0), pet.get("mood", 0)),
+            "tier": self._worst_tier(pet.get("satiety", 0), pet.get("thirst", 0), pet.get("mood", 0), pet.get("health", 0)),
             "weak": bool(pet.get("weak")),
             "guard": bool(pet.get("guard")),
             "attrs": tickets,
@@ -1873,8 +1871,8 @@ class WebUIMixin:
                 "work_on": bool(u.get("auto_work_enabled")),
                 "work_global": bool(globals().get("AUTO_WORK_ENABLED", True)),
                 "work_base": int(u.get("work_base", 0) or 0),
-                "work_next": float(u.get("auto_work_next", 0) or 0),
-                "auto_loan_owed": self._auto_loan_owed_of(data, uid),
+                # 2.2.7：自动化贷款余额（无上限无逾期，仅自动照顾可贷）
+                "auto_loan_owed": self._auto_loan_balance_of(data, uid),
                 "feed_logs": (u.get("auto_feed_logs") or [])[-5:],
                 "work_logs": (u.get("auto_work_logs") or [])[-5:],
             },
@@ -2051,10 +2049,10 @@ class WebUIMixin:
                 "health": round(float(pet.get("health", 0) or 0), 1),
                 "satiety_max": sat_max, "thirst_max": thr_max,
                 "stamina_max": sta_max, "mood_max": mood_max, "health_max": PET_MAX_HEALTH,
-                "satiety_red": self._attr_is_red("饱食", pet.get("satiety", 0)),
-                "thirst_red": self._attr_is_red("口渴", pet.get("thirst", 0)),
-                "mood_red": self._attr_is_red("心情", pet.get("mood", 0)),
-                "health_red": self._attr_is_red("健康", pet.get("health", 0)),
+                "satiety_red": self._attr_is_red("饱食", pet.get("satiety", 0), pet.get("health", 0)),
+                "thirst_red": self._attr_is_red("口渴", pet.get("thirst", 0), pet.get("health", 0)),
+                "mood_red": self._attr_is_red("心情", pet.get("mood", 0), pet.get("health", 0)),
+                "health_red": self._attr_is_red("健康", pet.get("health", 0), pet.get("health", 0)),
             }
             pet_info["last_change"] = None
             for it in reversed(pet.get("attr_log") or []):
@@ -2092,7 +2090,7 @@ class WebUIMixin:
                 "work_on": bool(u.get("auto_work_enabled")),
                 "work_base": int(u.get("work_base", 0) or 0),
                 # 2.2.1：自动化贷款当前未还清欠款总额（0 = 无欠款）
-                "auto_loan_owed": self._auto_loan_owed_of(data, uid),
+                "auto_loan_owed": self._auto_loan_balance_of(data, uid),
             },
             # 2.2.3 扩展字段
             "last_active_text": la_text,

@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>签到娱乐系统后台管理</title>
-    <link rel="stylesheet" href="./style.css" />
+    <link rel="stylesheet" href="./style.css?v=2.2.7" />
   </head>
   <body>
     <div class="container">
@@ -377,7 +377,7 @@
       <footer class="page-foot">签到娱乐系统 · 2.2.3</footer>
     </div>
 
-    <script type="module" src="./app.js"></script>
+    <script type="module" src="./app.js?v=2.2.7"></script>
 
     <!-- 验证码确认弹窗（危险操作：使用默认道具数据） -->
     <div id="captcha-modal" class="captcha-modal hidden">
@@ -420,6 +420,21 @@
         <div class="toolbar">
           <button id="btn-unsaved-save" class="primary">保存修改</button>
           <button id="btn-unsaved-discard" class="danger">不保存</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- 2.2.7 修复：通用页内确认弹窗。插件 Page 运行在 Dashboard 的受限 iframe 中，
+         window.confirm 会被静默拦截（不弹窗且直接返回 false），确认类操作必须用页内弹窗 -->
+    <div id="confirm-modal" class="lan-modal hidden">
+      <div class="lan-modal-box">
+        <div class="lan-modal-head">
+          <span>⚠️ 确认操作</span>
+          <button id="btn-confirm-x" class="icon-close" title="取消">✕</button>
+        </div>
+        <p class="hint" id="confirm-modal-text"></p>
+        <div class="toolbar">
+          <button id="btn-confirm-ok" class="danger">确认执行</button>
         </div>
       </div>
     </div>

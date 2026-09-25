@@ -1523,8 +1523,8 @@ function recordPetCard(p) {
       <span class="rec-row-label">自动打工</span>
       <button type="button" class="rec-chip${workOn ? " on" : ""} toggle" data-auto="work" data-uid="${esc(p.uid)}" data-cur="${workOn ? 1 : 0}" data-allow="${(workOn || purchaseOn) ? 1 : 0}" title="${esc(workHint)}">${workOn ? "开" : "关"}</button>
       <span class="rec-chip gold">基准 ${fmtNum(auto.work_base)}</span>
-      ${auto.auto_loan_owed > 0 ? `<span class="rec-chip danger-chip" title="自动化专属贷款（获得金币自动优先还款；未还清前宠物持续自动打工）">自动化贷款 欠 ${fmtNum(auto.auto_loan_owed)}</span>
-      <button type="button" class="rec-chip danger-chip" data-waive="1" data-uid="${esc(p.uid)}" data-owed="${esc(auto.auto_loan_owed)}" title="豁免该用户的全部自动化贷款（视为已还款，并从基准金币中扣除相应金额）">豁免贷款</button>` : ""}
+      ${auto.auto_loan_owed > 0 ? `<span class="rec-chip danger-chip" title="自动化贷款（无上限无逾期，仅自动照顾可贷；「还款」指令或自动打工报酬偿还）">自动化贷款 欠 ${fmtNum(auto.auto_loan_owed)}</span>
+      <button type="button" class="rec-chip danger-chip" data-waive="1" data-uid="${esc(p.uid)}" data-owed="${esc(auto.auto_loan_owed)}" title="豁免该用户的自动化贷款（视为已还款，并从基准金币中扣除相应金额）">豁免贷款</button>` : ""}
     </div>
     <div class="rec-block"><div class="rec-block-title">购买 / 使用记录（×N 数量标记）</div>${feedLogs}</div>
     <div class="rec-block"><div class="rec-block-title">自动打工记录</div>${workLogs}</div>
@@ -1550,7 +1550,8 @@ async function toggleRecordAuto(uid, key, curOn) {
 
 // 2.2.5：豁免某用户的全部自动化贷款（视为已还款，并从基准金币中扣除相应金额）
 async function waiveAutoLoan(uid) {
-  if (!confirm("确认豁免该用户的全部自动化贷款？将视为已完成还款，并从基准金币中扣除相应欠款金额。")) return;
+  // 2.2.7 修复：Page 在受限 iframe 中 window.confirm 被静默拦截（返回 false）→ 豁免从未执行；改用页内确认弹窗
+  if (!(await uiConfirm("确认豁免该用户的全部自动化贷款？将视为已完成还款，并从基准金币中扣除相应欠款金额。", "确认豁免"))) return;
   setStatus("status-record-pets", "豁免中...");
   try {
     const r = await bridge.apiPost("records/pets/loan_waive", { uid });
@@ -1635,7 +1636,7 @@ function renderRecordPets() {
     box._petDetailHandler = (e) => {
       const card = e.target.closest(".rec-card.pet-card");
       if (!card) return;
-      if (e.target.closest(".rec-chip[data-auto]")) return; // 开关芯片不触发详情
+      if (e.target.closest(".rec-chip[data-auto], .rec-chip[data-waive]")) return; // 开关/豁免芯片不触发详情（2.2.7 修复：豁免按钮点击被详情页抢走）
       openPanel({ id: "record-pet-detail", title: "运行记录 · 宠物详情", params: { uid: card.dataset.uid } });
     };
     box.addEventListener("click", box._petDetailHandler);
@@ -1709,7 +1710,7 @@ function attrBarsHtml(lg, labels, maxOf) {
     const p0 = Math.min(100, Math.max(0, ((a - v) / scale) * 100)); // 变动前
     const p1 = Math.min(100, Math.max(0, (a / scale) * 100));       // 变动后
     const base = Math.min(p0, p1); // 血条式稳定段：0 → 较小值
-    rows.push('<div class="attr-bar-row">'
+    rows.push('<div class="attr-bar-row" data-attr="' + esc(k) + '">'
       + '<span class="attr-bar-label">' + esc(attrLabel(k, labels)) + "</span>"
       + '<span class="attr-bar-track"><i class="base" style="width:' + base.toFixed(1) + '%"></i>'
       + '<i class="delta ' + cls + '" style="left:' + base.toFixed(1) + '%;width:' + Math.max(Math.abs(p1 - p0), 1.2).toFixed(1) + '%"></i></span>'
@@ -1718,6 +1719,18 @@ function attrBarsHtml(lg, labels, maxOf) {
   }
   return rows.length ? '<div class="attr-bars">' + rows.join("") + "</div>"
     : '<div class="attr-bars"><span class="muted">无属性条（仅经验/其他变动，见上方文字）</span></div>';
+}
+
+// 2.2.7：展开区道具芯片（名称 ×数量，data-effects = "属性key:效果值|..." 供悬停高亮属性条）
+function attrItemsHtml(lg) {
+  const items = lg.items || [];
+  if (!items.length) return "";
+  const chips = items.map((it) => {
+    const fx = Object.entries(it.effects || {}).map(([k, v]) => k + ":" + v).join("|");
+    return '<span class="attr-item" data-effects="' + esc(fx) + '" title="悬停查看该道具作用的属性">'
+      + esc(it.name) + " ×" + fmtNum(it.qty) + "</span>";
+  }).join("");
+  return '<div class="attr-log-items"><span class="muted">道具：</span>' + chips + "</div>";
 }
 
 function attrLogHtml(logs, labels, maxOf) {
@@ -1729,7 +1742,7 @@ function attrLogHtml(logs, labels, maxOf) {
     line += "：" + attrChangeHtml(lg.changes || {}, labels);
     if (lg.extra) line += ' <span class="muted">（' + esc(lg.extra) + "）</span>";
     return '<details class="attr-log-item"><summary>' + line + "</summary>"
-      + attrBarsHtml(lg, labels, maxOf) + "</details>";
+      + attrItemsHtml(lg) + attrBarsHtml(lg, labels, maxOf) + "</details>";
   }).join("");
 }
 
@@ -1799,7 +1812,43 @@ function renderRecordPetDetail(d) {
   const maxOf = { satiety: a.sat_max, thirst: a.thr_max, stamina: a.sta_max, mood: a.mood_max, health: a.health_max };
   const logsHtml = attrLogHtml(d.attr_log || [], labels, maxOf);
 
+  // 2.2.7：悬停道具芯片 → 高亮该道具作用的属性条并在数值旁显示作用效果
   const box = $("record-pet-detail-box");
+  if (!box._attrItemHover) {
+    const clearHl = () => box.querySelectorAll(".attr-bar-row.hl").forEach((r) => {
+      r.classList.remove("hl");
+      delete r.dataset.eff;
+    });
+    box._attrItemHover = (e) => {
+      const chip = e.target.closest(".attr-item");
+      if (chip === box._lastAttrChip) return;
+      box._lastAttrChip = chip;
+      clearHl();
+      if (!chip) return;
+      const wrap = chip.closest(".attr-log-item");
+      if (!wrap) return;
+      for (const part of String(chip.dataset.effects || "").split("|")) {
+        const i = part.indexOf(":");
+        const v = Number(part.slice(i + 1));
+        if (i < 1 || !Number.isFinite(v) || Math.abs(v) < 0.005) continue;
+        const k = part.slice(0, i);
+        wrap.querySelectorAll('.attr-bar-row[data-attr="' + k + '"]').forEach((r) => {
+          r.classList.add("hl");
+          r.dataset.eff = "（" + attrLabel(k, labels) + " " + (v > 0 ? "+" : "") + fmtNum(v) + "）";
+        });
+      }
+    };
+    box._attrItemOut = (e) => {
+      const chip = e.target.closest && e.target.closest(".attr-item");
+      if (chip && !(e.relatedTarget && chip.contains(e.relatedTarget))) {
+        box._lastAttrChip = null;
+        clearHl();
+      }
+    };
+    box.addEventListener("mouseover", box._attrItemHover);
+    box.addEventListener("mouseout", box._attrItemOut);
+  }
+
   // 2.2.2：模块顺序 = 基本档案 / 当前状态 / 特殊记录（一行三卡），自动化整行加宽置于其下
   box.innerHTML = `<div class="detail-grid pet-detail-grid">${profileCard}${statusCard}${miscCard}${autoCard}</div>
     <div class="rec-card">
@@ -1833,14 +1882,23 @@ async function loadRecordPrices() {
     }
     const recs = (r.records || []).slice().reverse();
     html += recs.map((rec) => {
-      const items = (rec.items || []).map((it) =>
-        `<div class="rec-line">${esc(it.name)}：${it.base} 金币 → <b>${it.price} 金币</b>（${(it.mult * 10).toFixed(1)} 折）</div>`).join("");
-      return `<div class="rec-card">
-        <div class="rec-card-head"><span class="rec-card-name">窗口 ${esc(rec.window)}</span>
-        ${rec.ts ? `<span class="rec-card-nick">${esc(rec.ts)}</span>` : ""}
-        <span class="rec-card-tag gold">${rec.items && rec.items.length ? rec.items.length + " 件打折" : "原价"}</span></div>
-        ${items || '<div class="rec-line muted">该窗口无打折商品</div>'}
-      </div>`;
+      const items = rec.items || [];
+      const discN = items.filter((it) => it.price !== it.base).length;
+      // 2.2.7：点击卡片展开「当时商店信息快照」——行格式与当前窗口卡片一致（打折 → 原价，未打折原价直读）
+      const snap = items.map((it) =>
+        it.price !== it.base
+          ? `<div class="rec-line">${esc(it.name)}：${it.base} 金币 → <b>${it.price} 金币</b>（${(it.mult * 10).toFixed(1)} 折）</div>`
+          : `<div class="rec-line muted">${esc(it.name)}：${it.base} 金币（原价）</div>`).join("");
+      return `<details class="rec-card price-rec">
+        <summary>
+          <div class="rec-card-head"><span class="rec-card-name">窗口 ${esc(rec.window)}</span>
+          ${rec.ts ? `<span class="rec-card-nick">${esc(rec.ts)}</span>` : ""}
+          <span class="rec-card-tag gold">${discN ? discN + " 件打折" : "原价"}</span></div>
+        </summary>
+        <div class="rec-block"><div class="rec-block-title">当时商店快照（共 ${items.length} 件）· 点击卡片折叠</div>
+          ${snap || '<div class="rec-line muted">无商品数据</div>'}
+        </div>
+      </details>`;
     }).join("");
     if (!html) {
       html = '<p class="hint">暂无价格变动记录（插件刚开启价格浮动或还没有到达特价时段）。</p>';
@@ -2971,6 +3029,25 @@ $("btn-unsaved-discard").addEventListener("click", () => { if (_unsavedDiscard) 
 $("btn-unsaved-cancel").addEventListener("click", closeUnsavedModal);
 $("unsaved-modal").addEventListener("click", (e) => { if (e.target === e.currentTarget) closeUnsavedModal(); });
 
+// 2.2.7 修复：页内确认弹窗。插件 Page 由 Dashboard 以受限 iframe 加载，window.confirm/alert 会被
+// 静默拦截（confirm 不弹窗且直接返回 false），豁免贷款/删除历史版本等确认一律改走这里。
+let _confirmResolve = null;
+function uiConfirm(text, okText) {
+  return new Promise((resolve) => {
+    _confirmResolve = resolve;
+    $("confirm-modal-text").textContent = text;
+    $("btn-confirm-ok").textContent = okText || "确认执行";
+    $("confirm-modal").classList.remove("hidden");
+  });
+}
+function _closeConfirm(result) {
+  $("confirm-modal").classList.add("hidden");
+  if (_confirmResolve) { const r = _confirmResolve; _confirmResolve = null; r(result); }
+}
+$("btn-confirm-ok").addEventListener("click", () => _closeConfirm(true));
+$("btn-confirm-x").addEventListener("click", () => _closeConfirm(false));
+$("confirm-modal").addEventListener("click", (e) => { if (e.target === e.currentTarget) _closeConfirm(false); });
+
 // ================= 2.2.2 历史配置数据（historydata） =================
 async function loadHistoryPanel() {
   setStatus("status-history", "加载中...");
@@ -3014,7 +3091,8 @@ async function historyToggle() {
 }
 
 async function historyDelete(file) {
-  if (!confirm("确定删除该历史版本？删除后不可恢复。")) return;
+  // 2.2.7 修复：同一根因，confirm 在受限 iframe 中被静默拦截 → 改用页内确认弹窗
+  if (!(await uiConfirm("确定删除该历史版本？删除后不可恢复。", "确认删除"))) return;
   try {
     await bridge.apiPost("history/delete", { file });
     loadHistoryPanel();

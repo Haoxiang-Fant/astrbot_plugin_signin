@@ -119,12 +119,7 @@ class LoanMixin:
             user = data.get("users", {}).get(key, {})
             return {"code": 2, "max_amount": self._loan_short_max(self._level_of(float(user.get("favorability", 0.0)))),
                     "rate": LOAN_SHORT_RATE, "fav_req": 0, "pet_req": 0, "farm_req": 0, "special": False}
-        # 2.2.1：自动化专属贷款套餐（代码 AUTO_LOAN_CODE，默认 99）——仅限宠物自动化功能内部使用，
-        # 用户无法通过「借款」指令借出（_handle_loan_borrow 对该代码直接拒绝）。
-        if code == int(globals().get("AUTO_LOAN_CODE", 99) or 99):
-            return {"code": code, "max_amount": int(globals().get("AUTO_LOAN_MAX_AMOUNT", 2000) or 2000),
-                    "rate": float(globals().get("AUTO_LOAN_RATE", 0.01) or 0.01),
-                    "fav_req": 0, "pet_req": 0, "farm_req": 0, "special": False, "auto": True}
+        # （2.2.7：自动化贷款已改为 auto_loan 余额制，不再有套餐代码，任何代码都无法手动借出自动化贷款）
         for pkg in self._load_loan_packages():
             if pkg["code"] == code:
                 return {"code": code, "max_amount": pkg["max_amount"], "rate": pkg["rate"],
@@ -232,17 +227,6 @@ class LoanMixin:
             rec["ban"] = True
         return changed
 
-    # ================= 2.2.1：宠物自动化专属贷款 =================
-    def _auto_loan_owed_of(self, data: dict, key: str) -> float:
-        """该用户自动化贷款套餐未还清欠款总额（含利息；0 = 无欠款）。"""
-        rec = data.get("loans", {}).get(key)
-        if not rec:
-            return 0.0
-        now_ts = datetime.now().timestamp()
-        return round(sum(self._loan_owed(l, now_ts)
-                         for l in rec.get("loans", [])
-                         if l.get("auto") and l.get("remaining", 0) > 0), 2)
-
     def _debt_summary_of(self, data: dict, key: str) -> dict:
         """生效欠款统计（2.2.3）：账单数 + 含息总额（与 `_loan_sync` 的 owed_all 同口径，无账单 → 0 张 / 0）。
         WebUI 详情页直接取用本统计，不再自行汇总。"""
@@ -252,63 +236,6 @@ class LoanMixin:
                  if isinstance(l, dict) and l.get("remaining", 0) > 0]
         return {"count": len(bills),
                 "total": round(sum(self._loan_owed(l, now_ts) for l in bills), 2)}
-
-    def _auto_loan_borrow(self, data: dict, key: str, need: int) -> int:
-        """宠物自动化资金不足时自动申请「自动化专属贷款套餐」（2.2.1）：
-        - 套餐仅限自动化功能使用，用户任何指令都无法直接借出（代码 AUTO_LOAN_CODE 不在 0~10 可选范围）；
-        - 单笔上限 AUTO_LOAN_MAX_AMOUNT（2000），单用户未还清欠款总额上限 AUTO_LOAN_MAX_DEBT（2500）；
-        - 逾期 AUTO_LOAN_DAYS（30 天），日息 AUTO_LOAN_RATE（0.01%）；可多次贷款；
-        - 贷款发放立即到账（_skip_auto_repay，不会立刻被拿去还旧账）；是否计入打工基准金币由调用方处理。
-        返回实际发放的金币；0 表示未能贷款（无需 / 未解锁贷款 / 已禁用 / 有逾期 / 超总额上限等）。"""
-        need = int(need or 0)
-        if need <= 0:
-            return 0
-        if not self._loan_unlocked(data, key):
-            return 0
-        rec = self._ensure_loans(data, key)
-        if rec.get("ban"):
-            return 0
-        now_ts = datetime.now().timestamp()
-        if self._has_overdue_now(rec, now_ts):
-            return 0  # 有逾期贷款时不再新增（与普通贷款一致）
-        owed = self._auto_loan_owed_of(data, key)
-        max_extra = max(0, int(float(globals().get("AUTO_LOAN_MAX_DEBT", 2500) or 2500)) - int(owed))
-        amount = min(need, int(float(globals().get("AUTO_LOAN_MAX_AMOUNT", 2000) or 2000)), max_extra)
-        if amount <= 0:
-            return 0
-        due = now_ts + int(float(globals().get("AUTO_LOAN_DAYS", 30) or 30)) * 86400
-        rec["loans"].append({
-            "package": int(globals().get("AUTO_LOAN_CODE", 99) or 99),
-            "auto": True,
-            "amount": amount,
-            "rate": float(globals().get("AUTO_LOAN_RATE", 0.01) or 0.01),
-            "borrow_ts": now_ts,
-            "free_until_ts": now_ts,
-            "due_ts": due,
-            "remaining": amount,
-            "overdue": False,
-            "special": False,
-        })
-        self._add_coins(data, key, amount, "自动化贷款", _skip_auto_repay=True)
-        return amount
-
-    def _auto_loan_waive(self, data, key) -> float:
-        """2.2.5：管理员豁免该用户全部自动化贷款（视为该用户已完成还款）。
-        清空其全部自动化账单（remaining=0 后由既有清理逻辑移除），返回豁免的含息欠款总额；
-        调用方负责把该金额从基准金币中扣除（豁免 = 照顾缺口一并抹平）并保存。"""
-        rec = data.get("loans", {}).get(key)
-        if not rec:
-            return 0.0
-        now_ts = datetime.now().timestamp()
-        waived = round(sum(self._loan_owed(l, now_ts) for l in rec.get("loans", [])
-                           if l.get("auto") and l.get("remaining", 0) > 0), 2)
-        if waived <= 0:
-            return 0.0
-        for l in rec.get("loans", []):
-            if l.get("auto"):
-                l["remaining"] = 0
-        rec["loans"] = [l for l in rec.get("loans", []) if l.get("remaining", 0) > 0]
-        return waived
 
     def _repay_loans(self, data, key, amount, code=None):
         """还款，返回实际还款金额；优先还逾期最久 / 即将到期的账单"""
@@ -485,8 +412,7 @@ class LoanMixin:
             amount = int(args[1])
         except ValueError:
             return "套餐代码和金额必须是整数。格式：借款 <套餐代码> <金额>"
-        if code == int(globals().get("AUTO_LOAN_CODE", 99) or 99):
-            return "该贷款套餐仅限宠物自动化功能使用，无法通过指令直接借款。"
+        # （2.2.7：自动化贷款为 auto_loan 余额制，仅自动照顾可贷；任何套餐代码都无法借出自动化贷款）
         if code not in (0, 1, 2) and not (3 <= code <= 10):
             return "套餐代码无效（0=特别，1=一般，2=短期，3~10=自定义）。"
         if amount <= 0:
@@ -584,23 +510,53 @@ class LoanMixin:
         data = self._load()
         self._loan_sync(data, key)
         rec = self._ensure_loans(data, key)
-        if not rec.get("loans"):
+        auto_bal = self._auto_loan_balance_of(data, key)
+        if not rec.get("loans") and auto_bal <= 0:
             return f"{name} 名下没有贷款。"
         now_ts = datetime.now().timestamp()
         coins = self._coins_of(data, key)
 
         if len(parts) < 2:
-            # 还所有贷款：优先还逾期最久/即将到期
+            # 还所有贷款：先还自动化贷款余额，再还普通贷款（优先还逾期最久/即将到期）
             if coins <= 0:
                 return f"{name} 金币余额为 0，无法还款。"
-            repaid = self._repay_loans(data, key, coins)
-            if repaid > 0:
-                self._add_coins(data, key, -int(repaid), "偿还贷款")
-            total = sum(self._loan_owed(l, now_ts) for l in rec.get("loans", []))
+            repaid_total = 0.0
+            if auto_bal > 0:
+                pay = min(coins, auto_bal)
+                got = self._auto_loan_repay(data, key, pay)
+                if got > 0:
+                    self._add_coins(data, key, -int(got), "偿还自动化贷款")
+                    repaid_total += got
+                coins = self._coins_of(data, key)
+            if coins > 0 and rec.get("loans"):
+                repaid = self._repay_loans(data, key, coins)
+                if repaid > 0:
+                    self._add_coins(data, key, -int(repaid), "偿还贷款")
+                    repaid_total += repaid
+            total = self._auto_loan_balance_of(data, key) \
+                + sum(self._loan_owed(l, now_ts) for l in rec.get("loans", []))
             self._save(data)
-            return (f"🏦 已用全部金币还款 {round(repaid, 2)}，剩余待还 {round(total, 2)}。\n"
+            return (f"🏦 已用全部金币还款 {round(repaid_total, 2)}，剩余待还 {round(total, 2)}。\n"
                     f"{self._coin_line(data, key)}")
         args = parts[1].split()
+        if args[0].lower() == "auto":
+            # 只还自动化贷款：还款 auto [金额]（不填金额 = 还清全部余额）
+            amount = auto_bal
+            if len(args) >= 2:
+                try:
+                    amount = min(float(int(args[1])), auto_bal)
+                except ValueError:
+                    return "金额必须是整数。格式：还款 auto [金额]"
+            if amount <= 0:
+                return f"{name} 没有未还清的自动化贷款。"
+            if coins <= 0:
+                return f"{name} 金币余额为 0，无法还款。"
+            got = self._auto_loan_repay(data, key, min(amount, coins))
+            if got > 0:
+                self._add_coins(data, key, -int(got), "偿还自动化贷款")
+            self._save(data)
+            return (f"🏦 已偿还自动化贷款 {round(got, 2)} 金币，剩余 {self._auto_loan_balance_of(data, key):.2f}。\n"
+                    f"{self._coin_line(data, key)}")
         try:
             code = int(args[0])
         except ValueError:
@@ -634,9 +590,13 @@ class LoanMixin:
         # 2.2.0：逾期标记由固定结算循环统一执行，查询只显示已结算结果
         rec = self._ensure_loans(data, key)
         lines = [f"🏦 {name} 的贷款账单："]
+        auto_bal = self._auto_loan_balance_of(data, key)
+        if auto_bal > 0:
+            lines.append(f"· 自动化贷款｜欠款 {auto_bal}｜无上限无逾期（仅自动照顾可贷；「还款」指令或自动打工报酬偿还）")
         loans = rec.get("loans", [])
         if not loans:
-            lines.append("暂无生效中的贷款。")
+            if auto_bal <= 0:
+                lines.append("暂无生效中的贷款。")
         now_ts = datetime.now().timestamp()
         for l in loans:
             days = max(0, int((now_ts - max(l.get("free_until_ts", l.get("borrow_ts", 0)), l.get("borrow_ts", 0))) // 86400))

@@ -2251,6 +2251,49 @@ input[type="file"] {
   color: var(--danger);
 }
 
+/* 2.2.7：展开区道具芯片（悬停高亮该道具作用的属性条） */
+.attr-log-items {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 0 0 16px;
+  font-size: 11px;
+}
+.attr-item {
+  border: 1px solid var(--border-2);
+  color: var(--text-2);
+  padding: 0 7px;
+  line-height: 18px;
+  cursor: default;
+}
+.attr-item:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+  background: var(--accent-soft);
+}
+/* 悬停高亮行：底色 + 数值后追加作用效果（data-eff 由悬停脚本写入） */
+.attr-bar-row.hl {
+  background: var(--accent-soft);
+  outline: 1px solid var(--accent);
+}
+.attr-bar-row.hl .attr-bar-num::after {
+  content: attr(data-eff);
+  color: var(--gold);
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+/* 2.2.7：商店价格窗口卡片 = details/summary，点击展开当时商店快照 */
+.price-rec summary {
+  cursor: pointer;
+}
+.price-rec[open] summary {
+  border-bottom: 1px dashed var(--border);
+  padding-bottom: var(--space-2);
+  margin-bottom: var(--space-2);
+}
+
 /* ================= 2.2.3：运行记录 · 用户详情页（哔哩哔哩个人主页布局） =================
    封面横幅 + 左侧圆形头像（压住横幅下缘）+ 昵称/徽章/UID + 统计行（卡片式单元格）+ 导航栏切换四分区
    （宠物 / 农场 / 仓库 / 银行；分区主体 + 右侧统计侧边栏；农场土地卡片复刻指令响应版式）。

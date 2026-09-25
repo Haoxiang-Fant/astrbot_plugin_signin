@@ -46,7 +46,7 @@ class _NameOverrideEvent:
         return self._override_name
 
 
-@register("astrbot_plugin_signin", "sishijiu", "群签到 + 左轮手枪 + 宠物养成 + 金币银行 + 农场", "2.2.6")
+@register("astrbot_plugin_signin", "sishijiu", "群签到 + 左轮手枪 + 宠物养成 + 金币银行 + 农场", "2.2.7")
 class SignInPlugin(Star, FarmMixin, PetMixin, BankMixin, RedpacketMixin, ActivityMixin, LoanMixin, RouletteMixin, RankMixin, LanMixin, WebUIMixin, CoreMixin):
     def __init__(self, context: Context, config: dict = None):
         super().__init__(context)
@@ -90,7 +90,6 @@ class SignInPlugin(Star, FarmMixin, PetMixin, BankMixin, RedpacketMixin, Activit
             ("signin_pill_chance", "signin_pill_chance", SIGNIN_PILL_CHANCE, _FLOAT),
             ("signin_ball_chance", "signin_ball_chance", SIGNIN_BALL_CHANCE, _FLOAT),
             ("pet_settle_ranges", "pet_settle_ranges", "", str),
-            ("pet_settle_tiers", "pet_settle_tiers", "", str),
             ("loan_special_rate", "loan_special_rate", LOAN_SPECIAL_RATE, _FLOAT),
             ("loan_special_days", "loan_special_days", LOAN_SPECIAL_DAYS, _INT),
             ("rain_amount", "rain_amount", RAIN_AMOUNT, _INT),
@@ -743,7 +742,10 @@ class SignInPlugin(Star, FarmMixin, PetMixin, BankMixin, RedpacketMixin, Activit
             user = self._ensure_user(data, key)
 
         # 2.2.2：「获得金币」改为最近一次签到获得的金币总额，每次签到先清零（双倍签到各次再累加）
+        # 2.2.7：获得好感度 / 获得宠物经验同样改为最近一次签到的变更量（原先一直累加，显示失真）
         user["signin_coins_total"] = 0
+        user["signin_fav_total"] = 0
+        user["signin_pet_exp_total"] = 0
         lines = [f"✅ {name} 签到成功！"]
         lines += self._apply_signin_once(data, key, today)
         user["last_date"] = today
@@ -920,8 +922,8 @@ class SignInPlugin(Star, FarmMixin, PetMixin, BankMixin, RedpacketMixin, Activit
                 ("使用 <道具名> [数量]", "使用道具（不填数量 = 1 个，结果合入宠物总览图）"),
                 ("背包", "查看背包"),
                 ("治疗宠物", "治疗虚弱宠物（花 500 金币，所有数值恢复 40；仅虚弱状态可用）"),
-                ("自动照顾 开/关", "开启/关闭自动照顾（旧指令「自动购买 开/关」仍可用；开启时立即判定一次；五属性每次变化后/定期每分钟巡检/自动打工时/每日固定结算时判定；任一属性进入第 3/4 档或体力不足时按 健康>饱食>口渴>心情>体力 补到目标——饱食/口渴/心情补满、健康补到最大健康×目标百分比（默认80%）、体力用体力丸（50金币/个）补满；道具五条属性效果全部生效且与手动使用一致；优先免费使用仓库道具，仓库无可用道具才购买；照顾花费计入基准金币，由自动打工填补；金币不足自动申请自动化贷款；开启后自动同步开启自动打工）"),
-                ("自动打工 开/关", "自动打工开关（自动选择报酬最接近打工基准金币的项目，只给金币不给经验；基准 ≤ 100 自动暂停，有自动化贷款未还清时持续打工）"),
+                ("自动照顾 开/关", "开启/关闭自动照顾（同步开启/关闭自动打工；开启时初始照顾把所有属性提升到第 1 档并记录花费；五属性每次变化（打工/玩耍/使用道具/治疗后）与每日结算时检查，任一属性处于第 3/4 档即照顾——健康补到最大健康×目标百分比（默认80%），饱食/口渴/心情/体力第 1/2 档忽略、第 3/4 档补满（体力用体力丸 50金币/个）；优先使用持有道具，没有再购买（手动价×1.1 倍，WebUI 可调）；花费计入基准金币；金币不足自动申请自动化贷款（无上限无逾期，还款指令/打工报酬偿还））"),
+                ("自动打工 开/关", "自动打工开关（自动照顾开启且基准金币 > 0 时，选择报酬最接近基准金币的项目，打工完成后进入下一轮；报酬优先偿还自动化贷款，只给金币不给经验）"),
                 ("自动化", "查看自动照顾/自动打工状态与指令调用方法"),
                 ("自动化帮助", "自动照顾 + 自动打工 玩法说明（含固定刷新时间）"),
                 ("结算日志", "查看自动照顾/自动打工记录（购买/使用带数量标记与触发来源）"),
@@ -988,9 +990,9 @@ class SignInPlugin(Star, FarmMixin, PetMixin, BankMixin, RedpacketMixin, Activit
                 ("购买 / 使用 <道具名> [数量]", "购买 / 使用道具（不填数量 = 1 个）"),
                 ("背包", "查看背包"),
                 ("治疗宠物", "治疗虚弱宠物（花 500 金币，所有数值恢复 40；仅虚弱状态可用）"),
-                ("自动照顾 开/关", "开启/关闭自动照顾（旧指令「自动购买 开/关」仍可用；开启时立即判定一次；五属性每次变化后/定期每分钟巡检/自动打工时/每日固定结算时判定；任一属性进入第 3/4 档或体力不足时按 健康>饱食>口渴>心情>体力 补到目标——饱食/口渴/心情补满、健康补到最大健康×目标百分比（默认80%）、体力用体力丸（50金币/个）补满；道具五条属性效果全部生效且与手动使用一致；优先免费使用仓库道具，仓库无可用道具才购买；照顾花费计入基准金币，由自动打工填补；金币不足自动申请自动化贷款；开启后自动同步开启自动打工）"),
-                ("自动打工 开/关", "自动打工开关（自动选择报酬最接近打工基准金币的项目，只给金币不给经验；基准 ≤ 100 自动暂停，有自动化贷款未还清时持续打工）"),
-                ("自动化 / 自动化帮助", "查看自动化状态与玩法 / 自动购买+自动打工说明（含固定刷新时间）"),
+                ("自动照顾 开/关", "开启/关闭自动照顾（同步开启/关闭自动打工；开启时初始照顾把所有属性提升到第 1 档并记录花费；五属性每次变化（打工/玩耍/使用道具/治疗后）与每日结算时检查，任一属性处于第 3/4 档即照顾——健康补到最大健康×目标百分比（默认80%），饱食/口渴/心情/体力第 1/2 档忽略、第 3/4 档补满（体力用体力丸 50金币/个）；优先使用持有道具，没有再购买（手动价×1.1 倍，WebUI 可调）；花费计入基准金币；金币不足自动申请自动化贷款（无上限无逾期，还款指令/打工报酬偿还））"),
+                ("自动打工 开/关", "自动打工开关（自动照顾开启且基准金币 > 0 时，选择报酬最接近基准金币的项目，打工完成后进入下一轮；报酬优先偿还自动化贷款，只给金币不给经验）"),
+                ("自动化 / 自动化帮助", "查看自动化状态与玩法 / 自动照顾+自动打工说明（含固定刷新时间）"),
                 ("结算日志", "查看自动照顾/自动打工记录（购买/使用带数量标记与触发来源）"),
             ]),
             ("金币银行", [
