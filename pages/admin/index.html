@@ -167,6 +167,31 @@
         <p class="hint">每个系统可独立开关：关闭后对应指令在群聊中提示「功能已被管理员关闭」。默认全部开启，保存后立即生效（重启后保留）。</p>
       </section>
 
+      <!-- 权限管理（设置子页 → 卡片，2.3.0）：每个聊天的插件权限 -->
+      <section id="panel-perms" class="panel hidden">
+        <div class="toolbar">
+          <button id="btn-perm-sync" class="primary">获取UMO</button>
+          <button id="btn-load-perms">刷新聊天列表</button>
+          <button id="btn-save-perms" class="primary">保存并立即生效</button>
+          <span id="status-perms" class="status"></span>
+        </div>
+        <div id="perms-list" class="perm-list">
+          <p class="hint">聊天列表随消息自动登记；也可点击「获取UMO」从平台拉取机器人所在的群聊与好友...</p>
+        </div>
+        <details class="param-group">
+          <summary>➕ 手动添加聊天 sid</summary>
+          <div class="param-subgroups">
+            <div class="toolbar">
+              <input type="text" id="perm-add-sid" placeholder="UMO 格式：平台:类型:会话id（如 aiocqhttp:GroupMessage:123456789）" />
+              <button id="btn-perm-add">添加</button>
+              <span id="status-perm-add" class="status"></span>
+            </div>
+            <p class="hint">适用于自动登记不到的聊天（如还没发过消息、平台不支持拉取）。群聊类型一般为 <code>GroupMessage</code>，私聊为 <code>FriendMessage</code>（以「获取UMO」结果为准）。</p>
+          </div>
+        </details>
+        <p class="hint"><b>自动登记</b>：机器人收到消息的聊天（UMO）会自动进入列表（含已完全禁止的聊天）。<b>获取UMO</b>：手动从平台拉取机器人所在的全部群聊与好友私聊（OneBot/aiocqhttp 平台支持），补全群名/昵称。<b>完全允许</b>（默认）= 该聊天可完整使用插件全部功能；<b>完全禁止</b> = 插件在该聊天内完全不响应；<b>部分禁止</b> = 勾选的功能在该聊天内不可用，调用时提示「该功能暂时关闭」。保存后立即生效（重启后保留）。</p>
+      </section>
+
       <!-- 运行参数（设置子页 → 子系统卡片 → 编辑页，按 group 过滤，选项卡默认展开） -->
       <section id="panel-params" class="panel hidden">
         <div class="toolbar">
@@ -374,10 +399,10 @@
         <p class="hint">宠物商店价格固定偶数点刷新（0/2/4/…/22 整点），同窗口（2 小时）稳定；特价时段（10/12/18/0 时窗口）随机选取 <span id="price-discount-range">2~5</span> 件商品打 二~八折。此处展示当前窗口与最近的价格变动记录（购买按实时价结算）。</p>
       </section>
 
-      <footer class="page-foot">签到娱乐系统 · 2.2.3</footer>
+      <footer class="page-foot"><span>签到娱乐系统 · 2.3.0</span><a id="foot-repo" class="foot-repo" href="https://github.com/Haoxiang-Fant/astrbot_plugin_signin" target="_blank" rel="noopener">查看仓库</a></footer>
     </div>
 
-    <script type="module" src="./app.js?v=2.2.7"></script>
+    <script type="module" src="./app.js?v=2.3.0"></script>
 
     <!-- 验证码确认弹窗（危险操作：使用默认道具数据） -->
     <div id="captcha-modal" class="captcha-modal hidden">

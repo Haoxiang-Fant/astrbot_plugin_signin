@@ -26,6 +26,7 @@ from .modules.loans import LoanMixin
 from .modules.roulette import RouletteMixin
 from .modules.rank import RankMixin
 from .modules.lan import LanMixin
+from .modules.perm import PermMixin
 from .modules.webui import WebUIMixin
 
 # main.py 自身也参与运行时参数同步（签到等逻辑直接读取模块常量）
@@ -46,8 +47,8 @@ class _NameOverrideEvent:
         return self._override_name
 
 
-@register("astrbot_plugin_signin", "sishijiu", "群签到 + 左轮手枪 + 宠物养成 + 金币银行 + 农场", "2.2.7")
-class SignInPlugin(Star, FarmMixin, PetMixin, BankMixin, RedpacketMixin, ActivityMixin, LoanMixin, RouletteMixin, RankMixin, LanMixin, WebUIMixin, CoreMixin):
+@register("astrbot_plugin_signin", "sishijiu", "群签到 + 左轮手枪 + 宠物养成 + 金币银行 + 农场", "2.3.0")
+class SignInPlugin(Star, FarmMixin, PetMixin, BankMixin, RedpacketMixin, ActivityMixin, LoanMixin, RouletteMixin, RankMixin, LanMixin, PermMixin, WebUIMixin, CoreMixin):
     def __init__(self, context: Context, config: dict = None):
         super().__init__(context)
         self.config = config or {}
@@ -155,6 +156,10 @@ class SignInPlugin(Star, FarmMixin, PetMixin, BankMixin, RedpacketMixin, Activit
             ("petshop", "POST", self.web_save_petshop, "保存宠物商店商品（game_items.json）"),
             ("feature/status", "GET", self.web_get_feature_status, "读取功能开关"),
             ("feature/status", "POST", self.web_save_feature_status, "保存功能开关"),
+            # 2.3.0：权限管理（每个聊天的插件权限：完全允许/部分禁止/完全禁止）
+            ("perm/list", "GET", self.web_get_perm_list, "权限管理：读取聊天列表与权限配置"),
+            ("perm/sync", "POST", self.web_sync_umos, "权限管理：手动获取UMO（从平台拉取聊天）"),
+            ("perm/save", "POST", self.web_save_perms, "权限管理：保存聊天权限"),
             ("data/export", "GET", self.web_export_data, "导出全部数据（存档+自定义配置）"),
             ("data/import", "POST", self.web_import_data, "导入全部数据（存档+自定义配置）"),
             ("farm/crops", "GET", self.web_get_crops, "读取作物配置（game_items.json）"),
@@ -222,6 +227,13 @@ class SignInPlugin(Star, FarmMixin, PetMixin, BankMixin, RedpacketMixin, Activit
             # 2.2.0：所有结算（宠物每日结算/银行存款结算/贷款逾期处置）由固定结算循环
             # （_daily_settle_loop）在指定时间统一执行，此处不再做任何懒结算，仅记录活跃与群成员。
             data = self._load()
+            # 2.3.0：自动登记聊天 sid（UMO）——来过消息的聊天自动进入权限管理列表
+            _new_chat = self._touch_umos(data, event)
+            # 2.3.0：权限管理——完全禁止的聊天直接静默（不展开别名、不记账、不响应）
+            if self._perm_of(data, self._chat_sid(event))[0] == "deny":
+                if _new_chat:
+                    self._save(data)  # 仅登记新聊天时写盘
+                return
             key = event.get_sender_id()
             # 2.0.3：自定义昵称（90 天有效期）优先级高于获取的昵称 → 包装事件替换发送者昵称
             _custom = self._custom_name_of(data, key)
@@ -229,7 +241,7 @@ class SignInPlugin(Star, FarmMixin, PetMixin, BankMixin, RedpacketMixin, Activit
                 event = _NameOverrideEvent(event, _custom)
             # 同义口令展开：别名 → 标准指令（一步展开，不递归；别名可被 WebUI 编辑）
             head = self._expand_alias(data, head)
-            dirty = False
+            dirty = _new_chat  # 新登记的聊天随本条消息一并写盘
             # 2.1.0：记录用户最后活跃时间（运行记录·用户信息页面展示用；5 分钟内不重复写盘）
             _active_u = data.get("users", {}).get(key)
             if _active_u is None and (key in (data.get("pets") or {}) or key in (data.get("farms") or {})):
@@ -472,6 +484,12 @@ class SignInPlugin(Star, FarmMixin, PetMixin, BankMixin, RedpacketMixin, Activit
     _ADMIN_ONLY_HEADS = frozenset(("查看后台配置", "保存后台配置", "导出数据", "导入数据", "管理网址"))
 
     def _route(self, head: str, event: AstrMessageEvent):
+        # 2.3.0：权限管理鉴权（每个聊天三态权限，唯一指令入口统一拦截）：
+        # 完全禁止 → 静默不响应（普通聊天已在 on_message 提前拦截，此处兜底）；
+        # 部分禁止 → 调用了被禁功能时返回「该功能暂时关闭」
+        blocked, reply = self._perm_gate(head, event)
+        if blocked:
+            return reply
         # 2.2.1：鉴权拦截——数据管理类指令仅管理员可用（WebUI「设置 → 通用 → 管理员 UID」配置，
         # 或回退 OneBot 群主/管理员角色、AstrBot 主人配置）
         if head in self._ADMIN_ONLY_HEADS and not self._is_admin(event):

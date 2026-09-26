@@ -739,6 +739,125 @@ input, select, textarea {
   box-shadow: var(--shadow-1);
 }
 
+/* ---------- 权限管理（2.3.0）：聊天卡片 ---------- */
+.perm-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  margin-bottom: var(--space-3);
+}
+
+.perm-card {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+  box-shadow: var(--shadow-1);
+}
+
+/* 三态描边：部分禁止=金、完全禁止=红，一眼可辨 */
+.perm-card.mode-partial {
+  border-color: var(--gold);
+}
+
+.perm-card.mode-deny {
+  border-color: var(--danger);
+}
+
+.perm-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  font-size: 13px;
+}
+
+.perm-head b {
+  color: var(--text);
+}
+
+.perm-head code {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.perm-badge {
+  padding: 1px 8px;
+  border-radius: 999px;
+  background: var(--surface-2);
+  color: var(--text-2);
+  font-size: 11px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.perm-modes {
+  display: flex;
+  gap: 14px;
+  flex-wrap: wrap;
+}
+
+.perm-mode {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.perm-mode input[type="radio"],
+.perm-ban input[type="checkbox"] {
+  width: 15px;
+  height: 15px;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+
+.perm-bans {
+  display: flex;
+  gap: 8px 16px;
+  flex-wrap: wrap;
+  padding: 8px 10px;
+  border: 1px dashed var(--border);
+}
+
+.perm-ban {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 12.5px;
+  color: var(--text-2);
+  cursor: pointer;
+}
+
+/* 手动添加 sid：与旁侧「添加」按钮同规格（同高同框同圆角，2.3.0） */
+#perm-add-sid {
+  flex: 1;
+  min-width: 240px;
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  color: var(--text);
+  font: inherit;
+  font-size: 13px;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+#perm-add-sid:hover {
+  border-color: var(--border-2);
+  background: var(--surface-2);
+}
+
+#perm-add-sid:focus-visible {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: var(--ring-accent);
+}
+
 /* ---------- 活动中心 ---------- */
 .activity-list {
   display: flex;
@@ -1288,6 +1407,27 @@ input[type="file"] {
   font-size: 12px;
   color: var(--muted);
   text-align: center;
+  display: flex;              /* 2.3.0：版本号 + 仓库按钮并排 */
+  align-items: center;
+  justify-content: center;
+  flex-wrap: wrap;
+  gap: var(--space-3);
+}
+
+/* 2.3.0：项目仓库按钮 */
+.page-foot .foot-repo {
+  display: inline-block;
+  padding: 2px 12px;
+  border: 1px solid var(--border-2);
+  background: var(--surface);
+  color: var(--text-2);
+  font-size: 12px;
+  text-decoration: none;
+  transition: border-color 0.15s ease, color 0.15s ease;
+}
+.page-foot .foot-repo:hover {
+  border-color: var(--accent);
+  color: var(--accent);
 }
 
 /* ---------- 局域网开放（1.7.9） ---------- */
@@ -1810,6 +1950,26 @@ input[type="file"] {
     columns: 1;
   }
   .user-masonry {
+    flex-direction: column;
+  }
+}
+
+/* 2.3.0：信息流瀑布（运行记录·商店价格）——卡片宽度只随所在列、与同行其它卡片互不绑定，高度各自独立；
+   卡片按实际高度放入最矮列；列内恒定间距，展开/折叠只在原位增减高度、推挤本列下方卡片，其余卡片位置不变 */
+.masonry {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-3);
+}
+.masonry-col {
+  flex: 1 1 0;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+@media (max-width: 900px) {
+  .masonry {
     flex-direction: column;
   }
 }

@@ -1657,7 +1657,8 @@ class PetMixin:
             for it in self._load_config().get("shop", []):
                 mult = disc.get(it["name"], 1.0)
                 base = int(it.get("price", 0))
-                items.append({"name": it["name"], "base": base,
+                # 2.3.0：附带商品类型，WebUI 快照按「商店」指令同样的分类展示（旧记录无 type，前端回退当前商店配置）
+                items.append({"name": it["name"], "type": it.get("type") or "其他", "base": base,
                               "price": max(1, int(round(base * mult))), "mult": round(mult, 2)})
             recs.append({"window": w,
                          "ts": cur.strftime("%Y-%m-%d %H:%M"),

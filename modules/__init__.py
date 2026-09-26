@@ -11,6 +11,7 @@ from .loans import LoanMixin
 from .roulette import RouletteMixin
 from .rank import RankMixin
 from .lan import LanMixin
+from .perm import PermMixin
 from .webui import WebUIMixin
 
-__all__ = ["FarmMixin", "PetMixin", "BankMixin", "RedpacketMixin", "ActivityMixin", "LoanMixin", "RouletteMixin", "RankMixin", "LanMixin", "WebUIMixin", "CoreMixin"]
+__all__ = ["FarmMixin", "PetMixin", "BankMixin", "RedpacketMixin", "ActivityMixin", "LoanMixin", "RouletteMixin", "RankMixin", "LanMixin", "PermMixin", "WebUIMixin", "CoreMixin"]
