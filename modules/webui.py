@@ -846,6 +846,8 @@ class WebUIMixin:
             return json_response({"saved": True, "items": len(shop)})
 
     # ================= 功能开关 =================
+    # 2.3.0：功能维度同时供「功能开关」（全局）与「权限管理」（按聊天部分禁止）使用；
+    # 新增 左轮手枪/排行榜/自动化/其他 四个维度（默认开启，行为不变）。
     FEATURE_MODULES = [
         {"key": "farm", "label": "农场系统"},
         {"key": "signin", "label": "签到系统"},
@@ -855,11 +857,15 @@ class WebUIMixin:
         {"key": "bank_loan", "label": "银行-贷款"},
         {"key": "bank_saving", "label": "银行-储蓄"},
         {"key": "steal", "label": "偷菜系统"},
+        {"key": "roulette", "label": "左轮手枪"},
+        {"key": "rank", "label": "排行榜"},
+        {"key": "auto", "label": "自动化"},
+        {"key": "misc", "label": "其他功能"},
     ]
-    # 指令 → 所属功能模块（关闭时该指令返回「功能已关闭」）
+    # 指令 → 所属功能模块（关闭/被禁时该指令返回提示）。2.3.0：覆盖全部指令。
     FEATURE_CMD_MAP = {
         "签到": "signin", "我的签到": "signin", "签到帮助": "signin",
-        "宠物": "pet", "解锁宠物": "pet", "更改宠物名字": "pet",
+        "宠物": "pet", "解锁宠物": "pet", "更改宠物名字": "pet", "治疗宠物": "pet",
         "打工": "pet", "玩耍": "pet", "商店": "pet", "购买": "pet",
         "使用": "pet", "背包": "pet", "宠物帮助": "pet",
         "活动": "activity", "活动中心": "activity",
@@ -875,6 +881,15 @@ class WebUIMixin:
         "售卖": "farm", "售卖种子": "farm", "农场帮助": "farm",
         # 偷菜系统
         "偷菜": "steal", "自动偷菜": "steal", "看家": "steal",
+        # 左轮手枪（2.3.0 补全）
+        "装弹": "roulette", "加入": "roulette", "开始": "roulette", "开枪": "roulette",
+        "我的战绩": "roulette", "左轮手枪帮助": "roulette", "游戏帮助": "roulette",
+        # 排行榜 / 自动化 / 其他（2.3.0 补全）
+        "金币排行": "rank", "宠物排行": "rank", "农场排行": "rank",
+        "自动照顾": "auto", "自动打工": "auto", "自动化": "auto", "结算日志": "auto", "自动化帮助": "auto",
+        "自动购买": "auto",  # 旧指令名兼容
+        "修改昵称": "misc", "查询流水": "misc", "流水查询": "misc", "消费记录": "misc",
+        "查看后台配置": "misc", "保存后台配置": "misc", "导出数据": "misc", "导入数据": "misc", "管理网址": "misc",
     }
 
     def _feature_enabled(self, data: dict, key: str) -> bool:

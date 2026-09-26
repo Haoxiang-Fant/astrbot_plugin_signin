@@ -81,6 +81,9 @@ const ICONS = {
   // 图片输出（2.2.6）：相框（外框 + 山形 + 太阳）
   image:
     '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="square" stroke-linejoin="miter"><rect x="3.5" y="4.5" width="17" height="15"/><circle cx="9" cy="10" r="1.6"/><path d="M3.5 16.5 9 12l4 3.5 3.5-3 4 4"/></svg>',
+  // 权限管理（2.3.0）：挂锁
+  lock:
+    '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="square" stroke-linejoin="miter"><rect x="5" y="10.5" width="14" height="10"/><path d="M8 10.5V7a4 4 0 0 1 8 0v3.5"/><path d="M12 14.5v2.5"/></svg>',
   default:
     '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="square" stroke-linejoin="miter"><rect x="4" y="4" width="16" height="16" rx="1"/><path d="M4 9h16M9 4v16"/></svg>',
 };
@@ -729,6 +732,112 @@ async function saveFeatures() {
   } catch (e) {
     setStatus("status-features", "❌ 保存失败：" + e.message);
   }
+}
+
+// ---------- 权限管理（2.3.0）：每个聊天的插件权限 ----------
+let permState = null; // { features: [{key,label}], sids: [{sid,name,type,platform,mode,banned}] }
+
+const PERM_MODE_LABELS = [["allow", "完全允许"], ["partial", "部分禁止"], ["deny", "完全禁止"]];
+
+async function loadPerms() {
+  setStatus("status-perms", "加载中...");
+  try {
+    const data = await bridge.apiGet("perm/list");
+    permState = { features: (data && data.features) || [], sids: (data && data.sids) || [] };
+    renderPerms();
+    setStatus("status-perms", permState.sids.length
+      ? `✅ 已加载 ${permState.sids.length} 个聊天（自动登记 + 手动获取）`
+      : "⚠️ 暂无聊天：机器人收到消息后会自动登记，或点击「获取UMO」从平台拉取");
+  } catch (e) {
+    setStatus("status-perms", "❌ 加载失败：" + e.message);
+  }
+}
+
+async function syncUmos() {
+  setStatus("status-perms", "正在从平台获取UMO...");
+  try {
+    const r = await bridge.apiPost("perm/sync", {});
+    setStatus("status-perms", `✅ 平台返回 ${r.discovered ?? 0} 个聊天，新登记 ${r.new ?? 0} 个，合计 ${r.total ?? 0} 个，刷新列表中...`);
+    await loadPerms();
+  } catch (e) {
+    setStatus("status-perms", "❌ 获取UMO失败：" + e.message);
+  }
+}
+
+function renderPerms() {
+  const box = $("perms-list");
+  if (!permState) return;
+  if (!permState.sids.length) {
+    box.innerHTML = '<p class="hint">暂无聊天，可在下方手动添加 sid。</p>';
+    return;
+  }
+  box.innerHTML = permState.sids.map((s, i) => {
+    const mode = s.mode || "allow";
+    const modes = PERM_MODE_LABELS
+      .map(([v, label]) => `<label class="perm-mode"><input type="radio" name="perm-mode-${i}" value="${v}" data-idx="${i}" ${mode === v ? "checked" : ""} />${label}</label>`)
+      .join("");
+    const bans = permState.features
+      .map((f) => `<label class="perm-ban"><input type="checkbox" data-ban="${f.key}" data-idx="${i}" ${(s.banned || []).includes(f.key) ? "checked" : ""} />${f.label}</label>`)
+      .join("");
+    return `<div class="perm-card mode-${mode}" data-idx="${i}">
+      <div class="perm-head">
+        <b>${esc(s.name || "（未命名）")}</b>
+        <span class="perm-badge">${s.type === "group" ? "群聊" : s.type === "private" ? "私聊" : "聊天"}</span>
+        <code>${esc(s.sid)}</code>
+      </div>
+      <div class="perm-modes">${modes}</div>
+      <div class="perm-bans ${mode === "partial" ? "" : "hidden"}">${bans || '<p class="hint">无可配置功能</p>'}</div>
+    </div>`;
+  }).join("");
+}
+
+async function savePerms() {
+  if (!permState) {
+    setStatus("status-perms", "❌ 请先「刷新聊天列表」");
+    return;
+  }
+  const perms = {};
+  document.querySelectorAll("#perms-list .perm-card").forEach((card) => {
+    const s = permState.sids[Number(card.dataset.idx)];
+    if (!s) return;
+    const mode = (card.querySelector(`input[name="perm-mode-${card.dataset.idx}"]:checked`) || {}).value || "allow";
+    if (mode === "allow") return; // 完全允许 = 默认，不保存
+    const banned = mode === "partial"
+      ? [...card.querySelectorAll("input[data-ban]:checked")].map((cb) => cb.dataset.ban)
+      : [];
+    perms[s.sid] = { mode, banned };
+  });
+  setStatus("status-perms", "保存中...");
+  try {
+    const r = await bridge.apiPost("perm/save", { perms });
+    setStatus("status-perms", `✅ 已保存并立即生效（${r && r.chats != null ? r.chats + " 个聊天有自定义权限" : ""}）`);
+  } catch (e) {
+    setStatus("status-perms", "❌ 保存失败：" + e.message);
+  }
+}
+
+function addPermSid() {
+  const st = $("status-perm-add");
+  const sid = ($("perm-add-sid").value || "").trim();
+  if (!permState) {
+    st.textContent = "❌ 请先「刷新聊天列表」加载功能清单";
+    return;
+  }
+  if (!/^[^:]+:[^:]+:.+$/.test(sid)) {
+    st.textContent = "❌ 格式应为 UMO（平台:类型:会话id，如 aiocqhttp:GroupMessage:123456789）";
+    return;
+  }
+  if (permState.sids.some((s) => s.sid === sid)) {
+    st.textContent = "⚠️ 该 sid 已在列表中";
+    return;
+  }
+  permState.sids.push({
+    sid, name: "", type: /:group/i.test(sid) ? "group" : "private",
+    platform: sid.split(":")[0], mode: "allow", banned: [],
+  });
+  renderPerms();
+  $("perm-add-sid").value = "";
+  st.textContent = "✅ 已添加，调整权限后记得保存";
 }
 
 // ---------- 活动中心 ----------
@@ -1860,6 +1969,44 @@ function renderRecordPetDetail(d) {
       ${logsHtml}
     </div>`;
 }
+// 2.3.0：快照分门别类（与前台「商店」指令一致）：分类内按实时价升序（同价按名称），分类间按组内最低价升序；
+// 新记录自带 type，旧记录回退 typeMap（当前商店配置 名称→类型），查不到归「其他」
+function groupShopSnap(items, typeMap) {
+  const cats = [];
+  const seen = {};
+  (items || []).forEach((it) => {
+    const typ = it.type || (typeMap && typeMap[it.name]) || "其他";
+    if (!(typ in seen)) { seen[typ] = cats.length; cats.push([typ, []]); }
+    cats[seen[typ]][1].push(it);
+  });
+  const cmp = (a, b) => (a < b ? -1 : a > b ? 1 : 0);
+  cats.forEach((c) => c[1].sort((a, b) => a.price - b.price || cmp(a.name, b.name)));
+  cats.sort((a, b) =>
+    Math.min.apply(null, a[1].map((i) => i.price)) - Math.min.apply(null, b[1].map((i) => i.price)) ||
+    cmp(a[0], b[0]));
+  return cats;
+}
+
+// 2.3.0：信息流瀑布——卡片逐个放入当前最矮列（位置由实际卡片高度决定）；列内恒定间距，
+// 展开只在原位增高、推挤本列下方卡片，其余卡片位置不变；列数按渲染时容器宽度定，改窗口尺寸后刷新页面重排
+function flowMasonry(container, cardsHtml) {
+  container.innerHTML = '<div class="masonry"></div>';
+  const wrap = container.firstElementChild;
+  const n = Math.max(1, Math.min(4, Math.floor(wrap.clientWidth / 300)));
+  const cols = [];
+  for (let i = 0; i < n; i++) {
+    const col = document.createElement("div");
+    col.className = "masonry-col";
+    wrap.appendChild(col);
+    cols.push(col);
+  }
+  const tpl = document.createElement("template");
+  tpl.innerHTML = cardsHtml;
+  Array.from(tpl.content.children).forEach((card) => {
+    cols.sort((a, b) => a.offsetHeight - b.offsetHeight)[0].appendChild(card);
+  });
+}
+
 async function loadRecordPrices() {
   setStatus("status-record-prices", "加载中...");
   const box = $("records-prices-list");
@@ -1881,14 +2028,21 @@ async function loadRecordPrices() {
       html += `</div>`;
     }
     const recs = (r.records || []).slice().reverse();
+    // 2.3.0：旧记录无商品类型 → 回退当前商店配置的名称→类型映射（查不到归「其他」）
+    let typeMap = null;
+    try {
+      typeMap = {};
+      ((await bridge.apiGet("petshop")).items || []).forEach((it) => { typeMap[it.name] = it.type; });
+    } catch (_e) { typeMap = null; }
     html += recs.map((rec) => {
       const items = rec.items || [];
       const discN = items.filter((it) => it.price !== it.base).length;
-      // 2.2.7：点击卡片展开「当时商店信息快照」——行格式与当前窗口卡片一致（打折 → 原价，未打折原价直读）
-      const snap = items.map((it) =>
-        it.price !== it.base
-          ? `<div class="rec-line">${esc(it.name)}：${it.base} 金币 → <b>${it.price} 金币</b>（${(it.mult * 10).toFixed(1)} 折）</div>`
-          : `<div class="rec-line muted">${esc(it.name)}：${it.base} 金币（原价）</div>`).join("");
+      // 2.3.0：点击卡片展开「当时商店信息快照」——按「商店」指令同样分门别类（【类型】标题，分类内实时价升序、分类间组内最低价升序）
+      const snap = groupShopSnap(items, typeMap).map(([typ, arr]) =>
+        `<div class="rec-line"><b>【${esc(typ)}】</b></div>` + arr.map((it) =>
+          it.price !== it.base
+            ? `<div class="rec-line">${esc(it.name)}：${it.base} 金币 → <b>${it.price} 金币</b>（${(it.mult * 10).toFixed(1)} 折）</div>`
+            : `<div class="rec-line muted">${esc(it.name)}：${it.base} 金币（原价）</div>`).join("")).join("");
       return `<details class="rec-card price-rec">
         <summary>
           <div class="rec-card-head"><span class="rec-card-name">窗口 ${esc(rec.window)}</span>
@@ -1900,10 +2054,11 @@ async function loadRecordPrices() {
         </div>
       </details>`;
     }).join("");
-    if (!html) {
+    if (!recs.length && !(r.special && (r.current || []).length)) {
       html = '<p class="hint">暂无价格变动记录（插件刚开启价格浮动或还没有到达特价时段）。</p>';
     }
-    box.innerHTML = `<div class="rec-grid">${html}</div>`;
+    if (html.startsWith('<p class="hint">')) box.innerHTML = html;
+    else flowMasonry(box, html);
     setStatus("status-record-prices", `✅ ${(recs || []).length} 条窗口记录`);
   } catch (e) {
     box.innerHTML = '<p class="hint">加载失败：' + esc(e.message) + "</p>";
@@ -2454,8 +2609,9 @@ const SETTINGS_CARDS = [
   { badge: "撤回", icon: "undo", title: "撤回设置", tag: "消息", group: "撤回设置" },
   { badge: "图片输出", icon: "image", title: "图片输出", tag: "比例", group: "图片输出" },
   { badge: "调试", icon: "debug", title: "调试", tag: "调试", group: "调试" },
-  // 功能开关 / 数据导入导出 / 系统（局域网·群昵称）
+  // 功能开关 / 权限管理 / 数据导入导出 / 系统（局域网·群昵称）
   { badge: "开关", icon: "switch", title: "功能开关", tag: "开关", panel: "features" },
+  { badge: "权限", icon: "lock", title: "权限管理", tag: "鉴权", panel: "perms" },
   { badge: "数据", icon: "data", title: "数据导入导出", tag: "备份", panel: "data" },
   { badge: "系统", icon: "system", title: "系统设置", tag: "局域网", panel: "system" },
 ];
@@ -2532,6 +2688,7 @@ function renderSubpage(id) {
       const c = SETTINGS_CARDS[idx];
       btn.addEventListener("click", () => {
         if (c.panel === "features") openPanel({ id: "features", title: "功能开关" });
+        else if (c.panel === "perms") openPanel({ id: "perms", title: "权限管理" });
         else if (c.panel === "data") openPanel({ id: "data", title: "数据导入导出" });
         else if (c.panel === "system") openPanel({ id: "system", title: "系统设置" });
         else openPanel({ id: "params", title: `设置 · ${c.title}`, params: { group: c.group } });
@@ -2598,6 +2755,7 @@ function loadCurrent() {
   else if (cur.id === "config-plays") loadConfig("plays");
   else if (cur.id === "loanpkgs") loadLoanPkgs();
   else if (cur.id === "features") loadFeatures();
+  else if (cur.id === "perms") loadPerms();
   else if (cur.id === "params") loadParams(cur.params?.group || "__all__");
   else if (cur.id === "system") {
     lanLoadSettings();
@@ -2745,6 +2903,21 @@ $("btn-load-loanpkgs").addEventListener("click", loadLoanPkgs);
 $("btn-save-loanpkgs").addEventListener("click", saveLoanPkgs);
 $("btn-load-features").addEventListener("click", loadFeatures);
 $("btn-save-features").addEventListener("click", saveFeatures);
+$("btn-perm-sync").addEventListener("click", syncUmos);
+$("btn-load-perms").addEventListener("click", loadPerms);
+$("btn-save-perms").addEventListener("click", savePerms);
+$("btn-perm-add").addEventListener("click", addPermSid);
+// 权限卡片：切换三态时显示/隐藏「部分禁止」的功能勾选区（事件委托）
+$("perms-list").addEventListener("change", (e) => {
+  const t = e.target;
+  if (!(t instanceof HTMLInputElement) || !t.name || !t.name.startsWith("perm-mode-")) return;
+  const card = t.closest(".perm-card");
+  if (!card) return;
+  card.classList.remove("mode-allow", "mode-partial", "mode-deny");
+  card.classList.add("mode-" + t.value);
+  const bans = card.querySelector(".perm-bans");
+  if (bans) bans.classList.toggle("hidden", t.value !== "partial");
+});
 $("btn-load-activities").addEventListener("click", loadActivities);
 $("btn-save-activities").addEventListener("click", saveActivities);
 $("btn-load-params").addEventListener("click", () => loadParams(currentView().params?.group || "__all__"));
@@ -3047,6 +3220,54 @@ function _closeConfirm(result) {
 $("btn-confirm-ok").addEventListener("click", () => _closeConfirm(true));
 $("btn-confirm-x").addEventListener("click", () => _closeConfirm(false));
 $("confirm-modal").addEventListener("click", (e) => { if (e.target === e.currentTarget) _closeConfirm(false); });
+
+// ================= 2.3.0 页脚「查看仓库」 =================
+// Dashboard 受限 iframe 会静默拦截 target=_blank / window.open（与 confirm/alert 同类）：
+// 先试新标签，被拦则复制链接到剪贴板，剪贴板也不可用则弹页内弹窗展示地址。
+const REPO_URL = "https://github.com/Haoxiang-Fant/astrbot_plugin_signin";
+
+// 返回 "opened" | Promise<"copied"|"shown">（env 注入便于自检）
+function openRepo(url, env) {
+  const w = env.open(url);
+  if (w) return "opened";
+  return env.copy(url).then((ok) => (ok ? "copied" : (env.tell(url), "shown")));
+}
+
+function copyText(text) {
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    return navigator.clipboard.writeText(text).then(() => true, () => _copyExec(text));
+  }
+  return Promise.resolve(_copyExec(text));
+}
+function _copyExec(text) {
+  try {
+    const ta = document.createElement("textarea");
+    ta.value = text;
+    ta.style.position = "fixed";
+    ta.style.opacity = "0";
+    document.body.appendChild(ta);
+    ta.select();
+    const ok = document.execCommand("copy");
+    document.body.removeChild(ta);
+    return ok;
+  } catch (_e) {
+    return false;
+  }
+}
+
+$("foot-repo").addEventListener("click", (e) => {
+  e.preventDefault();
+  Promise.resolve(openRepo(REPO_URL, {
+    open: (u) => { try { return window.open(u, "_blank"); } catch (_e) { return null; } },
+    copy: copyText,
+    tell: (u) => uiConfirm("浏览器拦截了新标签页，请手动复制仓库地址：" + u, "知道了"),
+  })).then((how) => {
+    if (how !== "copied") return;
+    const btn = $("foot-repo");
+    btn.textContent = "✅ 链接已复制，请在浏览器粘贴打开";
+    setTimeout(() => { btn.textContent = "查看仓库"; }, 2000);
+  });
+});
 
 // ================= 2.2.2 历史配置数据（historydata） =================
 async function loadHistoryPanel() {
