@@ -3,7 +3,7 @@
 
 本模块是辅助模块（非挂载插件：无 NAME / register(core) 插件契约），由 webui 插件调用
 register(core, lan_gate=None) 完成 Web API 注册（lan_gate 可选，用于统一包装处理器，
-如局域网访问门；未提供时注册裸处理器）。端点（路径前缀 /astrbot_plugin_signin3/）：
+如局域网访问门；未提供时注册裸处理器）。端点（路径前缀 /{PLUGIN_NAME}/）：
     backend/config          GET   读取打工/玩耍数值（结构化，表格编辑）        ← web_get_backend_config
     backend/config          POST  保存打工/玩耍数值                            ← web_save_backend_config
     petshop                 GET   读取宠物商店商品                              ← web_get_petshop
