@@ -1,4 +1,4 @@
-# astrbot_plugin_signin3 · 3.0.0（万物皆插件）
+# astrbot_plugin_signin · 3.0.1（万物皆插件）
 
 群签到娱乐系统 3.0.0 插件化重构版。功能继承 2.3.0（签到 / 好感度 / 宠物养成 / 农场 / 金币银行 /
 贷款 / 红包 / 左轮手枪 / 排行榜 / 流水 / WebUI 等），架构从「Mixin 单体」重构为「核心框架 + 功能插件」。
@@ -58,3 +58,8 @@ AstrBot 平台
 - 接口规范：`core.command / core.expose / core.service / core.on / core.emit / core.daily / core.at / core.interval`，
   详见 `API.md`。
 - 第三方插件：实现同款模块接口，放 `thirdparty/` 目录，经 thirdparty 插件挂载（参考 `thirdparty/` 内示例）。
+
+## 更新日志
+
+- **v3.0.1**：签到响应图重绘为参考效果图版式（墨绿信息面板 + 白卡瀑布 + 双色进度条）；新增模块禁用开关 `disabled_modules` 与 OPPOSans-H.ttf；签到成果（签到/我的签到）一律走新版渲染、脏数据不再回退旧版图；昵称显示上限 12 个全角字符（恰好 12 不省略）；插件更名 astrbot_plugin_signin。
+- **v3.0.0**：万物皆插件重构（core.py 核心框架 + 31 个功能插件 + 图片响应模块），数据零转换兼容，详见 [UPDATE.md](UPDATE.md)。
