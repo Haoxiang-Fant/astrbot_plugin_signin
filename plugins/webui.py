@@ -5,7 +5,7 @@
 职责（NAME="webui"，经 register(core) 挂载）：
   1. 局域网访问门：把全部非 lan/* 端点包上 lan_gate_wrap（会话 Cookie 门：未开启/本地回环/
      已解锁才放行，黑名单拒绝并记录；lan/* 端点自身承担鉴权与记录职责，保持裸处理器）；
-  2. 注册 Web API（/astrbot_plugin_signin3/<path>）：
+  2. 注册 Web API（/{PLUGIN_NAME}/<path>）：
      params GET/POST                 运行参数读取/保存（RUNTIME_PARAMS 协议，敏感参数不回显）
      alias/list GET, alias/save POST 同义口令读取/保存（标准指令表取 core.all_heads()）
      debug/status GET, debug/toggle POST  调试模式状态/开关（core._debug_unlocked / core.debug）
@@ -427,7 +427,7 @@ def register(core):
             logger.error(f"[WebUI] webui_records 运行记录端点挂接失败: {e}")
 
 
-# ============ WebUI 运行参数（协议：GET/POST /astrbot_plugin_signin3/params） ============
+# ============ WebUI 运行参数（协议：GET/POST /{PLUGIN_NAME}/params） ============
 # 每项：key=模块常量名（保存后经 core.set_param 同步全部模块全局、立即生效），attr=2.3.0 实例属性（3.0 不再使用）
 # type 支持 int / float / bool / string；min/max 为校验范围；group 为一级折叠分组，subgroup 为二级折叠分组
 # （2.3.0 modules/base.py 571-924 原样复制）

@@ -351,7 +351,9 @@ def register(core):
             f"🏅 好感等级：Lv.{lv}",
             f"📅 上次签到：{last}",
         ]
-        return "\n".join(lines)
+        # 3.0.2：签到信息改用新版签到页渲染（与「签到」同版式），渲染不可用回退纯文本
+        img = _render_snapshot(core, name, key)
+        return img if img is not None else "\n".join(lines)
 
     @core.command("修改昵称", feature="signin")
     def handle_change_name(event):

@@ -1,0 +1,51 @@
+{
+  "user": {
+    "coins": 278,
+    "favorability": 0.1,
+    "signin_coins_total": 131,
+    "signin_fav_total": 0.02,
+    "signin_pet_exp_total": 0,
+    "signin_extra": [],
+    "last_date": "2026-09-29",
+    "signin_total": 2,
+    "signin_logs": [
+      {
+        "date": "2026-09-28",
+        "coins": 127,
+        "fav": 0.08,
+        "exp": 0.0,
+        "extra": [
+          "🔄 抽到属性丸 ×2（未解锁宠物，自动转为 20 金币）"
+        ]
+      },
+      {
+        "date": "2026-09-29",
+        "coins": 131,
+        "fav": 0.02,
+        "exp": 0.0,
+        "extra": []
+      }
+    ],
+    "signin_coins_all": 258
+  },
+  "ledger": [
+    {
+      "ts": "2026-09-28 13:19:19",
+      "reason": "每日签到",
+      "delta": 127,
+      "balance": 127
+    },
+    {
+      "ts": "2026-09-28 13:19:19",
+      "reason": "签到奖励转金币",
+      "delta": 20,
+      "balance": 147
+    },
+    {
+      "ts": "2026-09-29 00:42:58",
+      "reason": "每日签到",
+      "delta": 131,
+      "balance": 278
+    }
+  ]
+}

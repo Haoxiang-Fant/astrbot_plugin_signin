@@ -27,7 +27,7 @@ _PLUGIN_MODULES = [
 ]
 
 
-@register("astrbot_plugin_signin3", "sishijiu", "签到娱乐系统 3.0（万物皆插件）", "3.0.0")
+@register("astrbot_plugin_signin", "sishijiu", "签到娱乐系统 3.0（万物皆插件）", "3.0.2")
 class SignInPlugin(Star):
     def __init__(self, context: Context, config: dict = None):
         super().__init__(context)
@@ -103,6 +103,9 @@ class SignInPlugin(Star):
     def _to_image_for_command(self, head: str, reply):
         """指定指令的纯文本回复转图片（图片格式由图片响应模块统一定义；调试模式下停用）"""
         if getattr(self.core, "debug", False):
+            return None
+        # 3.0.2：签到成果一律走新版签到页渲染，渲染不可用回退纯文本，不再转旧版样式图
+        if head in ("签到", "我的签到"):
             return None
         if not isinstance(reply, str) or not reply.strip():
             return None

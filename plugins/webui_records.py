@@ -4,7 +4,7 @@
 本模块是辅助模块（非挂载插件：无 NAME / register(core) 插件契约），由 webui 插件在
 register 末尾调用 register(core) 完成 Web API 注册。暴露：
   - ENDPOINTS：[(path, method, handler, desc), ...]（端点清单，供 webui 检查/再包装）
-  - register(core)：逐项 context.register_web_api(f"/astrbot_plugin_signin3/{path}", ...) 端点：
+  - register(core)：逐项 context.register_web_api(f"/{PLUGIN_NAME}/{path}", ...) 端点：
     records/pets           GET   全部宠物卡片（状态/活动/自动信息）          ← web_get_record_pets
     records/pets/auto      POST  切换用户自动照顾/自动打工                  ← web_toggle_record_auto
     records/pets/loan_waive POST 豁免用户自动化贷款（视为已还款扣基准金币）   ← web_waive_auto_loan
