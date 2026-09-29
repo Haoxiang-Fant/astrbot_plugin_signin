@@ -131,7 +131,7 @@ def apply_signin_once(core, data, key, today):
 
 
 def _render_snapshot(core, name, key, extra_lines=None, signed_today=False):
-    """签到实时数据快照（图片响应模块 render_signin_snapshot；缺失/失败返回 None 回退纯文本）"""
+    """签到实时数据快照（图片响应模块 render_signin_snapshot；缺失返回 None 回退纯文本）"""
     fn = getattr(core.image, "render_signin_snapshot", None)
     if fn is None:
         return None
@@ -139,6 +139,13 @@ def _render_snapshot(core, name, key, extra_lines=None, signed_today=False):
         return fn(core, name, key, core.data, extra_lines=extra_lines, signed_today=signed_today)
     except Exception as e:
         logger.error(f"[签到] 快照渲染失败: {e}")
+    # 3.0.2 兜底：剥到仅本用户基础字段再渲一次，保证仍出新版样式图（而非回退纯文本）
+    try:
+        u = core.data.get("users", {}).get(key)
+        safe = {"users": {key: u} if isinstance(u, dict) else {}}
+        return fn(core, name, key, safe, extra_lines=extra_lines, signed_today=signed_today)
+    except Exception as e:
+        logger.error(f"[签到] 快照渲染兜底失败: {e}")
         return None
 
 

@@ -14,7 +14,8 @@ from astrbot.api import logger
 
 NAME = "migrate"
 
-from ..core import _DATA_DIR, DATA_FILE, PET_MAX_LEVEL, PET_EXP_PER_LEVEL  # noqa: E402
+from ..core import (_DATA_DIR, DATA_FILE, RECORDS_FILE, PET_MAX_LEVEL, PET_EXP_PER_LEVEL,  # noqa: E402
+                    _read_json, _write_json)
 
 _OLD_PLUGIN_NAME = "astrbot_plugin_signin"
 _COPY_FILES = ("data.json", "records.json", "game_items.json", "config_draft.json",
@@ -22,15 +23,83 @@ _COPY_FILES = ("data.json", "records.json", "game_items.json", "config_draft.jso
                "宠物商店-药物.txt", "宠物商店-玩具.txt", "作物.txt", "肥料.txt", "贷款套餐.txt")
 _COPY_DIRS = ("historydata",)
 
+# ================= 3.0.2 数据净化（修复跨群迁移每启重跑洗掉的用户字段） =================
+_SANITIZE_MARK = "sanitize_3_0_2.done"
+# 现值永远优先的三个字段（迁移合并时唯一保留的字段，绝不被旧档覆盖）
+_LIVE_USER_KEYS = ("coins", "favorability", "last_date")
+# 记录类字段：2.2.2 布局存于 records.json，回填时拼接合并
+_LOG_KEYS = ("auto_feed_logs", "auto_work_logs", "farm_logs", "signin_logs")
+
 
 def register(core):
     migrate_once()
     migrate_legacy(core)
+    sanitize_wiped_fields(core)
     try:
         from .format_convert import check_and_convert
         check_and_convert()
     except Exception as e:
         logger.error(f"[迁移] 数据格式检查失败: {e}")
+
+
+def sanitize_wiped_fields(core):
+    """把被「跨群迁移每启重跑」bug 洗掉的用户字段从旧档找回来（一次性，标记文件幂等）。
+
+    3.0.2 之前 users 每次启动被重建为仅 coins/favorability/last_date 且已写进
+    user_data；旧版 data.json（用户全字段）+ records.json（四类日志）按约定保留
+    在数据目录未删，由此回填：
+      - coins/favorability/last_date 现值优先，绝不动；
+      - 用户其余字段仅在现记录缺失时回填（不覆盖用户升级后重设的值）；
+      - 四类日志拼接合并（旧档在前），signin_logs 按 date 去重避免日历重复；
+      - 旧档独有的用户整体恢复。
+    宠物（含 attr_log）/银行/农场/流水未被该 bug 波及，不在此处理。
+    """
+    marker = os.path.join(_DATA_DIR, _SANITIZE_MARK)
+    if os.path.exists(marker):
+        return
+    legacy = _read_json(DATA_FILE)
+    records = _read_json(RECORDS_FILE)
+    legacy_users = legacy.get("users") if isinstance(legacy, dict) else None
+    if not isinstance(legacy_users, dict) or not legacy_users:
+        _write_json(marker, None)  # 无旧档可回填，直接标记完成
+        return
+    rec_users = records.get("users") if isinstance(records, dict) else {}
+    cur_users = core.data.setdefault("users", {})
+    restored = merged = 0
+    try:
+        for key, old in legacy_users.items():
+            if not isinstance(old, dict):
+                continue
+            uid = key.rsplit(":", 1)[-1] if ":" in key else key
+            cur = cur_users.get(uid)
+            if not isinstance(cur, dict):
+                cur = dict(old)  # 旧档独有用户：整体恢复（随后同样走日志回填）
+                cur_users[uid] = cur
+                restored += 1
+            for k, v in old.items():
+                if k not in _LIVE_USER_KEYS and k not in cur:
+                    cur[k] = v
+            rec = rec_users.get(uid) or rec_users.get(key) or {}
+            for k in _LOG_KEYS:
+                old_log = rec.get(k) if isinstance(rec, dict) else None
+                if not isinstance(old_log, list) or not old_log:
+                    continue
+                have = cur.get(k)
+                have = have if isinstance(have, list) else []
+                if k == "signin_logs":
+                    # 签到日历每天一条：旧档在前，现档同日期条目跳过（保留旧档真实数据）
+                    dates = {e.get("date") for e in have if isinstance(e, dict)}
+                    cur[k] = [e for e in old_log if isinstance(e, dict) and e.get("date") not in dates] + have
+                else:
+                    cur[k] = old_log + [e for e in have if e not in old_log]
+                merged += 1
+        core.save()
+    except Exception as e:
+        logger.error(f"[迁移] 数据净化失败（下次启动重试）: {e}")
+        return
+    _write_json(marker, None)  # 成功后标记，不再重跑
+    logger.info(f"[迁移] 数据净化完成：整体恢复用户 {restored} 个，回填日志 {merged} 项"
+                f"（coins/favorability/last_date 现值未动）")
 
 
 # ================= 旧格式数据转译（直升 2.2.x → 3.0 时补跑 2.3.0 的三次迁移；全部幂等） =================
@@ -45,21 +114,30 @@ def migrate_legacy(core):
 def _migrate_legacy_cross_group(core):
     """一次性迁移旧数据：按群存储（gid:uid / private:uid）→ 跨群（uid）。
     金币求和；好感度取最大；签到日期取最新；宠物保留等级/经验最高的一只；左轮战绩求和合并。
-    （2.3.0 base.py _migrate_legacy_data 原样移植；_migrated_cross_group 标记幂等）"""
+    （2.3.0 base.py _migrate_legacy_data 原样移植；_migrated_cross_group 标记幂等）
+    3.0.2 修复：标记不随 3.0 分文件布局落盘，导致本函数每次启动都重跑并重建 users，
+    只保留金币/好感度/签到日期，洗掉 signin_total / signin_logs / custom_name 等其余字段
+    （签到累计次数失效的根因）。现无旧版「群:uid」键即跳过，且合并时整条保留首条记录。"""
     data = core.data
     if data.get("_migrated_cross_group"):
         return
+    users = data.get("users", {})
+    if not any(":" in str(k) for k in users):
+        return  # 已是跨群（uid）数据，无需迁移
 
     def _uid(key: str) -> str:
         return key.rsplit(":", 1)[-1] if ":" in key else key
 
     new_users = {}
-    for key, u in data.get("users", {}).items():
+    for key, u in users.items():
         if not isinstance(u, dict):
             new_users[key] = u
             continue
         uid = _uid(key)
-        d = new_users.setdefault(uid, {"coins": 0, "favorability": 0.0, "last_date": ""})
+        d = new_users.get(uid)
+        if not isinstance(d, dict):
+            new_users[uid] = dict(u)  # 首条有效记录整体保留（含签到累计/自定义昵称/自动化设置等）
+            continue
         d["coins"] = int(d.get("coins", 0)) + int(u.get("coins", 0))
         d["favorability"] = max(float(d.get("favorability", 0.0)), float(u.get("favorability", 0.0)))
         d["last_date"] = max(d.get("last_date", "") or "", u.get("last_date", "") or "")

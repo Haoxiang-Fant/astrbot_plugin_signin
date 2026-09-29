@@ -43,6 +43,28 @@ def _u(v):
     return int(round(v / 3.0))
 
 
+# ---- 脏数据容错（3.0.2）：任一字段脏都不再炸整图回退旧版渲染 ----
+def _i(v, default=0):
+    """任意值 → int（失败回退默认）"""
+    try:
+        return int(v)
+    except (TypeError, ValueError):
+        return default
+
+
+def _f(v, default=0.0):
+    """任意值 → float（失败回退默认）"""
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        return default
+
+
+def _lst(v):
+    """非列表（None / dict / 字符串等）→ 空列表"""
+    return v if isinstance(v, list) else []
+
+
 def _time_greeting(now=None):
     """按时段返回问候语（早上好/上午好/中午好/下午好/晚上好！/夜深了）"""
     h = (now or datetime.now()).hour
@@ -142,9 +164,7 @@ def _busy_until_of(core, pet):
                 return float(fn(pet))
             except Exception:
                 pass
-    busy = float(pet.get("busy_until", 0) or 0)
-    old = max(float(pet.get("work_until", 0) or 0), float(pet.get("play_until", 0) or 0))
-    return max(busy, old)
+    return max(_f(pet.get("busy_until")), _f(pet.get("work_until")), _f(pet.get("play_until")))
 
 
 # ---- 银行/贷款只读小工具 ----
@@ -154,8 +174,8 @@ def _dep_amount(d):
 
 
 def _loan_is_overdue(loan, now_ts):
-    # 3.0.1：due_ts/remaining 为 None 的脏数据按 0 处理（原样比较会炸整图回退旧版渲染）
-    return now_ts > (loan.get("due_ts") or 0) and (loan.get("remaining") or 0) > 0
+    # 3.0.1/3.0.2：due_ts/remaining 为 None 或脏字符串时按 0 处理（原样比较会炸整图回退旧版渲染）
+    return now_ts > _f(loan.get("due_ts")) and _f(loan.get("remaining")) > 0
 
 
 def _disabled_modules(core):
@@ -183,53 +203,62 @@ def render_signin_snapshot(core, name, key, data, extra_lines=None, signed_today
     f_greet = heavy[0] if heavy else f_greet_fb
     greet_stroke = 0 if heavy else 2  # 无 Heavy 字体时以描边加粗近似
 
-    user = data.get("users", {}).get(key) or {}
+    # ---------- 数据准备（3.0.2：命名空间记录统一归一为 dict，脏字段按 0 处理） ----------
+    user = data.get("users", {}).get(key)
+    if not isinstance(user, dict):
+        user = {}
     pet = data.get("pets", {}).get(key)
+    if not isinstance(pet, dict):
+        pet = None
     if pet:
-        # 3.0.1：宠物属性缺失/字符串/None 等脏数据统一归一为 float（原样取值会炸整图回退旧版渲染）
         pet = dict(pet)
         for k in ("satiety", "thirst", "stamina", "mood", "health"):
-            try:
-                pet[k] = float(pet.get(k) or 0)
-            except (TypeError, ValueError):
-                pet[k] = 0.0
+            pet[k] = _f(pet.get(k))
     farm = data.get("farms", {}).get(key)
+    if not isinstance(farm, dict):
+        farm = None
     bank = data.get("bank", {}).get(key)
+    if not isinstance(bank, dict):
+        bank = None
     loan = data.get("loans", {}).get(key)
+    if not isinstance(loan, dict):
+        loan = None
     now = datetime.now()
     now_ts = now.timestamp()
     dis = _disabled_modules(core)
     all_disabled = {"signin", "fav", "bank", "rank", "pet", "farm"} <= dis
 
-    # ---------- 数据准备 ----------
-    total = int(user.get("signin_total", 0) or 0)
-    coins_gain = int(user.get("signin_coins_total", 0) or 0)
-    fav_gain = float(user.get("signin_fav_total", 0) or 0)
-    exp_gain = float(user.get("signin_pet_exp_total", 0) or 0)
+    total = _i(user.get("signin_total"))
+    coins_gain = _i(user.get("signin_coins_total"))
+    fav_gain = _f(user.get("signin_fav_total"))
+    exp_gain = _f(user.get("signin_pet_exp_total"))
 
-    fav = float(user.get("favorability", 0) or 0)
+    fav = _f(user.get("favorability"))
     lv = core.level_of(fav)
     step = float(core.param("LEVEL_STEP", LEVEL_STEP) or 10.0)
     progress = (fav - lv * step) / step if step > 0 else 0.0
     progress = max(0.0, min(1.0, progress))
-    deposits = bank.get("deposits", []) if isinstance(bank, dict) else []
-    loans = loan.get("loans", []) if isinstance(loan, dict) else []
+    deposits = [d for d in _lst(bank.get("deposits") if bank else None) if isinstance(d, dict)]
+    loans = [l for l in _lst(loan.get("loans") if loan else None) if isinstance(l, dict)]
     matured_sum = sum(_dep_amount(d) for d in deposits if d.get("status") == "matured")
     locked_sum = sum(_dep_amount(d) for d in deposits if d.get("status") == "locked")
-    ti = float(bank.get("total_interest", 0) or 0) if isinstance(bank, dict) else 0.0
-    overdue_days = max([int((now_ts - (l.get("due_ts") or 0)) // 86400)
+    ti = _f(bank.get("total_interest")) if bank else 0.0
+    overdue_days = max([int((now_ts - _f(l.get("due_ts"))) // 86400)
                         for l in loans if _loan_is_overdue(l, now_ts)], default=0)
 
     steal_thieves, steal_loss = set(), 0
     if farm:
-        for it in (farm.get("steal_infos", []) or []):
+        for it in _lst(farm.get("steal_infos")):
+            if not isinstance(it, dict):
+                continue
             if it.get("thief_uid"):
                 steal_thieves.add(str(it["thief_uid"]))
-            for item in it.get("items", []) or []:
-                steal_loss += int(item.get("loss", 0) or 0)
+            for item in _lst(it.get("items")):
+                if isinstance(item, dict):
+                    steal_loss += _i(item.get("loss"))
 
     weak = bool(pet and pet.get("weak"))
-    weak_streak = max(1, int(pet.get("weak_streak", 0) or 0)) if pet else 0
+    weak_streak = max(1, _i(pet.get("weak_streak"), 1)) if pet else 0
     heal_cost = int(core.param("WEAK_HEAL_COST", WEAK_HEAL_COST))
     pet_cost = int(core.param("PET_UNLOCK_COST", PET_UNLOCK_COST))
     farm_cost = int(core.param("FARM_UNLOCK_COST", FARM_UNLOCK_COST))
@@ -252,9 +281,12 @@ def render_signin_snapshot(core, name, key, data, extra_lines=None, signed_today
     # 银行与征信
     bank_rows = [(f"存款到期总额 {matured_sum}｜累计利息收益 +{ti:.0f}", C_GOLD)]
     if locked_sum > 0:
-        nxt = min((float(d.get("unlock_ts", 0) or 0) for d in deposits
+        nxt = min((_f(d.get("unlock_ts")) for d in deposits
                    if d.get("status") == "locked"), default=0)
-        nxt_txt = datetime.fromtimestamp(nxt).strftime("%m-%d %H:%M") if nxt else "—"
+        try:
+            nxt_txt = datetime.fromtimestamp(nxt).strftime("%m-%d %H:%M") if nxt > 0 else "—"
+        except (OSError, OverflowError, ValueError):
+            nxt_txt = "—"
         bank_rows.append((f"剩余未到期存款 {locked_sum}", C_BLACK))
         bank_rows.append((f"距离最早到期时间 {nxt_txt}", C_BLACK))
     if loans:
@@ -262,7 +294,7 @@ def render_signin_snapshot(core, name, key, data, extra_lines=None, signed_today
         if overdue_days:
             segs.append((f"｜已逾期 {overdue_days} 天", C_RED))
         else:
-            nxt = min((int((float(l.get("due_ts", 0) or 0) - now_ts) // 86400) for l in loans), default=0)
+            nxt = min((int((_f(l.get("due_ts")) - now_ts) // 86400) for l in loans), default=0)
             segs.append((f"｜最早 {max(0, nxt)} 天后逾期", C_BLACK))
         bank_rows.append(segs)
     if len(bank_rows) == 1:
@@ -311,16 +343,17 @@ def render_signin_snapshot(core, name, key, data, extra_lines=None, signed_today
             pet_rows.append(("当前空闲", C_GRAY))
         pet_rows.append((f"自动化：自动照顾{'开' if user.get('auto_feed_enabled') else '关'}｜"
                          f"自动打工{'开' if user.get('auto_work_enabled') else '关'}｜"
-                         f"基准金币 {int(user.get('work_base', 0) or 0)}", C_BLACK))
-        fl = (user.get("auto_feed_logs") or [])
-        wl = (user.get("auto_work_logs") or [])
+                         f"基准金币 {_i(user.get('work_base'))}", C_BLACK))
+        fl = [x for x in _lst(user.get("auto_feed_logs")) if isinstance(x, dict)]
+        wl = [x for x in _lst(user.get("auto_work_logs")) if isinstance(x, dict)]
         if fl:
             last = fl[-1]
-            items = "、".join(f"{it.get('name', '')}×{it.get('qty', 0)}" for it in last.get("items", []))
-            pet_rows.append((f"最近自动照顾：{last.get('date', '')} {items}（花 {last.get('total', 0)} 金币）", C_BLACK))
+            items = "、".join(f"{it.get('name', '')}×{_i(it.get('qty'))}"
+                              for it in _lst(last.get("items")) if isinstance(it, dict))
+            pet_rows.append((f"最近自动照顾：{last.get('date', '')} {items}（花 {_i(last.get('total'))} 金币）", C_BLACK))
         elif wl:
             last = wl[-1]
-            pet_rows.append((f"最近自动打工：{last.get('date', '')}「{last.get('job', '')}」+{last.get('coins', 0)} 金币",
+            pet_rows.append((f"最近自动打工：{last.get('date', '')}「{last.get('job', '')}」+{_i(last.get('coins'))} 金币",
                              C_BLACK))
         else:
             pet_rows.append(("暂无自动化记录", C_GRAY))
@@ -329,9 +362,9 @@ def render_signin_snapshot(core, name, key, data, extra_lines=None, signed_today
     farm_rows = []
     farm_right = {}
     if farm:
-        plots = farm.get("plots", []) or []
+        plots = [p for p in _lst(farm.get("plots")) if isinstance(p, dict)]
         idle = sum(1 for p in plots if p.get("crop") is None)
-        mature = sum(1 for p in plots if p.get("crop") is not None and now_ts >= float(p.get("mature_ts", 0) or 0))
+        mature = sum(1 for p in plots if p.get("crop") is not None and now_ts >= _f(p.get("mature_ts")))
         growing = len(plots) - idle - mature
         farm_rows.append((f"土地：空闲 {idle}｜种植中 {growing}｜已成熟 {mature}（共 {len(plots)} 块）", C_BLACK))
         farm_right[0] = (f"已解锁 {len(plots)} 块地块", C_BLACK)
@@ -341,8 +374,10 @@ def render_signin_snapshot(core, name, key, data, extra_lines=None, signed_today
             crop = p.get("crop")
             if not crop:
                 continue
-            planting[crop.get("name", "作物")] = planting.get(crop.get("name", "作物"), 0) + 1
-            mt = float(p.get("mature_ts", 0) or 0)
+            # 3.0.2：地块 crop 实际存作物名字符串（image/farm.py 同口径），兼容旧 dict 形态
+            nm = str(crop.get("name") or "作物") if isinstance(crop, dict) else str(crop)
+            planting[nm] = planting.get(nm, 0) + 1
+            mt = _f(p.get("mature_ts"))
             if now_ts < mt:
                 earliest = mt if earliest is None else min(earliest, mt)
         if planting:
