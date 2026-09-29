@@ -29,7 +29,7 @@ try:
 except Exception:
     get_astrbot_plugin_data_path = None
 
-VERSION = "3.0.1"
+VERSION = "3.0.2"
 PLUGIN_NAME = "astrbot_plugin_signin"  # 3.0.1：与 metadata.yaml name 一致（WebUI 端点前缀随之）
 _PLUGIN_DIR = os.path.dirname(os.path.abspath(__file__))
 

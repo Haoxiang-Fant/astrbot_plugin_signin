@@ -27,7 +27,7 @@ _PLUGIN_MODULES = [
 ]
 
 
-@register("astrbot_plugin_signin", "sishijiu", "签到娱乐系统 3.0（万物皆插件）", "3.0.1")
+@register("astrbot_plugin_signin", "sishijiu", "签到娱乐系统 3.0（万物皆插件）", "3.0.2")
 class SignInPlugin(Star):
     def __init__(self, context: Context, config: dict = None):
         super().__init__(context)
